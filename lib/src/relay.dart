@@ -16,18 +16,23 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       {Iterable<String>? relayUrls}) async {
     final completer = Completer<List<Map<String, dynamic>>>();
     final events = <Map<String, dynamic>>[];
+    final eoses = <String, bool>{for (final r in pool.relayUrls) r: false};
 
     pool.send(jsonEncode(["REQ", 'sub-${random.nextInt(999999)}', req.toMap()]),
         relayUrls: relayUrls);
 
     close = addListener((message) {
-      print('recv frame $message');
+      // print('recv frame $message');
       if (message is EventRelayMessage) {
         events.add(message.event);
       }
-      if (message is EoseRelayMessage && !completer.isCompleted) {
-        completer.complete(events);
-        scheduleMicrotask(() => close?.call());
+      if (message is EoseRelayMessage) {
+        eoses[message.relayUrl!] = true;
+        if (eoses.values.reduce((acc, e) => acc && e) &&
+            !completer.isCompleted) {
+          completer.complete(events);
+          scheduleMicrotask(() => close?.call());
+        }
       }
     }, fireImmediately: false);
 
@@ -46,7 +51,8 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     try {
       pool = WebSocketPool(relays);
 
-      _sub = pool.stream.listen((data) {
+      _sub = pool.stream.listen((record) {
+        final (relayUrl, data) = record;
         final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
         switch (type) {
           case 'EVENT':
@@ -54,18 +60,22 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
             if (bip340.verify(map['pubkey'], map['id'], map['sig'])) {
               final event = rest.first as Map<String, dynamic>;
               state = EventRelayMessage(
-                  event: event, subscriptionId: subscriptionId);
+                  relayUrl: relayUrl,
+                  event: event,
+                  subscriptionId: subscriptionId);
             }
             break;
           case 'NOTICE':
-            state = NoticeRelayMessage(message: subscriptionId);
+            state =
+                NoticeRelayMessage(relayUrl: relayUrl, message: subscriptionId);
           case 'EOSE':
-            state = EoseRelayMessage(subscriptionId: subscriptionId);
+            state = EoseRelayMessage(
+                relayUrl: relayUrl, subscriptionId: subscriptionId);
+            break;
           default:
         }
       });
     } catch (err) {
-      print(err);
       state = ErrorRelayMessage(error: err.toString());
       _sub?.cancel();
       _streamSub?.cancel();
@@ -119,8 +129,9 @@ class RelayRequest {
 }
 
 sealed class RelayMessage {
+  final String? relayUrl;
   final String? subscriptionId;
-  RelayMessage({this.subscriptionId});
+  RelayMessage({this.relayUrl, this.subscriptionId});
 
   @override
   String toString() {
@@ -128,12 +139,15 @@ sealed class RelayMessage {
   }
 }
 
-class NothingRelayMessage extends RelayMessage {}
+class NothingRelayMessage extends RelayMessage {
+  NothingRelayMessage();
+}
 
 class EventRelayMessage extends RelayMessage {
   final Map<String, dynamic> event;
 
   EventRelayMessage({
+    super.relayUrl,
     required this.event,
     required super.subscriptionId,
   });
@@ -147,14 +161,16 @@ class EventRelayMessage extends RelayMessage {
 class NoticeRelayMessage extends RelayMessage {
   final String message;
 
-  NoticeRelayMessage({super.subscriptionId, required this.message});
+  NoticeRelayMessage(
+      {super.relayUrl, super.subscriptionId, required this.message});
 }
 
 class EoseRelayMessage extends RelayMessage {
-  EoseRelayMessage({required super.subscriptionId});
+  EoseRelayMessage({super.relayUrl, required super.subscriptionId});
 }
 
 class ErrorRelayMessage extends RelayMessage {
   final String error;
-  ErrorRelayMessage({super.subscriptionId, required this.error});
+  ErrorRelayMessage(
+      {super.relayUrl, super.subscriptionId, required this.error});
 }

@@ -3,9 +3,9 @@ part of purplebase;
 class WebSocketPool {
   final Iterable<String> relayUrls;
   final Map<String, WebSocketClient> clients = {};
-  final _controller = StreamController<String>();
+  final _controller = StreamController<(String, String)>();
 
-  Stream<String> get stream => _controller.stream;
+  Stream<(String, String)> get stream => _controller.stream;
 
   final List<StreamSubscription> subs = [];
 
@@ -21,13 +21,8 @@ class WebSocketPool {
         ),
       );
       client.connect(relayUrl);
-      client.stateChanges.listen((value) {
-        print('client state change');
-        print(value);
-      });
       subs.add(client.stream.listen((value) {
-        // _controller.add('[${client.metrics.lastUrl}] ${value.toString()}');
-        _controller.add(value.toString());
+        _controller.add((relayUrl, value.toString()));
       }));
       clients[relayUrl] = client;
     }

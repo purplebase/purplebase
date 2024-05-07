@@ -6,9 +6,9 @@ import 'package:riverpod/riverpod.dart';
 Future<void> main() async {
   final container = ProviderContainer();
   final notifier = container.read(relayMessageNotifierProvider.notifier);
-  notifier.initialize(['wss://relay.zap.store']);
+  notifier.initialize(['wss://relay.nostr.band', 'wss://relay.zap.store']);
 
-  final fms = await notifier.query(RelayRequest(kinds: {1063}, limit: 3));
+  final fms = await notifier.query(RelayRequest(kinds: {1}, limit: 2));
   print(fms);
 }
 
