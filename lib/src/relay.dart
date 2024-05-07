@@ -41,8 +41,8 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return completer.future;
   }
 
-  Future<void> publish(BaseEvent event) async {
-    pool.send(jsonEncode(["EVENT", event.toMap()]));
+  Future<void> publish(BaseEvent event, {Iterable<String>? relayUrls}) async {
+    pool.send(jsonEncode(["EVENT", event.toMap()]), relayUrls: relayUrls);
   }
 
   RelayMessage get relayMessage {
