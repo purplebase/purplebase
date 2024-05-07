@@ -10,6 +10,7 @@ Future<void> main() async {
 
   final fms = await notifier.query(RelayRequest(kinds: {1}, limit: 2));
   print(fms);
+  await notifier.dispose();
 }
 
 void main2() {

@@ -41,5 +41,8 @@ class WebSocketPool {
     for (final sub in subs) {
       await sub.cancel();
     }
+    for (final client in clients.values) {
+      await client.close();
+    }
   }
 }

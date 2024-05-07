@@ -16,7 +16,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       {Iterable<String>? relayUrls}) async {
     final completer = Completer<List<Map<String, dynamic>>>();
     final events = <Map<String, dynamic>>[];
-    final eoses = <String, bool>{for (final r in pool.relayUrls) r: false};
+    final eoses = <String, bool>{
+      for (final r in (relayUrls ?? pool.relayUrls)) r: false
+    };
 
     pool.send(jsonEncode(["REQ", 'sub-${random.nextInt(999999)}', req.toMap()]),
         relayUrls: relayUrls);
@@ -84,10 +86,14 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   }
 
   @override
-  void dispose() async {
+  Future<void> dispose() async {
+    close?.call();
     await pool.close();
     _sub?.cancel();
-    super.dispose();
+    _streamSub?.cancel();
+    if (mounted) {
+      super.dispose();
+    }
   }
 }
 
