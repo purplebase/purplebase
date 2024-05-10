@@ -21,16 +21,16 @@ mixin BaseApp on BaseEvent {
   @override
   int get kind => 32267;
 
-  String? get identifier => tagMap['d']?.firstOrNull;
-  String? get name => tagMap['name']!.first;
-  String? get repository => tagMap['repository']!.first;
+  String get identifier => tagMap['d']!.first;
+  String? get name => tagMap['name']?.firstOrNull;
+  String? get repository => tagMap['repository']?.firstOrNull;
   Set<String> get icons => tagMap['icon'] ?? {};
   Set<String> get images => tagMap['image'] ?? {};
   String? get url => tagMap['url']?.firstOrNull;
   Set<String> get pubkeys => tagMap['p'] ?? {};
   Set<String> get tTags => tagMap['t'] ?? {};
-  String get githubStars => tagMap['github_stars']!.first;
-  String get githubForks => tagMap['github_forks']!.first;
-  String get license => tagMap['license']!.first;
+  String? get githubStars => tagMap['github_stars']?.firstOrNull;
+  String? get githubForks => tagMap['github_forks']?.firstOrNull;
+  String? get license => tagMap['license']?.firstOrNull;
   String get aTag => '$kind:$pubkey:${tagMap['d']!.first}';
 }
