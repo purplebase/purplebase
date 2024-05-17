@@ -5,7 +5,7 @@ class WebSocketPool {
   final Map<String, WebSocketClient> clients = {};
   final _controller = StreamController<(String, String)>();
 
-  Stream<(String, String)> get stream => _controller.stream;
+  Stream<(String, String)> get stream => _controller.stream.asBroadcastStream();
 
   final List<StreamSubscription> subs = [];
 
@@ -17,7 +17,7 @@ class WebSocketPool {
             min: const Duration(milliseconds: 500),
             max: const Duration(seconds: 15),
           ),
-          timeout: Duration(seconds: 5),
+          timeout: Duration(seconds: 12),
         ),
       );
       client.connect(relayUrl);

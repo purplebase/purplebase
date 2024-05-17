@@ -6,11 +6,10 @@ final relayMessageNotifierProvider =
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   RelayMessageNotifier() : super(NothingRelayMessage());
-  final random = Random();
   late final WebSocketPool pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
-  void Function()? close;
+  final closeFns = <String, void Function()>{};
 
   Future<List<Map<String, dynamic>>> query(RelayRequest req,
       {Iterable<String>? relayUrls}) async {
@@ -20,12 +19,15 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       for (final r in (relayUrls ?? pool.relayUrls)) r: false
     };
 
-    pool.send(jsonEncode(["REQ", 'sub-${random.nextInt(999999)}', req.toMap()]),
+    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]),
         relayUrls: relayUrls);
 
-    close = addListener((message) {
-      // print('recv frame $message');
+    closeFns[req.subscriptionId] = addListener((message) {
+      if (req.subscriptionId != message.subscriptionId) {
+        return;
+      }
       if (message is EventRelayMessage) {
+        // print('recv message frame for sub ${message.subscriptionId}');
         events.add(message.event);
       }
       if (message is EoseRelayMessage) {
@@ -33,7 +35,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         if (eoses.values.reduce((acc, e) => acc && e) &&
             !completer.isCompleted) {
           completer.complete(events);
-          scheduleMicrotask(() => close?.call());
+          scheduleMicrotask(() {
+            closeFns[req.subscriptionId]?.call();
+          });
         }
       }
     }, fireImmediately: false);
@@ -50,44 +54,56 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   }
 
   void initialize(Iterable<String> relays) {
-    try {
-      pool = WebSocketPool(relays);
+    pool = WebSocketPool(relays);
 
-      _sub = pool.stream.listen((record) {
-        final (relayUrl, data) = record;
-        final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
+    _sub = pool.stream.listen((record) {
+      final (relayUrl, data) = record;
+      final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
+      try {
         switch (type) {
           case 'EVENT':
             final map = rest.first;
+            // TODO check if already in database with some callback
+            // to skip double verification
             if (bip340.verify(map['pubkey'], map['id'], map['sig'])) {
               final event = rest.first as Map<String, dynamic>;
               state = EventRelayMessage(
-                  relayUrl: relayUrl,
-                  event: event,
-                  subscriptionId: subscriptionId);
+                relayUrl: relayUrl,
+                event: event,
+                subscriptionId: subscriptionId,
+              );
             }
             break;
           case 'NOTICE':
-            state =
-                NoticeRelayMessage(relayUrl: relayUrl, message: subscriptionId);
+            state = NoticeRelayMessage(
+                relayUrl: relayUrl,
+                subscriptionId: subscriptionId,
+                message: rest.toString());
           case 'EOSE':
             state = EoseRelayMessage(
-                relayUrl: relayUrl, subscriptionId: subscriptionId);
+              relayUrl: relayUrl,
+              subscriptionId: subscriptionId,
+            );
             break;
           default:
         }
-      });
-    } catch (err) {
-      state = ErrorRelayMessage(error: err.toString());
-      _sub?.cancel();
-      _streamSub?.cancel();
-      close?.call();
-    }
+      } catch (err) {
+        state = ErrorRelayMessage(
+            relayUrl: relayUrl,
+            subscriptionId: subscriptionId,
+            error: err.toString());
+        _sub?.cancel();
+        _streamSub?.cancel();
+        closeFns[subscriptionId]?.call();
+      }
+    });
   }
 
   @override
   Future<void> dispose() async {
-    close?.call();
+    for (final closeFn in closeFns.values) {
+      closeFn.call();
+    }
     await pool.close();
     _sub?.cancel();
     _streamSub?.cancel();
@@ -97,7 +113,10 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   }
 }
 
+final random = Random();
+
 class RelayRequest {
+  late final String subscriptionId;
   final Set<String> ids;
   final Set<int> kinds;
   final Set<String> authors;
@@ -113,7 +132,9 @@ class RelayRequest {
       this.tags = const {},
       this.search,
       this.since,
-      this.limit});
+      this.limit}) {
+    subscriptionId = 'sub-${random.nextInt(999999)}';
+  }
 
   Map<String, dynamic> toMap() {
     return {
