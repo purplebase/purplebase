@@ -18,4 +18,5 @@ part 'src/pool.dart';
 part 'src/relay.dart';
 part 'src/models/base.dart';
 part 'src/models/file_metadata.dart';
+part 'src/models/lists.dart';
 part 'src/models/user.dart';

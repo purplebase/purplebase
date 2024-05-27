@@ -1,6 +1,6 @@
 part of purplebase;
 
-mixin BaseFileMetadata on BaseEvent {
+class BaseFileMetadata extends BaseEvent {
   Set<String> get urls => tagMap['url'] ?? {};
   String? get mimeType => tagMap['m']?.firstOrNull;
   String? get hash => tagMap['x']?.firstOrNull;
@@ -11,17 +11,15 @@ mixin BaseFileMetadata on BaseEvent {
   Set<String> get pubkeys => tagMap['p'] ?? {};
 }
 
-mixin BaseRelease on BaseEvent {
+class BaseRelease extends BaseParameterizableReplaceableEvent {
   String? get url => tagMap['url']?.firstOrNull;
-  String get identifier => tagMap['d']!.first;
   String get version => identifier.split('@').last;
 }
 
-mixin BaseApp on BaseEvent {
+class BaseApp extends BaseParameterizableReplaceableEvent {
   @override
   int get kind => 32267;
 
-  String get identifier => tagMap['d']!.first;
   String? get name => tagMap['name']?.firstOrNull;
   String? get repository => tagMap['repository']?.firstOrNull;
   Set<String> get icons => tagMap['icon'] ?? {};

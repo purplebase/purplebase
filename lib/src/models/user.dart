@@ -1,6 +1,6 @@
 part of purplebase;
 
-mixin BaseUser on BaseEvent {
+class BaseUser extends BaseEvent {
   late final Map<String, dynamic> _content =
       content.isNotEmpty ? jsonDecode(content) : {};
 

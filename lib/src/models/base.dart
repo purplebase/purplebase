@@ -82,3 +82,9 @@ class BaseEvent with EquatableMixin {
     return jsonEncode(toMap());
   }
 }
+
+class BaseReplaceableEvent extends BaseEvent {}
+
+class BaseParameterizableReplaceableEvent extends BaseReplaceableEvent {
+  String get identifier => tagMap['d']!.first;
+}
