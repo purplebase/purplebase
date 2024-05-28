@@ -20,11 +20,16 @@ Future<void> main() async {
     expect(k7s, hasLength(4));
     await notifier.dispose();
   }, timeout: Timeout(Duration(seconds: 10)));
-}
 
-void main2() {
-  final e = BaseEvent.partial(content: 'blah')
-      .sign('deef3563ddbf74e62b2e8e5e44b25b8d63fb05e29a991f7e39cff56aa3ce82b8');
-  print(e.isValid);
-  print(e);
+  test('event', () {
+    final defaultEvent = BaseEvent();
+    expect(defaultEvent.isValid, isFalse);
+
+    final signedEvent = BaseEvent().sign(
+        'deef3563ddbf74e62b2e8e5e44b25b8d63fb05e29a991f7e39cff56aa3ce82b8');
+    expect(signedEvent.isValid, isTrue);
+    print(signedEvent.toMap());
+  });
+
+  // TODO Test equality
 }

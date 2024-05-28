@@ -1,6 +1,15 @@
 part of purplebase;
 
 class BaseUser extends BaseEvent {
+  BaseUser(
+      {super.id,
+      super.pubkey,
+      super.createdAt,
+      super.content,
+      super.tags,
+      super.signature})
+      : super(kind: _kindFor<BaseUser>());
+
   late final Map<String, dynamic> _content =
       content.isNotEmpty ? jsonDecode(content) : {};
 
@@ -15,7 +24,7 @@ class BaseUser extends BaseEvent {
     return name;
   }
 
-  String get npub => bech32Encode('npub', pubkey);
+  String get npub => bech32Encode('npub', pubkey!);
   String? get avatarUrl => _content['picture'];
 }
 
