@@ -12,4 +12,5 @@ class BaseAppCurationSet extends BaseEvent
       : super(kind: _kindFor<BaseAppCurationSet>());
 
   Set<String> get aTags => tagMap['a']!;
+  Set<String> get appIds => aTags.map((a) => a.split(':')[2]).toSet();
 }

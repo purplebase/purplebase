@@ -17,7 +17,7 @@ class WebSocketPool {
             min: const Duration(milliseconds: 500),
             max: const Duration(seconds: 15),
           ),
-          timeout: Duration(seconds: 12),
+          timeout: Duration(seconds: 60),
         ),
       );
       client.connect(relayUrl);
