@@ -1,15 +1,20 @@
 part of purplebase;
 
-final relayMessageNotifierProvider =
-    StateNotifierProvider<RelayMessageNotifier, RelayMessage>(
-        (_) => RelayMessageNotifier());
+final relayMessageNotifierProvider = StateNotifierProvider.family<
+    RelayMessageNotifier,
+    RelayMessage,
+    List<String>>((_, relayUrls) => RelayMessageNotifier(relayUrls));
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
-  RelayMessageNotifier() : super(NothingRelayMessage());
-  late final WebSocketPool pool;
+  RelayMessageNotifier(List<String> relayUrls)
+      : pool = WebSocketPool(relayUrls),
+        super(NothingRelayMessage());
+  final WebSocketPool pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
   final closeFns = <String, void Function()>{};
+
+  final r = RegExp('error', caseSensitive: false);
 
   Future<List<Map<String, dynamic>>> query(RelayRequest req,
       {Iterable<String>? relayUrls}) async {
@@ -23,12 +28,19 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         relayUrls: relayUrls);
 
     closeFns[req.subscriptionId] = addListener((message) {
-      if (req.subscriptionId != message.subscriptionId) {
+      if (message.subscriptionId != null &&
+          req.subscriptionId != message.subscriptionId) {
         return;
       }
+
       if (message is EventRelayMessage) {
-        // print('recv message frame for sub ${message.subscriptionId}');
         events.add(message.event);
+      }
+      if (message is NoticeRelayMessage) {
+        completer.completeError(Exception(message.text));
+      }
+      if (message is ErrorRelayMessage) {
+        completer.completeError(Exception(message.error));
       }
       if (message is EoseRelayMessage) {
         eoses[message.relayUrl!] = true;
@@ -53,9 +65,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return super.state;
   }
 
-  void initialize(Iterable<String> relays) {
-    pool = WebSocketPool(relays);
-
+  void initialize() {
     _sub = pool.stream.listen((record) {
       final (relayUrl, data) = record;
       final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
@@ -75,10 +85,17 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
             }
             break;
           case 'NOTICE':
-            state = NoticeRelayMessage(
+            if (r.hasMatch(subscriptionId)) {
+              state = ErrorRelayMessage(
+                  relayUrl: relayUrl,
+                  subscriptionId: null,
+                  error: subscriptionId);
+            }
+          case 'CLOSED':
+            state = ErrorRelayMessage(
                 relayUrl: relayUrl,
                 subscriptionId: subscriptionId,
-                message: rest.toString());
+                error: rest.join(', '));
           case 'EOSE':
             state = EoseRelayMessage(
               relayUrl: relayUrl,
@@ -89,9 +106,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         }
       } catch (err) {
         state = ErrorRelayMessage(
-            relayUrl: relayUrl,
-            subscriptionId: subscriptionId,
-            error: err.toString());
+            relayUrl: relayUrl, subscriptionId: null, error: err.toString());
         _sub?.cancel();
         _streamSub?.cancel();
         closeFns[subscriptionId]?.call();
@@ -186,10 +201,10 @@ class EventRelayMessage extends RelayMessage {
 }
 
 class NoticeRelayMessage extends RelayMessage {
-  final String message;
+  final String text;
 
   NoticeRelayMessage(
-      {super.relayUrl, super.subscriptionId, required this.message});
+      {super.relayUrl, super.subscriptionId, required this.text});
 }
 
 class EoseRelayMessage extends RelayMessage {

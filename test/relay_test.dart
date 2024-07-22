@@ -5,19 +5,27 @@ import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
 Future<void> main() async {
-  test('yo', () async {
+  test('general', () async {
     final container = ProviderContainer();
-    final notifier = container.read(relayMessageNotifierProvider.notifier);
-    notifier.initialize(['wss://relay.nostr.band']);
+    // NOTE: does not work with relay.nostr.band
+    // which does not state "error" in their NOTICE messages
+    final notifier = container
+        .read(relayMessageNotifierProvider(['wss://relay.damus.io']).notifier);
+    notifier.initialize();
 
     final r1 = RelayRequest(kinds: {1}, limit: 2);
     final r2 = RelayRequest(kinds: {6}, limit: 3);
     final k1s = await notifier.query(r1);
     final k6s = await notifier.query(r2);
     final k7s = await notifier.query(RelayRequest(kinds: {7}, limit: 4));
+
     expect(k1s, hasLength(2));
     expect(k6s, hasLength(3));
     expect(k7s, hasLength(4));
+
+    await expectLater(
+        () => notifier.query(RelayRequest(ids: {'a'})), throwsException);
+
     await notifier.dispose();
   }, timeout: Timeout(Duration(seconds: 10)));
 
