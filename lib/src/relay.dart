@@ -65,7 +65,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return super.state;
   }
 
-  void initialize() {
+  void initialize({bool Function(String eventId)? isEventVerified}) {
     _sub = pool.stream.listen((record) {
       final (relayUrl, data) = record;
       final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
@@ -73,9 +73,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         switch (type) {
           case 'EVENT':
             final map = rest.first;
-            // TODO check if already in database with some callback
-            // to skip double verification
-            if (bip340.verify(map['pubkey'], map['id'], map['sig'])) {
+            final alreadyVerified = isEventVerified?.call(map['id']) ?? false;
+            if (alreadyVerified ||
+                bip340.verify(map['pubkey'], map['id'], map['sig'])) {
               final event = rest.first as Map<String, dynamic>;
               state = EventRelayMessage(
                 relayUrl: relayUrl,
