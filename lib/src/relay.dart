@@ -12,9 +12,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   final WebSocketPool pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
-  final closeFns = <String, void Function()>{};
+  final _closeFns = <String, void Function()>{};
 
-  final r = RegExp('error', caseSensitive: false);
+  final _r = RegExp('error', caseSensitive: false);
 
   Future<List<Map<String, dynamic>>> query(RelayRequest req,
       {Iterable<String>? relayUrls}) async {
@@ -27,7 +27,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]),
         relayUrls: relayUrls);
 
-    closeFns[req.subscriptionId] = addListener((message) {
+    _closeFns[req.subscriptionId] = addListener((message) {
       if (message.subscriptionId != null &&
           req.subscriptionId != message.subscriptionId) {
         return;
@@ -48,7 +48,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
             !completer.isCompleted) {
           completer.complete(events);
           scheduleMicrotask(() {
-            closeFns[req.subscriptionId]?.call();
+            _closeFns[req.subscriptionId]?.call();
           });
         }
       }
@@ -58,7 +58,23 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   }
 
   Future<void> publish(BaseEvent event, {Iterable<String>? relayUrls}) async {
+    final completer = Completer<void>();
     pool.send(jsonEncode(["EVENT", event.toMap()]), relayUrls: relayUrls);
+    _closeFns[event.id.toString()] = addListener((message) {
+      if (message.subscriptionId != null &&
+          event.id.toString() != message.subscriptionId) {
+        return;
+      }
+
+      if (message is PublishedEventRelayMessage) {
+        if (message.accepted) {
+          completer.complete();
+        } else {
+          completer.completeError(Exception(message.message ?? 'Not accepted'));
+        }
+      }
+    });
+    return completer.future;
   }
 
   RelayMessage get relayMessage {
@@ -85,7 +101,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
             }
             break;
           case 'NOTICE':
-            if (r.hasMatch(subscriptionId)) {
+            if (_r.hasMatch(subscriptionId)) {
               state = ErrorRelayMessage(
                   relayUrl: relayUrl,
                   subscriptionId: null,
@@ -102,6 +118,14 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
               subscriptionId: subscriptionId,
             );
             break;
+          case 'OK':
+            state = PublishedEventRelayMessage(
+              relayUrl: relayUrl,
+              subscriptionId: subscriptionId,
+              accepted: rest.first as bool,
+              message: rest.lastOrNull?.toString(),
+            );
+            break;
           default:
         }
       } catch (err) {
@@ -109,14 +133,14 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
             relayUrl: relayUrl, subscriptionId: null, error: err.toString());
         _sub?.cancel();
         _streamSub?.cancel();
-        closeFns[subscriptionId]?.call();
+        _closeFns[subscriptionId]?.call();
       }
     });
   }
 
   @override
   Future<void> dispose() async {
-    for (final closeFn in closeFns.values) {
+    for (final closeFn in _closeFns.values) {
       closeFn.call();
     }
     await pool.close();
@@ -215,4 +239,14 @@ class ErrorRelayMessage extends RelayMessage {
   final String error;
   ErrorRelayMessage(
       {super.relayUrl, super.subscriptionId, required this.error});
+}
+
+class PublishedEventRelayMessage extends RelayMessage {
+  final bool accepted;
+  final String? message;
+  PublishedEventRelayMessage(
+      {super.relayUrl,
+      required super.subscriptionId,
+      required this.accepted,
+      this.message});
 }
