@@ -151,21 +151,27 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     };
   }
 
-  static final Map<int, String> _kinds = {
-    0: 'users',
-    3: 'users',
-    1063: 'fileMetadata',
-    30063: 'releases',
-    30267: 'appCurationSets',
-    32267: 'apps'
+  static final Map<int, (String, BaseEvent Function(Map<String, dynamic>))>
+      _kinds = {
+    0: ('users', BaseUser.fromJson),
+    // 3: ('contacts', BaseUser.fromJson),
+    1063: ('fileMetadata', BaseFileMetadata.fromJson),
+    30063: ('releases', BaseRelease.fromJson),
+    30267: ('appCurationSets', BaseAppCurationSet.fromJson),
+    32267: ('apps', BaseApp.fromJson)
   };
 
   static String? typeForKind(int kind) {
-    return _kinds[kind];
+    return _kinds[kind]?.$1;
   }
 
-  static int? kindForType(String type) {
-    return _kinds.entries.firstWhereOrNull((e) => e.value == type)?.key;
+  static T Function(Map<String, dynamic>)? ctorForKind<T extends BaseEvent<T>>(
+      int kind) {
+    return _kinds[kind]?.$2 as T Function(Map<String, dynamic>)?;
+  }
+
+  static int? kindForType<E>(String type) {
+    return _kinds.entries.firstWhereOrNull((e) => e.value.$1 == type)?.key;
   }
 }
 
@@ -189,3 +195,7 @@ mixin NostrMixin {}
 enum EventType { regular, ephemeral, replaceable, parameterizedReplaceable }
 
 typedef ReplaceableEventLink = (int, String, String?);
+
+extension RLExtension on ReplaceableEventLink {
+  String get formatted => '${this.$1}:${this.$2}:${this.$3 ?? ''}';
+}

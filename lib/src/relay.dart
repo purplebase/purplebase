@@ -16,7 +16,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
   final _r = RegExp('error', caseSensitive: false);
 
-  Future<List<Map<String, dynamic>>> query(RelayRequest req,
+  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req,
       {Iterable<String>? relayUrls}) async {
     final completer = Completer<List<Map<String, dynamic>>>();
     final events = <Map<String, dynamic>>[];
@@ -55,6 +55,30 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     }, fireImmediately: false);
 
     return completer.future;
+  }
+
+  Future<List<T>> query<T extends BaseEvent<T>>(
+      {Set<String>? ids,
+      Set<String>? authors,
+      Map<String, dynamic>? tags,
+      String? search,
+      DateTime? since,
+      int? limit,
+      Iterable<String>? relayUrls}) async {
+    final req = RelayRequest(
+        kinds: {_kindFor<T>()},
+        ids: ids ?? {},
+        authors: authors ?? {},
+        tags: tags ?? {},
+        search: search,
+        since: since,
+        limit: limit);
+
+    final result = await queryRaw(req);
+    return result
+        .map((map) => BaseEvent.ctorForKind<T>(map['kind'].toString().toInt()!)!
+            .call(map))
+        .toList();
   }
 
   Future<void> publish(BaseEvent event, {Iterable<String>? relayUrls}) async {

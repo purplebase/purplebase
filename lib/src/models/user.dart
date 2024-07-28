@@ -1,10 +1,42 @@
 part of purplebase;
 
 class BaseUser extends BaseEvent<BaseUser> {
-  BaseUser() : super();
+  BaseUser({
+    DateTime? createdAt,
+    Set<String>? pubkeys,
+    Set<String>? tags,
+    String? name,
+  }) : super(
+          createdAt: createdAt,
+          pubkeys: pubkeys,
+          tags: tags,
+          // TODO: Remove null values from JSON here (nonNulls ext)
+          content: jsonEncode({'name': name}),
+        );
 
-  late final Map<String, dynamic> _content =
+  BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+
+  BaseApp copyWith({
+    DateTime? createdAt,
+    String? content,
+    Set<String>? pubkeys,
+    Set<String>? tags,
+    String? name,
+  }) {
+    return BaseApp(
+      createdAt: createdAt ?? this.createdAt,
+      content: content ?? this.content,
+      pubkeys: pubkeys ?? this.pubkeys,
+      tags: tags ?? this.tags,
+      name: name ?? this.name,
+    );
+  }
+
+  Map<String, dynamic> get _content =>
       (content?.isNotEmpty ?? false) ? jsonDecode(content!) : {};
+
+  @override
+  int get kind => _kindFor<BaseUser>();
 
   String? get name {
     var name = _content['name'] as String?;
@@ -17,11 +49,10 @@ class BaseUser extends BaseEvent<BaseUser> {
     return name;
   }
 
+  String? get nip05 => _content['nip05'];
+
   String get npub => bech32Encode('npub', pubkey);
   String? get avatarUrl => _content['picture'];
-
-  @override
-  int get kind => _kindFor<BaseUser>();
 }
 
 extension Bech32StringX on String {

@@ -17,16 +17,16 @@ Future<void> main() async {
 
     final r1 = RelayRequest(kinds: {1}, limit: 2);
     final r2 = RelayRequest(kinds: {6}, limit: 3);
-    final k1s = await notifier.query(r1);
-    final k6s = await notifier.query(r2);
-    final k7s = await notifier.query(RelayRequest(kinds: {7}, limit: 4));
+    final k1s = await notifier.queryRaw(r1);
+    final k6s = await notifier.queryRaw(r2);
+    final k7s = await notifier.queryRaw(RelayRequest(kinds: {7}, limit: 4));
 
     expect(k1s, hasLength(2));
     expect(k6s, hasLength(3));
     expect(k7s, hasLength(4));
 
     await expectLater(
-        () => notifier.query(RelayRequest(ids: {'a'})), throwsException);
+        () => notifier.queryRaw(RelayRequest(ids: {'a'})), throwsException);
 
     await notifier.dispose();
   }, timeout: Timeout(Duration(seconds: 10)));
@@ -105,5 +105,14 @@ Future<void> main() async {
     final e = BaseRelease().sign(pk);
     // Should fail because pk is not authorized by relay.zap.store
     await expectLater(() => relay.publish(e), throwsException);
+  });
+
+  test('typed query', () async {
+    final container = ProviderContainer();
+    final relay = container
+        .read(relayMessageNotifierProvider(['wss://relay.zap.store']).notifier);
+    relay.initialize();
+    final z = await relay.query<BaseApp>(search: 'xq');
+    print(z.first.repository);
   });
 }
