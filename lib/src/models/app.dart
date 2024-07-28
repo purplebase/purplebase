@@ -15,7 +15,7 @@ class BaseApp extends BaseEvent<BaseApp> {
     String? url,
     String? license,
     Set<String>? platforms,
-  }) : super._(
+  }) : super(
           content: content,
           createdAt: createdAt,
           pubkeys: pubkeys,
@@ -33,13 +33,14 @@ class BaseApp extends BaseEvent<BaseApp> {
           },
         );
 
-  BaseApp.fromJson(Map<String, dynamic> map) : super._fromJson(map);
+  BaseApp.fromJson(Map<String, dynamic> map) : super.fromJson(map);
 
   BaseApp copyWith({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
     Set<String>? tags,
+    String? identifier,
     String? name,
     String? repository,
     Set<String>? icons,
@@ -53,6 +54,7 @@ class BaseApp extends BaseEvent<BaseApp> {
       content: content ?? this.content,
       pubkeys: pubkeys ?? this.pubkeys,
       tags: tags ?? this.tags,
+      identifier: identifier ?? this.identifier,
       name: name ?? this.name,
       repository: repository ?? this.repository,
       icons: icons ?? this.icons,
@@ -74,6 +76,4 @@ class BaseApp extends BaseEvent<BaseApp> {
   String? get url => tagMap['url']?.firstOrNull;
   String? get license => tagMap['license']?.firstOrNull;
   Set<String> get platforms => tagMap['f'] ?? {};
-
-  String getLink() => '$kind:$pubkey:${tagMap['d']!.first}';
 }

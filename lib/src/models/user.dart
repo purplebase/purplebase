@@ -1,7 +1,7 @@
 part of purplebase;
 
 class BaseUser extends BaseEvent<BaseUser> {
-  BaseUser() : super._();
+  BaseUser() : super();
 
   late final Map<String, dynamic> _content =
       (content?.isNotEmpty ?? false) ? jsonDecode(content!) : {};

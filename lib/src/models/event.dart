@@ -23,34 +23,47 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   // Common tags
   // TODO zap tag?
   Set<String> get linkedEvents => tagMap['e'] ?? {};
-  Set<String> get linkedParameterizedReplaceableEvents => tagMap['a'] ?? {};
+  Set<ReplaceableEventLink> get linkedReplaceableEvents {
+    return (tagMap['a'] ?? {}).map(
+      (e) {
+        final [kind, pubkey, ...identifier] = e.split(':');
+        return (kind.toInt()!, pubkey, identifier.firstOrNull);
+      },
+    ).toSet();
+  }
+
+  ReplaceableEventLink getReplaceableEventLink() => (kind, pubkey, identifier);
+
   Set<String> get pubkeys => tagMap['p'] ?? {};
   Set<String> get tags => tagMap['t'] ?? {};
   String? get identifier => tagMap['d']!.firstOrNull;
 
   var _validated = false;
 
-  BaseEvent._({
+  BaseEvent({
     DateTime? createdAt,
     String? content,
     // required int kind,
     Set<String>? pubkeys,
     Set<String>? tags,
     Set<String>? linkedEvents,
+    Set<ReplaceableEventLink>? linkedReplaceableEvents,
     String? identifier,
-    Set<(String, dynamic)> additionalEventTags = const {},
+    Set<(String, dynamic)>? additionalEventTags,
   })  : createdAt = createdAt ?? DateTime.now(),
         // kind = kind = 1,
         content = content ?? '',
         _tags = {
-          ...additionalEventTags,
+          ...?additionalEventTags,
           ...?pubkeys?.map((e) => ('p', e)),
           ...?tags?.map((e) => ('t', e)),
           ...?linkedEvents?.map((e) => ('e', e)),
+          ...?linkedReplaceableEvents
+              ?.map((e) => ('a', '${e.$1}:${e.$2}:${e.$3 ?? ''}')),
           ('d', identifier),
         };
 
-  BaseEvent._fromJson(Map<String, dynamic> map)
+  BaseEvent.fromJson(Map<String, dynamic> map)
       : _id = map['id'],
         _pubkey = map['pubkey'],
         content = map['content'],
@@ -174,3 +187,5 @@ mixin NostrMixin {}
 // class App = BaseApp with NostrMixin;
 
 enum EventType { regular, ephemeral, replaceable, parameterizedReplaceable }
+
+typedef ReplaceableEventLink = (int, String, String?);

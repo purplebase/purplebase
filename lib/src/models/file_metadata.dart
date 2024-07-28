@@ -14,7 +14,7 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
     String? repository,
     Set<String>? platforms,
     Set<(String, dynamic)>? additionalEventTags,
-  }) : super._(
+  }) : super(
           content: content,
           additionalEventTags: {
             ...?additionalEventTags,
@@ -24,13 +24,13 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
             ('size', size?.toString()),
             ('version', version),
             ('repository', repository),
-            ...?platforms?.map((p) => ('platform', p)),
+            ...?platforms?.map((p) => ('f', p)),
           },
           createdAt: createdAt,
           pubkeys: pubkeys,
         );
 
-  BaseFileMetadata.fromJson(Map<String, dynamic> map) : super._fromJson(map);
+  BaseFileMetadata.fromJson(Map<String, dynamic> map) : super.fromJson(map);
 
   BaseFileMetadata copyWith(
     DateTime? createdAt,
@@ -70,7 +70,7 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
   int? get size => tagMap['size']?.firstOrNull.toInt();
   String? get version => tagMap['version']?.firstOrNull;
   String? get repository => tagMap['repository']?.firstOrNull;
-  Set<String> get platforms => tagMap['platform'] ?? {};
+  Set<String> get platforms => tagMap['f'] ?? {};
 }
 
 extension on String? {

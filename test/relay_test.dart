@@ -49,10 +49,19 @@ Future<void> main() async {
   });
 
   test('app from dart', () {
-    final app =
-        BaseApp(content: 'test app', pubkeys: {'90983aebe92bea'}).sign(pk);
+    final app = BaseApp(
+            content: 'test app',
+            pubkeys: {'90983aebe92bea'},
+            identifier: 'blah')
+        .sign(pk);
     expect(app.isValid, isTrue);
     expect(app.kind, 32267);
+    expect(app.identifier, 'blah');
+    expect(app.getReplaceableEventLink(), (
+      32267,
+      'f36f1a2727b7ab02e3f6e99841cd2b4d9655f8cfa184bd4d68f4e4c72db8e5c1',
+      'blah'
+    ));
     expect(app.pubkeys, {'90983aebe92bea'});
     expect(BaseApp.fromJson(app.toMap()), app);
   });
