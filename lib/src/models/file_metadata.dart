@@ -1,25 +1,76 @@
 part of purplebase;
 
-class BaseFileMetadata extends BaseEvent {
-  BaseFileMetadata(
-      {super.id,
-      super.pubkey,
-      super.createdAt,
-      super.content,
-      super.tags,
-      super.signature})
-      : super(kind: _kindFor<BaseFileMetadata>());
+class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
+  BaseFileMetadata({
+    DateTime? createdAt,
+    String? content,
+    Set<String>? pubkeys,
+    Set<String>? tags,
+    Set<String>? urls,
+    String? mimeType,
+    String? hash,
+    int? size,
+    String? version,
+    String? repository,
+    Set<String>? platforms,
+    Set<(String, dynamic)>? additionalEventTags,
+  }) : super._(
+          content: content,
+          additionalEventTags: {
+            ...?additionalEventTags,
+            ...?urls?.map((u) => ('url', u)),
+            ('m', mimeType),
+            ('x', hash),
+            ('size', size?.toString()),
+            ('version', version),
+            ('repository', repository),
+            ...?platforms?.map((p) => ('platform', p)),
+          },
+          createdAt: createdAt,
+          pubkeys: pubkeys,
+        );
+
+  BaseFileMetadata.fromJson(Map<String, dynamic> map) : super._fromJson(map);
+
+  BaseFileMetadata copyWith(
+    DateTime? createdAt,
+    String? content,
+    Set<String>? pubkeys,
+    Set<String>? tags,
+    Set<String>? urls,
+    String? mimeType,
+    String? hash,
+    int? size,
+    String? version,
+    String? repository,
+    Set<String>? platforms,
+    Set<(String, dynamic)>? additionalEventTags,
+  ) {
+    return BaseFileMetadata(
+      createdAt: createdAt ?? this.createdAt,
+      content: content ?? this.content,
+      pubkeys: pubkeys ?? this.pubkeys,
+      tags: tags ?? this.tags,
+      mimeType: mimeType ?? this.mimeType,
+      hash: hash ?? this.hash,
+      size: size ?? this.size,
+      version: version ?? this.version,
+      repository: repository ?? this.repository,
+      platforms: platforms ?? this.platforms,
+      additionalEventTags: additionalEventTags ?? this.additionalEventTags,
+    );
+  }
+
+  @override
+  int get kind => _kindFor<BaseFileMetadata>();
 
   Set<String> get urls => tagMap['url'] ?? {};
   String? get mimeType => tagMap['m']?.firstOrNull;
   String? get hash => tagMap['x']?.firstOrNull;
   int? get size => tagMap['size']?.firstOrNull.toInt();
   String? get version => tagMap['version']?.firstOrNull;
-  int? get versionCode => tagMap['version_code']?.firstOrNull.toInt();
   String? get repository => tagMap['repository']?.firstOrNull;
-  Set<String> get architectures => tagMap['arch'] ?? {};
-  Set<String> get pubkeys => tagMap['p'] ?? {};
-  String? get apkSignatureHash => tagMap['apk_signature_hash']?.firstOrNull;
+  Set<String> get platforms => tagMap['platform'] ?? {};
 }
 
 extension on String? {

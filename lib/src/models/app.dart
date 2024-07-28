@@ -1,24 +1,79 @@
 part of purplebase;
 
-class BaseApp extends BaseEvent with BaseParameterizableReplaceableEvent {
-  BaseApp(
-      {super.id,
-      super.pubkey,
-      super.createdAt,
-      super.content,
-      super.tags,
-      super.signature})
-      : super(kind: _kindFor<BaseApp>());
+class BaseApp extends BaseEvent<BaseApp> {
+  BaseApp({
+    String? content,
+    DateTime? createdAt,
+    Set<String>? pubkeys,
+    Set<String>? tags,
+    String? identifier,
+    String? name,
+    String? summary,
+    String? repository,
+    Set<String>? icons,
+    Set<String>? images,
+    String? url,
+    String? license,
+    Set<String>? platforms,
+  }) : super._(
+          content: content,
+          createdAt: createdAt,
+          pubkeys: pubkeys,
+          tags: tags,
+          identifier: identifier,
+          additionalEventTags: {
+            ...?icons?.map((i) => ('icon', i)),
+            ...?images?.map((i) => ('image', i)),
+            ('name', name),
+            ('summary', summary),
+            ('repository', repository),
+            ('url', url),
+            ('license', license),
+            ...?platforms?.map((i) => ('f', i)),
+          },
+        );
+
+  BaseApp.fromJson(Map<String, dynamic> map) : super._fromJson(map);
+
+  BaseApp copyWith({
+    DateTime? createdAt,
+    String? content,
+    Set<String>? pubkeys,
+    Set<String>? tags,
+    String? name,
+    String? repository,
+    Set<String>? icons,
+    Set<String>? images,
+    String? url,
+    String? license,
+    Set<String>? platforms,
+  }) {
+    return BaseApp(
+      createdAt: createdAt ?? this.createdAt,
+      content: content ?? this.content,
+      pubkeys: pubkeys ?? this.pubkeys,
+      tags: tags ?? this.tags,
+      name: name ?? this.name,
+      repository: repository ?? this.repository,
+      icons: icons ?? this.icons,
+      images: images ?? this.images,
+      url: url ?? this.url,
+      license: license ?? this.license,
+      platforms: platforms ?? this.platforms,
+    );
+  }
+
+  @override
+  int get kind => _kindFor<BaseApp>();
 
   String? get name => tagMap['name']?.firstOrNull;
+  String? get summary => tagMap['summary']?.firstOrNull;
   String? get repository => tagMap['repository']?.firstOrNull;
   Set<String> get icons => tagMap['icon'] ?? {};
   Set<String> get images => tagMap['image'] ?? {};
   String? get url => tagMap['url']?.firstOrNull;
-  Set<String> get pubkeys => tagMap['p'] ?? {};
-  Set<String> get tTags => tagMap['t'] ?? {};
-  String? get githubStars => tagMap['github_stars']?.firstOrNull;
-  String? get githubForks => tagMap['github_forks']?.firstOrNull;
   String? get license => tagMap['license']?.firstOrNull;
-  String get aTag => '$kind:$pubkey:${tagMap['d']!.first}';
+  Set<String> get platforms => tagMap['f'] ?? {};
+
+  String getLink() => '$kind:$pubkey:${tagMap['d']!.first}';
 }

@@ -4,9 +4,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:bech32/bech32.dart';
 import 'package:convert/convert.dart';
 
-import 'package:bech32/bech32.dart';
 import 'package:bip340/bip340.dart' as bip340;
 import 'package:collection/collection.dart';
 import 'package:crypto/crypto.dart';

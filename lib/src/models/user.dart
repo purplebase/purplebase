@@ -1,17 +1,10 @@
 part of purplebase;
 
-class BaseUser extends BaseEvent {
-  BaseUser(
-      {super.id,
-      super.pubkey,
-      super.createdAt,
-      super.content,
-      super.tags,
-      super.signature})
-      : super(kind: _kindFor<BaseUser>());
+class BaseUser extends BaseEvent<BaseUser> {
+  BaseUser() : super._();
 
   late final Map<String, dynamic> _content =
-      content.isNotEmpty ? jsonDecode(content) : {};
+      (content?.isNotEmpty ?? false) ? jsonDecode(content!) : {};
 
   String? get name {
     var name = _content['name'] as String?;
@@ -24,8 +17,11 @@ class BaseUser extends BaseEvent {
     return name;
   }
 
-  String get npub => bech32Encode('npub', pubkey!);
+  String get npub => bech32Encode('npub', pubkey);
   String? get avatarUrl => _content['picture'];
+
+  @override
+  int get kind => _kindFor<BaseUser>();
 }
 
 extension Bech32StringX on String {
