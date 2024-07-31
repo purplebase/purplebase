@@ -112,7 +112,7 @@ Future<void> main() async {
     final relay = container
         .read(relayMessageNotifierProvider(['wss://relay.zap.store']).notifier);
     relay.initialize();
-    final z = await relay.query<BaseApp>(search: 'xq');
-    print(z.first.repository);
+    final apps = await relay.query<BaseApp>(search: 'xq');
+    expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
   });
 }

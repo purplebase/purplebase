@@ -4,12 +4,12 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   Object? _id;
   String? _pubkey;
   final DateTime? createdAt;
-  // final int kind;
   int get kind;
   final String? content;
   final Set<(String, dynamic)> _tags;
   List<List<String>> get _tagList => _tags
-      .map((e) => e.$2 != null ? [e.$1, e.$2.toString()] : null)
+      .map((e) =>
+          e.$2 != null ? [e.$1, e.$2.toString(), if (e.$1 == 'zap') '1'] : null)
       .nonNulls
       .toList();
   Set<(String, dynamic)>? additionalEventTags = {};
@@ -21,7 +21,6 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   String get signature => _signature!;
 
   // Common tags
-  // TODO zap tag?
   Set<String> get linkedEvents => tagMap['e'] ?? {};
   Set<ReplaceableEventLink> get linkedReplaceableEvents {
     return (tagMap['a'] ?? {}).map(
@@ -35,6 +34,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   ReplaceableEventLink getReplaceableEventLink() => (kind, pubkey, identifier);
 
   Set<String> get pubkeys => tagMap['p'] ?? {};
+  Set<String> get zapTags => tagMap['zap'] ?? {};
   Set<String> get tags => tagMap['t'] ?? {};
   String? get identifier => tagMap['d']!.firstOrNull;
 
@@ -43,19 +43,20 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   BaseEvent({
     DateTime? createdAt,
     String? content,
-    // required int kind,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     Set<String>? linkedEvents,
     Set<ReplaceableEventLink>? linkedReplaceableEvents,
     String? identifier,
     Set<(String, dynamic)>? additionalEventTags,
   })  : createdAt = createdAt ?? DateTime.now(),
-        // kind = kind = 1,
         content = content ?? '',
         _tags = {
           ...?additionalEventTags,
           ...?pubkeys?.map((e) => ('p', e)),
+          ...?zapTags?.map((e) => ('zap', e)),
+          // TODO: Allow assigning weight to zaps
           ...?tags?.map((e) => ('t', e)),
           ...?linkedEvents?.map((e) => ('e', e)),
           ...?linkedReplaceableEvents

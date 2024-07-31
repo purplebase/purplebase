@@ -6,12 +6,13 @@ class BaseUser extends BaseEvent<BaseUser> {
     Set<String>? pubkeys,
     Set<String>? tags,
     String? name,
+    String? avatarUrl,
   }) : super(
           createdAt: createdAt,
           pubkeys: pubkeys,
           tags: tags,
-          // TODO: Remove null values from JSON here (nonNulls ext)
-          content: jsonEncode({'name': name}),
+          content: jsonEncode(
+              <String, dynamic>{'name': name, 'picture': avatarUrl}.nonNulls),
         );
 
   BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
@@ -101,4 +102,13 @@ List<int> convertBits(List<int> data, int fromBits, int toBits, bool pad) {
   }
 
   return result;
+}
+
+extension on Map<String, dynamic> {
+  Map<String, dynamic> get nonNulls {
+    return {
+      for (final e in entries)
+        if (e.value != null) e.key: e.value,
+    };
+  }
 }
