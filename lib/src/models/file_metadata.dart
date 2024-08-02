@@ -55,6 +55,7 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
       pubkeys: pubkeys ?? this.pubkeys,
       zapTags: zapTags ?? this.zapTags,
       tags: tags ?? this.tags,
+      urls: urls ?? this.urls,
       mimeType: mimeType ?? this.mimeType,
       hash: hash ?? this.hash,
       size: size ?? this.size,
