@@ -13,7 +13,7 @@ Future<void> main() async {
     // they do not include "error" in their NOTICE messages
     final notifier = container
         .read(relayMessageNotifierProvider(['wss://relay.damus.io']).notifier);
-    notifier.initialize();
+    await notifier.initialize();
 
     final r1 = RelayRequest(kinds: {1}, limit: 2);
     final r2 = RelayRequest(kinds: {6}, limit: 3);

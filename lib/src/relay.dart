@@ -92,9 +92,14 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
       if (message is PublishedEventRelayMessage) {
         if (message.accepted) {
-          completer.complete();
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
         } else {
-          completer.completeError(Exception(message.message ?? 'Not accepted'));
+          if (!completer.isCompleted) {
+            final error = message.message ?? 'Not accepted';
+            completer.completeError(Exception(error));
+          }
         }
       }
     });
@@ -105,7 +110,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return super.state;
   }
 
-  void initialize({bool Function(String eventId)? isEventVerified}) {
+  Future<void> initialize(
+      {bool Function(String eventId)? isEventVerified}) async {
+    await pool.initialize();
     _sub = pool.stream.listen((record) {
       final (relayUrl, data) = record;
       final [type, subscriptionId, ...rest] = jsonDecode(data) as List;

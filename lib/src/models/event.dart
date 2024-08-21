@@ -13,6 +13,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
       .nonNulls
       .toList();
   Set<(String, dynamic)>? additionalEventTags = {};
+  Map<String, dynamic> transientData = {};
 
   String? _signature;
 

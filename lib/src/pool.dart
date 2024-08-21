@@ -20,11 +20,16 @@ class WebSocketPool {
           timeout: Duration(seconds: 60),
         ),
       );
-      client.connect(relayUrl);
+      clients[relayUrl] = client;
+    }
+  }
+
+  Future<void> initialize() async {
+    for (final MapEntry(key: relayUrl, value: client) in clients.entries) {
+      await client.connect(relayUrl);
       subs.add(client.stream.listen((value) {
         _controller.add((relayUrl, value.toString()));
       }));
-      clients[relayUrl] = client;
     }
   }
 
