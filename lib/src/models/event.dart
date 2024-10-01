@@ -112,7 +112,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     return this as T;
   }
 
-  String getPublicKey(String privateKey) {
+  static String getPublicKey(String privateKey) {
     return bip340.getPublicKey(privateKey).toLowerCase();
   }
 
