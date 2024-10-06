@@ -1,9 +1,11 @@
 part of purplebase;
 
+const kNotInitialized = 'Relay notifier was not initialized';
+
 final relayMessageNotifierProvider = StateNotifierProvider.family<
-    RelayMessageNotifier,
-    RelayMessage,
-    List<String>>((_, relayUrls) => RelayMessageNotifier(relayUrls));
+    RelayMessageNotifier, RelayMessage, List<String>>((_, relayUrls) {
+  return RelayMessageNotifier(relayUrls);
+});
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   RelayMessageNotifier(List<String> relayUrls)
@@ -13,19 +15,18 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
   final _closeFns = <String, void Function()>{};
+  var isInitialized = false;
 
   final _r = RegExp('error', caseSensitive: false);
 
   Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req,
       {Iterable<String>? relayUrls}) async {
+    if (!isInitialized) throw kNotInitialized;
     final completer = Completer<List<Map<String, dynamic>>>();
     final events = <Map<String, dynamic>>[];
     final eoses = <String, bool>{
       for (final r in (relayUrls ?? pool.relayUrls)) r: false
     };
-
-    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]),
-        relayUrls: relayUrls);
 
     _closeFns[req.subscriptionId] = addListener((message) {
       if (message.subscriptionId != null &&
@@ -53,6 +54,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         }
       }
     }, fireImmediately: false);
+
+    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]),
+        relayUrls: relayUrls);
 
     return completer.future;
   }
@@ -82,6 +86,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   }
 
   Future<void> publish(BaseEvent event, {Iterable<String>? relayUrls}) async {
+    if (!isInitialized) throw kNotInitialized;
     final completer = Completer<void>();
     pool.send(jsonEncode(["EVENT", event.toMap()]), relayUrls: relayUrls);
     _closeFns[event.id.toString()] = addListener((message) {
@@ -110,7 +115,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return super.state;
   }
 
-  Future<void> initialize(
+  Future<RelayMessageNotifier> initialize(
       {bool Function(String eventId)? isEventVerified}) async {
     await pool.initialize();
     _sub = pool.stream.listen((record) {
@@ -167,10 +172,13 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         _closeFns[subscriptionId]?.call();
       }
     });
+    isInitialized = true;
+    return this;
   }
 
   @override
   Future<void> dispose() async {
+    isInitialized = false;
     for (final closeFn in _closeFns.values) {
       closeFn.call();
     }

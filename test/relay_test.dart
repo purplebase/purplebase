@@ -11,24 +11,40 @@ Future<void> main() async {
     final container = ProviderContainer();
     // NOTE: Does not work with relay.nostr.band,
     // they do not include "error" in their NOTICE messages
-    final notifier = container
+    final relay = container
         .read(relayMessageNotifierProvider(['wss://relay.damus.io']).notifier);
-    await notifier.initialize();
+    await relay.initialize();
 
     final r1 = RelayRequest(kinds: {1}, limit: 2);
     final r2 = RelayRequest(kinds: {6}, limit: 3);
-    final k1s = await notifier.queryRaw(r1);
-    final k6s = await notifier.queryRaw(r2);
-    final k7s = await notifier.queryRaw(RelayRequest(kinds: {7}, limit: 4));
+    final k1s = await relay.queryRaw(r1);
+    final k6s = await relay.queryRaw(r2);
+    final k7s = await relay.queryRaw(RelayRequest(kinds: {7}, limit: 4));
 
     expect(k1s, hasLength(2));
     expect(k6s, hasLength(3));
     expect(k7s, hasLength(4));
 
     await expectLater(
-        () => notifier.queryRaw(RelayRequest(ids: {'a'})), throwsException);
+        () => relay.queryRaw(RelayRequest(ids: {'a'})), throwsException);
 
-    await notifier.dispose();
+    await relay.dispose();
+  }, timeout: Timeout(Duration(seconds: 10)));
+
+  test('zs', () async {
+    final container = ProviderContainer();
+    // NOTE: Does not work with relay.nostr.band,
+    // they do not include "error" in their NOTICE messages
+    final relay = container
+        .read(relayMessageNotifierProvider(['wss://relay.zap.store']).notifier);
+    await relay.initialize();
+
+    final r1 = RelayRequest(kinds: {30063}, limit: 10);
+    final k1s = await relay.queryRaw(r1);
+
+    expect(k1s, hasLength(10));
+
+    await relay.dispose();
   }, timeout: Timeout(Duration(seconds: 10)));
 
   test('event', () {
@@ -101,17 +117,18 @@ Future<void> main() async {
     final container = ProviderContainer();
     final relay = container
         .read(relayMessageNotifierProvider(['wss://relay.zap.store']).notifier);
-    relay.initialize();
+    await relay.initialize();
     final e = BaseRelease().sign(pk);
     // Should fail because pk is not authorized by relay.zap.store
     await expectLater(() => relay.publish(e), throwsException);
+    await relay.dispose();
   });
 
   test('typed query', () async {
     final container = ProviderContainer();
     final relay = container
         .read(relayMessageNotifierProvider(['wss://relay.zap.store']).notifier);
-    relay.initialize();
+    await relay.initialize();
     final apps = await relay.query<BaseApp>(search: 'xq');
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
   });
