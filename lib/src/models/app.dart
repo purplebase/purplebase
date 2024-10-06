@@ -35,7 +35,7 @@ class BaseApp extends BaseEvent<BaseApp> {
           },
         );
 
-  BaseApp.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+  BaseApp.fromJson(super.map) : super.fromJson();
 
   BaseApp copyWith({
     DateTime? createdAt,

@@ -1,6 +1,6 @@
 part of purplebase;
 
-final class BaseAppCurationSet extends BaseEvent<BaseAppCurationSet> {
+class BaseAppCurationSet extends BaseEvent<BaseAppCurationSet> {
   BaseAppCurationSet() : super();
 
   BaseAppCurationSet.fromJson(Map<String, dynamic> map) : super.fromJson(map);

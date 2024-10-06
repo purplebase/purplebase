@@ -27,7 +27,7 @@ class BaseRelease extends BaseEvent<BaseRelease> {
           },
         );
 
-  BaseRelease.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+  BaseRelease.fromJson(super.map) : super.fromJson();
 
   BaseRelease copyWith({
     DateTime? createdAt,

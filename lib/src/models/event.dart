@@ -5,7 +5,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   String? _pubkey;
   final DateTime? createdAt;
   int get kind;
-  final String? content;
+  final String content;
   final Set<(String, dynamic)> _tags;
   List<List<String>> get _tagList => _tags
       .map((e) =>
@@ -17,7 +17,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
 
   String? _signature;
 
-  Object get id => _id!;
+  Object? get id => _id;
   String get pubkey => _pubkey!;
   String get signature => _signature!;
 
@@ -37,7 +37,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   Set<String> get pubkeys => tagMap['p'] ?? {};
   Set<String> get zapTags => tagMap['zap'] ?? {};
   Set<String> get tags => tagMap['t'] ?? {};
-  String? get identifier => tagMap['d']!.firstOrNull;
+  String? get identifier => tagMap['d']?.firstOrNull;
 
   var _validated = false;
 
