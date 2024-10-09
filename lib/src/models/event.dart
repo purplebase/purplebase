@@ -14,6 +14,14 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
       .toList();
   Set<(String, dynamic)>? additionalEventTags = {};
   Map<String, dynamic> transientData = {};
+  void addTags(Iterable<(String, dynamic)> tags, {bool replace = false}) {
+    for (final (a, b) in tags) {
+      if (replace) {
+        _tags.removeWhere((r) => r.$1 == a);
+      }
+      _tags.add((a, b.toString()));
+    }
+  }
 
   String? _signature;
 
@@ -60,8 +68,10 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
           // TODO: Allow assigning weight to zaps
           ...?tags?.map((e) => ('t', e)),
           ...?linkedEvents?.map((e) => ('e', e)),
-          ...?linkedReplaceableEvents
-              ?.map((e) => ('a', '${e.$1}:${e.$2}:${e.$3 ?? ''}')),
+          ...?linkedReplaceableEvents?.map((e) => (
+                'a',
+                '${e.$1}:${e.$2}:${e.$3 ?? ''}'
+              )), // TODO: No $3 leaves trailing : ?
           ('d', identifier),
         };
 
