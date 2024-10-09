@@ -33,7 +33,8 @@ class BaseUser extends BaseEvent<BaseUser> {
     );
   }
 
-  Map<String, dynamic> get _content => jsonDecode(content);
+  Map<String, dynamic> get _content =>
+      content.isNotEmpty ? jsonDecode(content) : {};
 
   @override
   int get kind => _kindFor<BaseUser>();
