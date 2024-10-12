@@ -16,6 +16,7 @@ class BaseApp extends BaseEvent<BaseApp> {
     String? url,
     String? license,
     Set<String>? platforms,
+    Set<ReplaceableEventLink>? linkedReplaceableEvents,
   }) : super(
           content: content,
           createdAt: createdAt,
@@ -23,6 +24,7 @@ class BaseApp extends BaseEvent<BaseApp> {
           zapTags: zapTags,
           tags: tags,
           identifier: identifier,
+          linkedReplaceableEvents: linkedReplaceableEvents,
           additionalEventTags: {
             ...?icons?.map((i) => ('icon', i)),
             ...?images?.map((i) => ('image', i)),
@@ -51,6 +53,7 @@ class BaseApp extends BaseEvent<BaseApp> {
     String? url,
     String? license,
     Set<String>? platforms,
+    Set<ReplaceableEventLink>? linkedReplaceableEvents,
   }) {
     return BaseApp(
       createdAt: createdAt ?? this.createdAt,
@@ -66,6 +69,8 @@ class BaseApp extends BaseEvent<BaseApp> {
       url: url ?? this.url,
       license: license ?? this.license,
       platforms: platforms ?? this.platforms,
+      linkedReplaceableEvents:
+          linkedReplaceableEvents ?? this.linkedReplaceableEvents,
     );
   }
 

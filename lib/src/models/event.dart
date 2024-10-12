@@ -14,14 +14,6 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
       .toList();
   Set<(String, dynamic)>? additionalEventTags = {};
   Map<String, dynamic> transientData = {};
-  void addTags(Iterable<(String, dynamic)> tags, {bool replace = false}) {
-    for (final (a, b) in tags) {
-      if (replace) {
-        _tags.removeWhere((r) => r.$1 == a);
-      }
-      _tags.add((a, b.toString()));
-    }
-  }
 
   String? _signature;
 
@@ -40,7 +32,8 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     ).toSet();
   }
 
-  ReplaceableEventLink getReplaceableEventLink() => (kind, pubkey, identifier);
+  ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
+      (kind, pubkey ?? this.pubkey, identifier);
 
   Set<String> get pubkeys => tagMap['p'] ?? {};
   Set<String> get zapTags => tagMap['zap'] ?? {};
