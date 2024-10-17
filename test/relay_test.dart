@@ -48,16 +48,18 @@ Future<void> main() async {
   }, timeout: Timeout(Duration(seconds: 10)));
 
   test('event', () {
-    final defaultEvent = BaseApp(name: 'tr');
+    final defaultEvent = BaseApp(name: 'tr', identifier: 'default');
     print(defaultEvent.toMap());
     expect(defaultEvent.isValid, isFalse);
 
     final t = DateTime.parse('2024-07-26');
-    final signedEvent = BaseApp(name: 'tr', createdAt: t).sign(pk);
+    final signedEvent =
+        BaseApp(name: 'tr', createdAt: t, identifier: 's1').sign(pk);
     expect(signedEvent.isValid, isTrue);
     print(signedEvent.toMap());
 
-    final signedEvent2 = BaseApp(name: 'tr', createdAt: t).sign(pk);
+    final signedEvent2 =
+        BaseApp(name: 'tr', createdAt: t, identifier: 's1').sign(pk);
     expect(signedEvent2.isValid, isTrue);
     print(signedEvent2.toMap());
     // Test equality
@@ -116,7 +118,7 @@ Future<void> main() async {
   test('publish', () async {
     final container = ProviderContainer();
     final relay = container
-        .read(relayMessageNotifierProvider(['wss://relay.zap.store']).notifier);
+        .read(relayMessageNotifierProvider(['ws://localhost:3000']).notifier);
     await relay.initialize();
     final e = BaseRelease().sign(pk);
     // Should fail because pk is not authorized by relay.zap.store

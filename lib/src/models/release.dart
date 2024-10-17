@@ -1,6 +1,7 @@
 part of purplebase;
 
-class BaseRelease extends BaseEvent<BaseRelease> {
+class BaseRelease extends BaseEvent<BaseRelease>
+    with ParameterizableReplaceableEvent<BaseRelease> {
   BaseRelease({
     DateTime? createdAt,
     String? content,
@@ -63,5 +64,5 @@ class BaseRelease extends BaseEvent<BaseRelease> {
   int get kind => _kindFor<BaseRelease>();
 
   String? get url => tagMap['url']?.firstOrNull;
-  String get version => identifier!.split('@').last;
+  String get version => identifier.split('@').last;
 }

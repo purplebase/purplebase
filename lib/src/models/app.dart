@@ -1,13 +1,14 @@
 part of purplebase;
 
-class BaseApp extends BaseEvent<BaseApp> {
+class BaseApp extends BaseEvent<BaseApp>
+    with ParameterizableReplaceableEvent<BaseApp> {
   BaseApp({
     String? content,
     DateTime? createdAt,
     Set<String>? pubkeys,
     Set<String>? zapTags,
     Set<String>? tags,
-    String? identifier,
+    required String identifier,
     String? name,
     String? summary,
     String? repository,

@@ -1,6 +1,7 @@
 part of purplebase;
 
-class BaseAppCurationSet extends BaseEvent<BaseAppCurationSet> {
+class BaseAppCurationSet extends BaseEvent<BaseAppCurationSet>
+    with ParameterizableReplaceableEvent<BaseAppCurationSet> {
   BaseAppCurationSet() : super();
 
   BaseAppCurationSet.fromJson(Map<String, dynamic> map) : super.fromJson(map);
