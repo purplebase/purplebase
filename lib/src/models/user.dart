@@ -17,16 +17,15 @@ class BaseUser extends BaseEvent<BaseUser> {
 
   BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
 
-  BaseApp copyWith({
+  BaseUser copyWith({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
     Set<String>? tags,
     String? name,
   }) {
-    return BaseApp(
+    return BaseUser(
       createdAt: createdAt ?? this.createdAt,
-      content: content ?? this.content,
       pubkeys: pubkeys ?? this.pubkeys,
       tags: tags ?? this.tags,
       name: name ?? this.name,
