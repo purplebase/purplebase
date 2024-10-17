@@ -67,6 +67,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       Map<String, dynamic>? tags,
       String? search,
       DateTime? since,
+      DateTime? until,
       int? limit,
       Iterable<String>? relayUrls}) async {
     final req = RelayRequest(
@@ -76,6 +77,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         tags: tags ?? {},
         search: search,
         since: since,
+        until: until,
         limit: limit);
 
     final result = await queryRaw(req);
@@ -116,7 +118,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   }
 
   Future<RelayMessageNotifier> initialize(
-      {bool Function(String eventId)? isEventVerified}) async {
+      {bool Function(Map<String, dynamic> event)? isEventVerified}) async {
     await pool.initialize();
     _sub = pool.stream.listen((record) {
       final (relayUrl, data) = record;
@@ -124,14 +126,13 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       try {
         switch (type) {
           case 'EVENT':
-            final map = rest.first;
-            final alreadyVerified = isEventVerified?.call(map['id']) ?? false;
+            final Map<String, dynamic> map = rest.first;
+            final alreadyVerified = isEventVerified?.call(map) ?? false;
             if (alreadyVerified ||
                 bip340.verify(map['pubkey'], map['id'], map['sig'])) {
-              final event = rest.first as Map<String, dynamic>;
               state = EventRelayMessage(
                 relayUrl: relayUrl,
-                event: event,
+                event: map,
                 subscriptionId: subscriptionId,
               );
             }
@@ -201,6 +202,7 @@ class RelayRequest {
   final Map<String, dynamic> tags;
   final String? search;
   final DateTime? since;
+  final DateTime? until;
   final int? limit;
 
   RelayRequest(
@@ -210,6 +212,7 @@ class RelayRequest {
       this.tags = const {},
       this.search,
       this.since,
+      this.until,
       this.limit}) {
     subscriptionId = 'sub-${random.nextInt(999999)}';
   }
@@ -221,7 +224,8 @@ class RelayRequest {
       if (authors.isNotEmpty) 'authors': authors.toList(),
       for (final e in tags.entries)
         e.key: e.value is Iterable ? e.value.toList() : e.value,
-      if (since != null) 'since': since!.millisecondsSinceEpoch / 1000,
+      if (since != null) 'since': since!.toInt(),
+      if (until != null) 'until': until!.toInt(),
       if (limit != null) 'limit': limit,
       if (search != null) 'search': search,
     };
