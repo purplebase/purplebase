@@ -13,7 +13,7 @@ import 'package:crypto/crypto.dart';
 import 'package:equatable/equatable.dart';
 import 'package:humanizer/humanizer.dart';
 import 'package:riverpod/riverpod.dart';
-import 'package:ws/ws.dart';
+import 'package:web_socket_client/web_socket_client.dart';
 
 part 'src/pool.dart';
 part 'src/relay.dart';

@@ -160,8 +160,8 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     return _kinds[kind]?.$1;
   }
 
-  static T Function(Map<String, dynamic>)? ctorForKind<T extends BaseEvent<T>>(
-      int kind) {
+  static T Function(Map<String, dynamic>)?
+      constructorForKind<T extends BaseEvent<T>>(int kind) {
     return _kinds[kind]?.$2 as T Function(Map<String, dynamic>)?;
   }
 
