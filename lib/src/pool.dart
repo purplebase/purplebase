@@ -22,13 +22,12 @@ class WebSocketPool {
       final client = WebSocket(Uri.parse(relayUrl), backoff: backoff);
 
       subs.add(client.connection.listen((state) {
-        print('$relayUrl state changed to ${state.runtimeType}');
         switch (state) {
           case Connected() || Reconnected():
             while (_queue[relayUrl]?.isNotEmpty ?? false) {
               print(
-                  'emptying queue of len ${_queue.length} ${state.runtimeType}');
-              send(_queue[relayUrl]!.removeAt(0));
+                  'emptying queue for $relayUrl of len ${_queue[relayUrl]!.length} ${state.runtimeType}');
+              send(_queue[relayUrl]!.removeAt(0), relayUrls: {relayUrl});
             }
           // TODO: Reconnection logic, re-request events since connection dropped
         }
@@ -44,8 +43,12 @@ class WebSocketPool {
 
   final _queue = <String, List<String>>{};
 
-  void send(String message) {
-    for (final MapEntry(key: relayUrl, value: client) in clients.entries) {
+  void send(String message, {Set<String>? relayUrls}) {
+    final entries = relayUrls == null
+        ? clients.entries
+        : clients.entries.where((e) => relayUrls.contains(e.key));
+
+    for (final MapEntry(key: relayUrl, value: client) in entries) {
       _queue[relayUrl] ??= [];
       switch (client.connection.state) {
         case Connected() || Reconnected():
@@ -54,9 +57,11 @@ class WebSocketPool {
           client.send(message);
           break;
         default:
-          print(
-              '[${DateTime.now().toIso8601String()}] QUEUING req to $relayUrl');
-          _queue[relayUrl]!.add(message);
+          if (!_queue[relayUrl]!.contains(message)) {
+            print(
+                '[${DateTime.now().toIso8601String()}] QUEUING req to $relayUrl');
+            _queue[relayUrl]!.add(message);
+          }
       }
     }
   }
