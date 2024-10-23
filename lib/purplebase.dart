@@ -2,6 +2,7 @@ library purplebase;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:bech32/bech32.dart';

@@ -27,18 +27,19 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         switch (type) {
           case 'EVENT':
             final Map<String, dynamic> map = rest.first;
+            // If collecting events for EOSE, do not attempt to verify here
+            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+              _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
+              return;
+            }
+
             final alreadyVerified = _isEventVerified?.call(map) ?? false;
-            if (alreadyVerified ||
-                bip340.verify(map['pubkey'], map['id'], map['sig'])) {
-              if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
-                _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
-              } else {
-                state = EventRelayMessage(
-                  relayUrl: relayUrl,
-                  event: map,
-                  subscriptionId: subscriptionId,
-                );
-              }
+            if (alreadyVerified || _verifyEvent(map)) {
+              state = EventRelayMessage(
+                relayUrl: relayUrl,
+                event: map,
+                subscriptionId: subscriptionId,
+              );
             }
             break;
           case 'NOTICE':
@@ -55,11 +56,17 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
                 error: rest.join(', '));
           case 'EOSE':
             if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
-              state = EoseWithEventsRelayMessage(
-                relayUrl: relayUrl,
-                events: _resultsOnEose.remove((relayUrl, subscriptionId))!,
-                subscriptionId: subscriptionId,
-              );
+              final incomingEvents =
+                  _resultsOnEose.remove((relayUrl, subscriptionId))!;
+              _verifyEventsAsync(incomingEvents,
+                      isEventVerified: _isEventVerified)
+                  .then((events) {
+                state = EoseWithEventsRelayMessage(
+                  relayUrl: relayUrl,
+                  events: events,
+                  subscriptionId: subscriptionId,
+                );
+              });
             } else {
               state = EoseRelayMessage(
                 relayUrl: relayUrl,
@@ -216,6 +223,31 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     if (mounted) {
       super.dispose();
     }
+  }
+
+  // Event validation
+
+  static Future<List<Map<String, dynamic>>> _verifyEventsAsync(
+      List<Map<String, dynamic>> incomingEvents,
+      {bool Function(Map<String, dynamic> event)? isEventVerified}) async {
+    if (incomingEvents.isEmpty) return [];
+
+    final unverifiedEvents = isEventVerified != null
+        ? incomingEvents.whereNot(isEventVerified).toList()
+        : incomingEvents;
+
+    if (unverifiedEvents.isNotEmpty) {
+      final notVerifiedEvents = await Isolate.run(
+          () => unverifiedEvents.whereNot(_verifyEvent).toList());
+      for (final nve in notVerifiedEvents) {
+        incomingEvents.remove(nve);
+      }
+    }
+    return incomingEvents;
+  }
+
+  static bool _verifyEvent(Map<String, dynamic> map) {
+    return bip340.verify(map['pubkey'], map['id'], map['sig']);
   }
 }
 
