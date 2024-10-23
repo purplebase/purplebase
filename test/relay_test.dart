@@ -21,12 +21,12 @@ Future<void> main() async {
     final k6s = await relay.queryRaw(r2);
     final k7s = await relay.queryRaw(RelayRequest(kinds: {7}, limit: 4));
 
-    // expect(k1s, greaterThanOrEqualTo(2));
-    // expect(k6s, greaterThanOrEqualTo(3));
-    // expect(k7s, greaterThanOrEqualTo(4));
+    expect(k1s.length, greaterThanOrEqualTo(2));
+    expect(k6s.length, greaterThanOrEqualTo(3));
+    expect(k7s.length, greaterThanOrEqualTo(4));
 
     await relay.dispose();
-  }, timeout: Timeout(Duration(minutes: 20)));
+  }, timeout: Timeout(Duration(seconds: 10)));
 
   test('zs', () async {
     final container = ProviderContainer();

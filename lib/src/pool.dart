@@ -47,9 +47,13 @@ class WebSocketPool {
       _queue[relayUrl] ??= [];
       switch (client.connection.state) {
         case Connected() || Reconnected():
+          // print(
+          //     '[${DateTime.now().toIso8601String()}] Sending req to $relayUrl: $message');
           client.send(message);
           break;
         default:
+          // print(
+          //     '[${DateTime.now().toIso8601String()}] QUEUING req to $relayUrl');
           if (!_queue[relayUrl]!.contains(message)) {
             _queue[relayUrl]!.add(message);
           }
