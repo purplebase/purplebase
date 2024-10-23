@@ -6,8 +6,17 @@ final relayProviderFamily = StateNotifierProvider.family<RelayMessageNotifier,
 });
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
-  RelayMessageNotifier(Set<String> relayUrls,
-      {bool Function(Map<String, dynamic> event)? isEventVerified})
+  final WebSocketPool pool;
+  StreamSubscription? _sub;
+  StreamSubscription? _streamSub;
+  bool Function(Map<String, dynamic> event)? _isEventVerified;
+
+  final _closeFns = <String, void Function()>{};
+  final _errorRegex = RegExp('error', caseSensitive: false);
+  final _requests = <RelayRequest>{};
+  final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
+
+  RelayMessageNotifier(Set<String> relayUrls)
       : pool = WebSocketPool(relayUrls),
         super(NothingRelayMessage()) {
     _sub = pool.stream.listen((record) {
@@ -18,7 +27,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         switch (type) {
           case 'EVENT':
             final Map<String, dynamic> map = rest.first;
-            final alreadyVerified = isEventVerified?.call(map) ?? false;
+            final alreadyVerified = _isEventVerified?.call(map) ?? false;
             if (alreadyVerified ||
                 bip340.verify(map['pubkey'], map['id'], map['sig'])) {
               if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
@@ -33,7 +42,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
             }
             break;
           case 'NOTICE':
-            if (_r.hasMatch(subscriptionId)) {
+            if (_errorRegex.hasMatch(subscriptionId)) {
               state = ErrorRelayMessage(
                   relayUrl: relayUrl,
                   subscriptionId: null,
@@ -77,15 +86,11 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     });
   }
 
-  final WebSocketPool pool;
-  StreamSubscription? _sub;
-  StreamSubscription? _streamSub;
-  final _closeFns = <String, void Function()>{};
+  RelayMessage get relayMessage => super.state;
 
-  final _r = RegExp('error', caseSensitive: false);
-
-  final _requests = <RelayRequest>{};
-  final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
+  void configure({bool Function(Map<String, dynamic> event)? isEventVerified}) {
+    _isEventVerified ??= isEventVerified;
+  }
 
   void addRequest(RelayRequest req) {
     _requests.add(req);
@@ -198,10 +203,6 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       }
     });
     return completer.future;
-  }
-
-  RelayMessage get relayMessage {
-    return super.state;
   }
 
   @override
