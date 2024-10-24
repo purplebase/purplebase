@@ -8,7 +8,7 @@ class BaseApp extends BaseEvent<BaseApp>
     Set<String>? pubkeys,
     Set<String>? zapTags,
     Set<String>? tags,
-    required String identifier,
+    String? identifier,
     String? name,
     String? summary,
     String? repository,
