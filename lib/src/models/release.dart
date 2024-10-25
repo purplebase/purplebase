@@ -64,5 +64,5 @@ class BaseRelease extends BaseEvent<BaseRelease>
   int get kind => _kindFor<BaseRelease>();
 
   String? get url => tagMap['url']?.firstOrNull;
-  String get version => identifier.split('@').last;
+  String? get version => identifier?.split('@').lastOrNull;
 }

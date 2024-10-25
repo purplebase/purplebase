@@ -191,5 +191,5 @@ extension RLExtension on ReplaceableEventLink {
 
 mixin ParameterizableReplaceableEvent<T extends BaseEvent<T>> on BaseEvent<T> {
   @override
-  String get identifier => tagMap['d']!.first;
+  String? get identifier => tagMap['d']?.firstOrNull;
 }
