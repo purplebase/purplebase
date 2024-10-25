@@ -130,8 +130,10 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   @override
   List<Object?> get props => [
         switch (eventType) {
-          EventType.regular || EventType.ephemeral => id,
-          _ => getReplaceableEventLink().formatted,
+          EventType.regular || EventType.ephemeral => id ?? toString(),
+          _ => (identifier != null && _pubkey != null)
+              ? getReplaceableEventLink().formatted
+              : toString(),
         }
       ];
 
