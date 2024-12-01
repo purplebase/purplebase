@@ -6,26 +6,26 @@ class BaseUser extends BaseEvent<BaseUser> {
     Set<String>? pubkeys,
     Set<String>? tags,
     String? name,
+    String? avatarUrl,
   }) : super(
           createdAt: createdAt,
           pubkeys: pubkeys,
           tags: tags,
-          // TODO: Remove null values from JSON here (nonNulls ext)
-          content: jsonEncode({'name': name}),
+          content: jsonEncode(
+              <String, dynamic>{'name': name, 'picture': avatarUrl}.nonNulls),
         );
 
   BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
 
-  BaseApp copyWith({
+  BaseUser copyWith({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
     Set<String>? tags,
     String? name,
   }) {
-    return BaseApp(
+    return BaseUser(
       createdAt: createdAt ?? this.createdAt,
-      content: content ?? this.content,
       pubkeys: pubkeys ?? this.pubkeys,
       tags: tags ?? this.tags,
       name: name ?? this.name,
@@ -33,7 +33,7 @@ class BaseUser extends BaseEvent<BaseUser> {
   }
 
   Map<String, dynamic> get _content =>
-      (content?.isNotEmpty ?? false) ? jsonDecode(content!) : {};
+      content.isNotEmpty ? jsonDecode(content) : {};
 
   @override
   int get kind => _kindFor<BaseUser>();
@@ -101,4 +101,13 @@ List<int> convertBits(List<int> data, int fromBits, int toBits, bool pad) {
   }
 
   return result;
+}
+
+extension on Map<String, dynamic> {
+  Map<String, dynamic> get nonNulls {
+    return {
+      for (final e in entries)
+        if (e.value != null) e.key: e.value,
+    };
+  }
 }

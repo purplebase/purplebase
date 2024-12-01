@@ -4,62 +4,60 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   Object? _id;
   String? _pubkey;
   final DateTime? createdAt;
-  // final int kind;
   int get kind;
-  final String? content;
+  final String content;
   final Set<(String, dynamic)> _tags;
   List<List<String>> get _tagList => _tags
-      .map((e) => e.$2 != null ? [e.$1, e.$2.toString()] : null)
+      .map((e) =>
+          e.$2 != null ? [e.$1, e.$2.toString(), if (e.$1 == 'zap') '1'] : null)
       .nonNulls
       .toList();
   Set<(String, dynamic)>? additionalEventTags = {};
+  Map<String, dynamic> transientData = {};
 
   String? _signature;
 
-  Object get id => _id!;
+  Object? get id => _id;
   String get pubkey => _pubkey!;
   String get signature => _signature!;
 
   // Common tags
-  // TODO zap tag?
   Set<String> get linkedEvents => tagMap['e'] ?? {};
   Set<ReplaceableEventLink> get linkedReplaceableEvents {
-    return (tagMap['a'] ?? {}).map(
-      (e) {
-        final [kind, pubkey, ...identifier] = e.split(':');
-        return (kind.toInt()!, pubkey, identifier.firstOrNull);
-      },
-    ).toSet();
+    return (tagMap['a'] ?? {}).map((e) => e.toReplaceableLink()).toSet();
   }
 
-  ReplaceableEventLink getReplaceableEventLink() => (kind, pubkey, identifier);
+  ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
+      (kind, pubkey ?? this.pubkey, identifier);
 
   Set<String> get pubkeys => tagMap['p'] ?? {};
+  Set<String> get zapTags => tagMap['zap'] ?? {};
   Set<String> get tags => tagMap['t'] ?? {};
-  String? get identifier => tagMap['d']!.firstOrNull;
+  String? get identifier => tagMap['d']?.firstOrNull;
 
   var _validated = false;
 
   BaseEvent({
     DateTime? createdAt,
     String? content,
-    // required int kind,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     Set<String>? linkedEvents,
     Set<ReplaceableEventLink>? linkedReplaceableEvents,
     String? identifier,
     Set<(String, dynamic)>? additionalEventTags,
   })  : createdAt = createdAt ?? DateTime.now(),
-        // kind = kind = 1,
         content = content ?? '',
         _tags = {
           ...?additionalEventTags,
           ...?pubkeys?.map((e) => ('p', e)),
+          ...?zapTags?.map((e) => ('zap', e)),
+          // TODO: Allow assigning weight to zaps
           ...?tags?.map((e) => ('t', e)),
           ...?linkedEvents?.map((e) => ('e', e)),
-          ...?linkedReplaceableEvents
-              ?.map((e) => ('a', '${e.$1}:${e.$2}:${e.$3 ?? ''}')),
+          ...?linkedReplaceableEvents?.map(
+              (e) => ('a', '${e.$1}:${e.$2}${e.$3 != null ? ':${e.$3}' : ''}')),
           ('d', identifier),
         };
 
@@ -67,8 +65,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
       : _id = map['id'],
         _pubkey = map['pubkey'],
         content = map['content'],
-        createdAt =
-            DateTime.fromMillisecondsSinceEpoch(map['created_at'] * 1000),
+        createdAt = (map['created_at'] as int).toDate(),
         _tags = (map['tags'] as Iterable)
             .map((e) => (e[0].toString(), e[1]?.toString()))
             .toSet(),
@@ -78,7 +75,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     if (_validated) {
       return true;
     }
-    return _validated = '$createdAtMs'.length == 10 &&
+    return _validated = '${createdAt!.toInt()}'.length == 10 &&
         _pubkey != null &&
         _signature != null &&
         _id == _eventId(pubkey) &&
@@ -89,7 +86,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     final data = [
       0,
       pubkey.toLowerCase(),
-      createdAtMs,
+      createdAt!.toInt(),
       kind,
       _tagList,
       content
@@ -98,8 +95,6 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
         sha256.convert(Uint8List.fromList(utf8.encode(json.encode(data))));
     return digest.toString();
   }
-
-  int get createdAtMs => createdAt!.millisecondsSinceEpoch ~/ 1000;
 
   T sign(String privateKey) {
     this._pubkey = getPublicKey(privateKey);
@@ -110,7 +105,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     return this as T;
   }
 
-  String getPublicKey(String privateKey) {
+  static String getPublicKey(String privateKey) {
     return bip340.getPublicKey(privateKey).toLowerCase();
   }
 
@@ -124,7 +119,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     return {
       'id': _id,
       'content': content,
-      'created_at': createdAtMs,
+      'created_at': createdAt!.toInt(),
       'pubkey': _pubkey,
       'kind': kind,
       'tags': _tagList,
@@ -133,7 +128,14 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   }
 
   @override
-  List<Object?> get props => [toMap()];
+  List<Object?> get props => [
+        switch (eventType) {
+          EventType.regular || EventType.ephemeral => id ?? toString(),
+          _ => (identifier != null && _pubkey != null)
+              ? getReplaceableEventLink().formatted
+              : toString(),
+        }
+      ];
 
   @override
   String toString() {
@@ -143,12 +145,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   // Kinds
 
   EventType get eventType {
-    return switch (kind) {
-      >= 10000 && < 20000 || 0 || 3 => EventType.replaceable,
-      >= 20000 && < 30000 => EventType.ephemeral,
-      >= 30000 && < 40000 => EventType.parameterizedReplaceable,
-      _ => EventType.regular,
-    };
+    return getEventType(kind);
   }
 
   static final Map<int, (String, BaseEvent Function(Map<String, dynamic>))>
@@ -165,8 +162,8 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     return _kinds[kind]?.$1;
   }
 
-  static T Function(Map<String, dynamic>)? ctorForKind<T extends BaseEvent<T>>(
-      int kind) {
+  static T Function(Map<String, dynamic>)?
+      constructorForKind<T extends BaseEvent<T>>(int kind) {
     return _kinds[kind]?.$2 as T Function(Map<String, dynamic>)?;
   }
 
@@ -181,12 +178,6 @@ int _kindFor<T>() {
       T.toString().substring(4).lowercaseFirst.toPluralForm())!;
 }
 
-extension on String {
-  String get lowercaseFirst {
-    return "${this[0].toLowerCase()}${substring(1)}";
-  }
-}
-
 mixin NostrMixin {}
 
 // To be used in clients like:
@@ -198,4 +189,9 @@ typedef ReplaceableEventLink = (int, String, String?);
 
 extension RLExtension on ReplaceableEventLink {
   String get formatted => '${this.$1}:${this.$2}:${this.$3 ?? ''}';
+}
+
+mixin ParameterizableReplaceableEvent<T extends BaseEvent<T>> on BaseEvent<T> {
+  @override
+  String? get identifier => tagMap['d']?.firstOrNull;
 }

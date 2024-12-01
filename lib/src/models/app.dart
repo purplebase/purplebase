@@ -1,10 +1,12 @@
 part of purplebase;
 
-class BaseApp extends BaseEvent<BaseApp> {
+class BaseApp extends BaseEvent<BaseApp>
+    with ParameterizableReplaceableEvent<BaseApp> {
   BaseApp({
     String? content,
     DateTime? createdAt,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     String? identifier,
     String? name,
@@ -15,12 +17,15 @@ class BaseApp extends BaseEvent<BaseApp> {
     String? url,
     String? license,
     Set<String>? platforms,
+    Set<ReplaceableEventLink>? linkedReplaceableEvents,
   }) : super(
           content: content,
           createdAt: createdAt,
           pubkeys: pubkeys,
+          zapTags: zapTags,
           tags: tags,
           identifier: identifier,
+          linkedReplaceableEvents: linkedReplaceableEvents,
           additionalEventTags: {
             ...?icons?.map((i) => ('icon', i)),
             ...?images?.map((i) => ('image', i)),
@@ -33,12 +38,13 @@ class BaseApp extends BaseEvent<BaseApp> {
           },
         );
 
-  BaseApp.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+  BaseApp.fromJson(super.map) : super.fromJson();
 
   BaseApp copyWith({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     String? identifier,
     String? name,
@@ -48,11 +54,13 @@ class BaseApp extends BaseEvent<BaseApp> {
     String? url,
     String? license,
     Set<String>? platforms,
+    Set<ReplaceableEventLink>? linkedReplaceableEvents,
   }) {
     return BaseApp(
       createdAt: createdAt ?? this.createdAt,
       content: content ?? this.content,
       pubkeys: pubkeys ?? this.pubkeys,
+      zapTags: zapTags ?? this.zapTags,
       tags: tags ?? this.tags,
       identifier: identifier ?? this.identifier,
       name: name ?? this.name,
@@ -62,6 +70,8 @@ class BaseApp extends BaseEvent<BaseApp> {
       url: url ?? this.url,
       license: license ?? this.license,
       platforms: platforms ?? this.platforms,
+      linkedReplaceableEvents:
+          linkedReplaceableEvents ?? this.linkedReplaceableEvents,
     );
   }
 

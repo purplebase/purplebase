@@ -1,10 +1,12 @@
 part of purplebase;
 
-class BaseRelease extends BaseEvent<BaseRelease> {
+class BaseRelease extends BaseEvent<BaseRelease>
+    with ParameterizableReplaceableEvent<BaseRelease> {
   BaseRelease({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     Set<String>? linkedEvents,
     Set<ReplaceableEventLink>? linkedReplaceableEvents,
@@ -15,6 +17,7 @@ class BaseRelease extends BaseEvent<BaseRelease> {
           content: content,
           createdAt: createdAt,
           pubkeys: pubkeys,
+          zapTags: zapTags,
           tags: tags,
           linkedEvents: linkedEvents,
           linkedReplaceableEvents: linkedReplaceableEvents,
@@ -25,12 +28,13 @@ class BaseRelease extends BaseEvent<BaseRelease> {
           },
         );
 
-  BaseRelease.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+  BaseRelease.fromJson(super.map) : super.fromJson();
 
   BaseRelease copyWith({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     String? identifier,
     Set<String>? linkedEvents,
@@ -46,6 +50,7 @@ class BaseRelease extends BaseEvent<BaseRelease> {
       createdAt: createdAt ?? this.createdAt,
       content: content ?? this.content,
       pubkeys: pubkeys ?? this.pubkeys,
+      zapTags: zapTags ?? this.zapTags,
       tags: tags ?? this.tags,
       identifier: identifier ?? this.identifier,
       linkedEvents: linkedEvents ?? this.linkedEvents,
@@ -59,5 +64,5 @@ class BaseRelease extends BaseEvent<BaseRelease> {
   int get kind => _kindFor<BaseRelease>();
 
   String? get url => tagMap['url']?.firstOrNull;
-  String get version => identifier!.split('@').last;
+  String? get version => identifier?.split('@').lastOrNull;
 }

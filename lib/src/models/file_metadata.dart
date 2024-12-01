@@ -5,6 +5,7 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     Set<String>? urls,
     String? mimeType,
@@ -28,14 +29,16 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
           },
           createdAt: createdAt,
           pubkeys: pubkeys,
+          zapTags: zapTags,
         );
 
   BaseFileMetadata.fromJson(Map<String, dynamic> map) : super.fromJson(map);
 
-  BaseFileMetadata copyWith(
+  BaseFileMetadata copyWith({
     DateTime? createdAt,
     String? content,
     Set<String>? pubkeys,
+    Set<String>? zapTags,
     Set<String>? tags,
     Set<String>? urls,
     String? mimeType,
@@ -45,12 +48,14 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
     String? repository,
     Set<String>? platforms,
     Set<(String, dynamic)>? additionalEventTags,
-  ) {
+  }) {
     return BaseFileMetadata(
       createdAt: createdAt ?? this.createdAt,
       content: content ?? this.content,
       pubkeys: pubkeys ?? this.pubkeys,
+      zapTags: zapTags ?? this.zapTags,
       tags: tags ?? this.tags,
+      urls: urls ?? this.urls,
       mimeType: mimeType ?? this.mimeType,
       hash: hash ?? this.hash,
       size: size ?? this.size,

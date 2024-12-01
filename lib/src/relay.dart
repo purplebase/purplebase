@@ -1,131 +1,49 @@
 part of purplebase;
 
-final relayMessageNotifierProvider = StateNotifierProvider.family<
-    RelayMessageNotifier,
-    RelayMessage,
-    List<String>>((_, relayUrls) => RelayMessageNotifier(relayUrls));
+final relayProviderFamily = StateNotifierProvider.family<RelayMessageNotifier,
+    RelayMessage, Set<String>>((_, relayUrls) {
+  return RelayMessageNotifier(relayUrls);
+});
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
-  RelayMessageNotifier(List<String> relayUrls)
-      : pool = WebSocketPool(relayUrls),
-        super(NothingRelayMessage());
   final WebSocketPool pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
+  bool Function(Map<String, dynamic> event)? _isEventVerified;
+
   final _closeFns = <String, void Function()>{};
+  final _errorRegex = RegExp('error', caseSensitive: false);
+  final _requests = <RelayRequest>{};
+  final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
-  final _r = RegExp('error', caseSensitive: false);
-
-  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req,
-      {Iterable<String>? relayUrls}) async {
-    final completer = Completer<List<Map<String, dynamic>>>();
-    final events = <Map<String, dynamic>>[];
-    final eoses = <String, bool>{
-      for (final r in (relayUrls ?? pool.relayUrls)) r: false
-    };
-
-    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]),
-        relayUrls: relayUrls);
-
-    _closeFns[req.subscriptionId] = addListener((message) {
-      if (message.subscriptionId != null &&
-          req.subscriptionId != message.subscriptionId) {
-        return;
-      }
-
-      if (message is EventRelayMessage) {
-        events.add(message.event);
-      }
-      if (message is NoticeRelayMessage) {
-        completer.completeError(Exception(message.text));
-      }
-      if (message is ErrorRelayMessage) {
-        completer.completeError(Exception(message.error));
-      }
-      if (message is EoseRelayMessage) {
-        eoses[message.relayUrl!] = true;
-        if (eoses.values.reduce((acc, e) => acc && e) &&
-            !completer.isCompleted) {
-          completer.complete(events);
-          scheduleMicrotask(() {
-            _closeFns[req.subscriptionId]?.call();
-          });
-        }
-      }
-    }, fireImmediately: false);
-
-    return completer.future;
-  }
-
-  Future<List<T>> query<T extends BaseEvent<T>>(
-      {Set<String>? ids,
-      Set<String>? authors,
-      Map<String, dynamic>? tags,
-      String? search,
-      DateTime? since,
-      int? limit,
-      Iterable<String>? relayUrls}) async {
-    final req = RelayRequest(
-        kinds: {_kindFor<T>()},
-        ids: ids ?? {},
-        authors: authors ?? {},
-        tags: tags ?? {},
-        search: search,
-        since: since,
-        limit: limit);
-
-    final result = await queryRaw(req);
-    return result
-        .map((map) => BaseEvent.ctorForKind<T>(map['kind'].toString().toInt()!)!
-            .call(map))
-        .toList();
-  }
-
-  Future<void> publish(BaseEvent event, {Iterable<String>? relayUrls}) async {
-    final completer = Completer<void>();
-    pool.send(jsonEncode(["EVENT", event.toMap()]), relayUrls: relayUrls);
-    _closeFns[event.id.toString()] = addListener((message) {
-      if (message.subscriptionId != null &&
-          event.id.toString() != message.subscriptionId) {
-        return;
-      }
-
-      if (message is PublishedEventRelayMessage) {
-        if (message.accepted) {
-          completer.complete();
-        } else {
-          completer.completeError(Exception(message.message ?? 'Not accepted'));
-        }
-      }
-    });
-    return completer.future;
-  }
-
-  RelayMessage get relayMessage {
-    return super.state;
-  }
-
-  void initialize({bool Function(String eventId)? isEventVerified}) {
+  RelayMessageNotifier(Set<String> relayUrls)
+      : pool = WebSocketPool(relayUrls),
+        super(NothingRelayMessage()) {
     _sub = pool.stream.listen((record) {
       final (relayUrl, data) = record;
       final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
+
       try {
         switch (type) {
           case 'EVENT':
-            final map = rest.first;
-            final alreadyVerified = isEventVerified?.call(map['id']) ?? false;
-            if (alreadyVerified ||
-                bip340.verify(map['pubkey'], map['id'], map['sig'])) {
-              final event = rest.first as Map<String, dynamic>;
+            final Map<String, dynamic> map = rest.first;
+            // If collecting events for EOSE, do not attempt to verify here
+            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+              _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
+              return;
+            }
+
+            final alreadyVerified = _isEventVerified?.call(map) ?? false;
+            if (alreadyVerified || _verifyEvent(map)) {
               state = EventRelayMessage(
                 relayUrl: relayUrl,
-                event: event,
+                event: map,
                 subscriptionId: subscriptionId,
               );
             }
             break;
           case 'NOTICE':
-            if (_r.hasMatch(subscriptionId)) {
+            if (_errorRegex.hasMatch(subscriptionId)) {
               state = ErrorRelayMessage(
                   relayUrl: relayUrl,
                   subscriptionId: null,
@@ -137,10 +55,24 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
                 subscriptionId: subscriptionId,
                 error: rest.join(', '));
           case 'EOSE':
-            state = EoseRelayMessage(
-              relayUrl: relayUrl,
-              subscriptionId: subscriptionId,
-            );
+            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+              final incomingEvents =
+                  _resultsOnEose.remove((relayUrl, subscriptionId))!;
+              _verifyEventsAsync(incomingEvents,
+                      isEventVerified: _isEventVerified)
+                  .then((events) {
+                state = EoseWithEventsRelayMessage(
+                  relayUrl: relayUrl,
+                  events: events,
+                  subscriptionId: subscriptionId,
+                );
+              });
+            } else {
+              state = EoseRelayMessage(
+                relayUrl: relayUrl,
+                subscriptionId: subscriptionId,
+              );
+            }
             break;
           case 'OK':
             state = PublishedEventRelayMessage(
@@ -150,7 +82,6 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
               message: rest.lastOrNull?.toString(),
             );
             break;
-          default:
         }
       } catch (err) {
         state = ErrorRelayMessage(
@@ -160,6 +91,125 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         _closeFns[subscriptionId]?.call();
       }
     });
+  }
+
+  RelayMessage get relayMessage => super.state;
+
+  void configure({bool Function(Map<String, dynamic> event)? isEventVerified}) {
+    _isEventVerified ??= isEventVerified;
+  }
+
+  void addRequest(RelayRequest req) {
+    _requests.add(req);
+    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
+  }
+
+  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req,
+      {bool failEarly = false}) async {
+    final completer = Completer<List<Map<String, dynamic>>>();
+
+    final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
+    if (failEarly && relayUrls.isEmpty) {
+      completer.completeError(Exception('No relays are connected'));
+      return completer.future;
+    }
+
+    final allEvents = <Map<String, dynamic>>[];
+    final eoses = <String, bool>{for (final r in relayUrls) r: false};
+
+    _closeFns[req.subscriptionId] = addListener((message) {
+      if (message.subscriptionId != req.subscriptionId) return;
+      switch (message) {
+        case EoseWithEventsRelayMessage(:final events, :final relayUrl):
+          eoses[relayUrl!] = true;
+          for (final event in events) {
+            if (!allEvents.any((e) => e['id'] == event['id'])) {
+              allEvents.add(event);
+            }
+          }
+          if (eoses.values.reduce((acc, e) => acc && e) &&
+              !completer.isCompleted) {
+            final allEventsSorted = allEvents.sortedByCompare(
+                (m) => m['created_at'] as int, (a, b) => b.compareTo(a));
+            completer.complete(allEventsSorted);
+            scheduleMicrotask(() {
+              _closeFns[req.subscriptionId]?.call();
+            });
+          }
+          break;
+        case ErrorRelayMessage(:final error):
+          completer.completeError(Exception(error));
+          break;
+        default:
+      }
+    }, fireImmediately: false);
+
+    addRequest(req);
+    for (final relayUrl in relayUrls) {
+      _resultsOnEose[(relayUrl, req.subscriptionId)] = [];
+    }
+
+    return completer.future;
+  }
+
+  Future<List<T>> query<T extends BaseEvent<T>>(
+      {Set<String>? ids,
+      Set<String>? authors,
+      Map<String, dynamic>? tags,
+      String? search,
+      DateTime? since,
+      DateTime? until,
+      int? limit,
+      Iterable<String>? relayUrls}) async {
+    final req = RelayRequest(
+        kinds: {_kindFor<T>()},
+        ids: ids ?? {},
+        authors: authors ?? {},
+        tags: tags ?? {},
+        search: search,
+        since: since,
+        until: until,
+        limit: limit);
+
+    final result = await queryRaw(req);
+    return result
+        .map((map) =>
+            BaseEvent.constructorForKind<T>(map['kind'].toString().toInt()!)!
+                .call(map))
+        .toList();
+  }
+
+  Future<void> publish(BaseEvent event, {bool failEarly = true}) async {
+    final completer = Completer<void>();
+
+    final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
+    if (failEarly && relayUrls.isEmpty) {
+      completer.completeError(Exception('No relays are connected'));
+      return completer.future;
+    }
+
+    pool.send(jsonEncode(["EVENT", event.toMap()]));
+
+    _closeFns[event.id.toString()] = addListener((message) {
+      if (message.subscriptionId != null &&
+          event.id.toString() != message.subscriptionId) {
+        return;
+      }
+
+      if (message is PublishedEventRelayMessage) {
+        if (message.accepted) {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        } else {
+          if (!completer.isCompleted) {
+            final error = message.message ?? 'Not accepted';
+            completer.completeError(Exception(error));
+          }
+        }
+      }
+    });
+    return completer.future;
   }
 
   @override
@@ -174,11 +224,36 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       super.dispose();
     }
   }
+
+  // Event validation
+
+  static Future<List<Map<String, dynamic>>> _verifyEventsAsync(
+      List<Map<String, dynamic>> incomingEvents,
+      {bool Function(Map<String, dynamic> event)? isEventVerified}) async {
+    if (incomingEvents.isEmpty) return [];
+
+    final unverifiedEvents = isEventVerified != null
+        ? incomingEvents.whereNot(isEventVerified).toList()
+        : incomingEvents;
+
+    if (unverifiedEvents.isNotEmpty) {
+      final notVerifiedEvents = await Isolate.run(
+          () => unverifiedEvents.whereNot(_verifyEvent).toList());
+      for (final nve in notVerifiedEvents) {
+        incomingEvents.remove(nve);
+      }
+    }
+    return incomingEvents;
+  }
+
+  static bool _verifyEvent(Map<String, dynamic> map) {
+    return bip340.verify(map['pubkey'], map['id'], map['sig']);
+  }
 }
 
 final random = Random();
 
-class RelayRequest {
+class RelayRequest extends Equatable {
   late final String subscriptionId;
   final Set<String> ids;
   final Set<int> kinds;
@@ -186,16 +261,19 @@ class RelayRequest {
   final Map<String, dynamic> tags;
   final String? search;
   final DateTime? since;
+  final DateTime? until;
   final int? limit;
 
-  RelayRequest(
-      {this.ids = const {},
-      this.kinds = const {},
-      this.authors = const {},
-      this.tags = const {},
-      this.search,
-      this.since,
-      this.limit}) {
+  RelayRequest({
+    this.ids = const {},
+    this.kinds = const {},
+    this.authors = const {},
+    this.tags = const {},
+    this.search,
+    this.since,
+    this.until,
+    this.limit,
+  }) {
     subscriptionId = 'sub-${random.nextInt(999999)}';
   }
 
@@ -206,11 +284,16 @@ class RelayRequest {
       if (authors.isNotEmpty) 'authors': authors.toList(),
       for (final e in tags.entries)
         e.key: e.value is Iterable ? e.value.toList() : e.value,
-      if (since != null) 'since': since!.millisecondsSinceEpoch / 1000,
+      if (since != null) 'since': since!.toInt(),
+      if (until != null) 'until': until!.toInt(),
       if (limit != null) 'limit': limit,
       if (search != null) 'search': search,
     };
   }
+
+  @override
+  List<Object?> get props =>
+      [ids, kinds, authors, tags, since, until, limit, search];
 
   @override
   String toString() {
@@ -257,6 +340,21 @@ class NoticeRelayMessage extends RelayMessage {
 
 class EoseRelayMessage extends RelayMessage {
   EoseRelayMessage({super.relayUrl, required super.subscriptionId});
+}
+
+class EoseWithEventsRelayMessage extends RelayMessage {
+  final List<Map<String, dynamic>> events;
+
+  EoseWithEventsRelayMessage({
+    super.relayUrl,
+    required super.subscriptionId,
+    required this.events,
+  });
+
+  @override
+  String toString() {
+    return '${super.toString()}: ${events.length}';
+  }
 }
 
 class ErrorRelayMessage extends RelayMessage {

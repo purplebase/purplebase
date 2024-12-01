@@ -2,38 +2,62 @@ part of purplebase;
 
 class WebSocketPool {
   final Iterable<String> relayUrls;
-  final Map<String, WebSocketClient> clients = {};
+  final Map<String, WebSocket> clients = {};
   final _controller = StreamController<(String, String)>();
-
-  Stream<(String, String)> get stream => _controller.stream.asBroadcastStream();
-
   final List<StreamSubscription> subs = [];
+  final _queue = <String, List<String>>{};
 
   WebSocketPool(this.relayUrls) {
     for (final relayUrl in relayUrls) {
-      final client = WebSocketClient(
-        WebSocketOptions.common(
-          connectionRetryInterval: (
-            min: const Duration(milliseconds: 500),
-            max: const Duration(seconds: 15),
-          ),
-          timeout: Duration(seconds: 60),
-        ),
-      );
-      client.connect(relayUrl);
-      subs.add(client.stream.listen((value) {
+      final backoff = BinaryExponentialBackoff(
+          initial: Duration(seconds: 1), maximumStep: 10);
+      final client = WebSocket(Uri.parse(relayUrl), backoff: backoff);
+
+      subs.add(client.connection.listen((state) {
+        switch (state) {
+          case Connected() || Reconnected():
+            while (_queue[relayUrl]?.isNotEmpty ?? false) {
+              send(_queue[relayUrl]!.removeAt(0), relayUrls: {relayUrl});
+            }
+          // TODO: Reconnection logic, re-request events since connection dropped
+        }
+      }));
+
+      subs.add(client.messages.listen((value) {
         _controller.add((relayUrl, value.toString()));
       }));
+
       clients[relayUrl] = client;
     }
   }
 
-  void send(String message, {Iterable<String>? relayUrls}) {
-    for (final MapEntry(key: relayUrl, value: client) in clients.entries) {
-      if (relayUrls != null && !relayUrls.contains(relayUrl)) {
-        continue;
+  Stream<(String, String)> get stream => _controller.stream.asBroadcastStream();
+
+  List<String> get connectedRelayUrls => clients.entries
+      .where((e) => e.value.connection.state == Connected())
+      .map((e) => e.key)
+      .toList();
+
+  void send(String message, {Set<String>? relayUrls}) {
+    final entries = relayUrls == null
+        ? clients.entries
+        : clients.entries.where((e) => relayUrls.contains(e.key));
+
+    for (final MapEntry(key: relayUrl, value: client) in entries) {
+      _queue[relayUrl] ??= [];
+      switch (client.connection.state) {
+        case Connected() || Reconnected():
+          // print(
+          //     '[${DateTime.now().toIso8601String()}] Sending req to $relayUrl: $message');
+          client.send(message);
+          break;
+        default:
+          // print(
+          //     '[${DateTime.now().toIso8601String()}] QUEUING req to $relayUrl');
+          if (!_queue[relayUrl]!.contains(message)) {
+            _queue[relayUrl]!.add(message);
+          }
       }
-      client.add(message);
     }
   }
 
@@ -42,7 +66,7 @@ class WebSocketPool {
       await sub.cancel();
     }
     for (final client in clients.values) {
-      await client.close();
+      client.close(1000, 'CLOSE_NORMAL');
     }
   }
 }
