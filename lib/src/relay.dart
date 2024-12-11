@@ -6,150 +6,118 @@ final relayProviderFamily = StateNotifierProvider.family<RelayMessageNotifier,
 });
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
-  final WebSocketPool pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
   bool Function(Map<String, dynamic> event)? _isEventVerified;
+  Ndk? ndk;
 
   final _closeFns = <String, void Function()>{};
-  final _errorRegex = RegExp('error', caseSensitive: false);
+  // final _errorRegex = RegExp('error', caseSensitive: false);
   final _requests = <RelayRequest>{};
-  final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
+  // final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
-  RelayMessageNotifier(Set<String> relayUrls)
-      : pool = WebSocketPool(relayUrls),
-        super(NothingRelayMessage()) {
-    _sub = pool.stream.listen((record) {
-      final (relayUrl, data) = record;
-      final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
+  RelayMessageNotifier(Set<String> relayUrls) : super(NothingRelayMessage()) {
+    // _sub = pool.stream.listen((record) {
+    //   final (relayUrl, data) = record;
+    //   final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
 
-      try {
-        switch (type) {
-          case 'EVENT':
-            final Map<String, dynamic> map = rest.first;
-            // If collecting events for EOSE, do not attempt to verify here
-            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
-              _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
-              return;
-            }
+    //   try {
+    //     switch (type) {
+    //       case 'EVENT':
+    //         final Map<String, dynamic> map = rest.first;
+    //         // If collecting events for EOSE, do not attempt to verify here
+    //         if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+    //           _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
+    //           return;
+    //         }
 
-            final alreadyVerified = _isEventVerified?.call(map) ?? false;
-            if (alreadyVerified || _verifyEvent(map)) {
-              state = EventRelayMessage(
-                relayUrl: relayUrl,
-                event: map,
-                subscriptionId: subscriptionId,
-              );
-            }
-            break;
-          case 'NOTICE':
-            if (_errorRegex.hasMatch(subscriptionId)) {
-              state = ErrorRelayMessage(
-                  relayUrl: relayUrl,
-                  subscriptionId: null,
-                  error: subscriptionId);
-            }
-          case 'CLOSED':
-            state = ErrorRelayMessage(
-                relayUrl: relayUrl,
-                subscriptionId: subscriptionId,
-                error: rest.join(', '));
-          case 'EOSE':
-            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
-              final incomingEvents =
-                  _resultsOnEose.remove((relayUrl, subscriptionId))!;
-              _verifyEventsAsync(incomingEvents,
-                      isEventVerified: _isEventVerified)
-                  .then((events) {
-                state = EoseWithEventsRelayMessage(
-                  relayUrl: relayUrl,
-                  events: events,
-                  subscriptionId: subscriptionId,
-                );
-              });
-            } else {
-              state = EoseRelayMessage(
-                relayUrl: relayUrl,
-                subscriptionId: subscriptionId,
-              );
-            }
-            break;
-          case 'OK':
-            state = PublishedEventRelayMessage(
-              relayUrl: relayUrl,
-              subscriptionId: subscriptionId,
-              accepted: rest.first as bool,
-              message: rest.lastOrNull?.toString(),
-            );
-            break;
-        }
-      } catch (err) {
-        state = ErrorRelayMessage(
-            relayUrl: relayUrl, subscriptionId: null, error: err.toString());
-        _sub?.cancel();
-        _streamSub?.cancel();
-        _closeFns[subscriptionId]?.call();
-      }
-    });
+    //         final alreadyVerified = _isEventVerified?.call(map) ?? false;
+    //         if (alreadyVerified || _verifyEvent(map)) {
+    //           state = EventRelayMessage(
+    //             relayUrl: relayUrl,
+    //             event: map,
+    //             subscriptionId: subscriptionId,
+    //           );
+    //         }
+    //         break;
+    //       case 'NOTICE':
+    //         if (_errorRegex.hasMatch(subscriptionId)) {
+    //           state = ErrorRelayMessage(
+    //               relayUrl: relayUrl,
+    //               subscriptionId: null,
+    //               error: subscriptionId);
+    //         }
+    //       case 'CLOSED':
+    //         state = ErrorRelayMessage(
+    //             relayUrl: relayUrl,
+    //             subscriptionId: subscriptionId,
+    //             error: rest.join(', '));
+    //       case 'EOSE':
+    //         if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+    //           final incomingEvents =
+    //               _resultsOnEose.remove((relayUrl, subscriptionId))!;
+    //           _verifyEventsAsync(incomingEvents,
+    //                   isEventVerified: _isEventVerified)
+    //               .then((events) {
+    //             state = EoseWithEventsRelayMessage(
+    //               relayUrl: relayUrl,
+    //               events: events,
+    //               subscriptionId: subscriptionId,
+    //             );
+    //           });
+    //         } else {
+    //           state = EoseRelayMessage(
+    //             relayUrl: relayUrl,
+    //             subscriptionId: subscriptionId,
+    //           );
+    //         }
+    //         break;
+    //       case 'OK':
+    //         state = PublishedEventRelayMessage(
+    //           relayUrl: relayUrl,
+    //           subscriptionId: subscriptionId,
+    //           accepted: rest.first as bool,
+    //           message: rest.lastOrNull?.toString(),
+    //         );
+    //         break;
+    //     }
+    //   } catch (err) {
+    //     state = ErrorRelayMessage(
+    //         relayUrl: relayUrl, subscriptionId: null, error: err.toString());
+    //     _sub?.cancel();
+    //     _streamSub?.cancel();
+    //     _closeFns[subscriptionId]?.call();
+    //   }
+    // });
   }
+
+  // _sub =
 
   RelayMessage get relayMessage => super.state;
 
   void configure({bool Function(Map<String, dynamic> event)? isEventVerified}) {
     _isEventVerified ??= isEventVerified;
+
+    ndk = Ndk(
+      NdkConfig(
+        eventVerifier: Bip340EventVerifier(),
+        cache: MemCacheManager(),
+      ),
+    );
   }
 
   void addRequest(RelayRequest req) {
     _requests.add(req);
-    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
+    // pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
   }
 
-  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req,
-      {bool failEarly = false}) async {
-    final completer = Completer<List<Map<String, dynamic>>>();
-
-    final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
-    if (failEarly && relayUrls.isEmpty) {
-      completer.completeError(Exception('No relays are connected'));
-      return completer.future;
-    }
-
-    final allEvents = <Map<String, dynamic>>[];
-    final eoses = <String, bool>{for (final r in relayUrls) r: false};
-
-    _closeFns[req.subscriptionId] = addListener((message) {
-      if (message.subscriptionId != req.subscriptionId) return;
-      switch (message) {
-        case EoseWithEventsRelayMessage(:final events, :final relayUrl):
-          eoses[relayUrl!] = true;
-          for (final event in events) {
-            if (!allEvents.any((e) => e['id'] == event['id'])) {
-              allEvents.add(event);
-            }
-          }
-          if (eoses.values.reduce((acc, e) => acc && e) &&
-              !completer.isCompleted) {
-            final allEventsSorted = allEvents.sortedByCompare(
-                (m) => m['created_at'] as int, (a, b) => b.compareTo(a));
-            completer.complete(allEventsSorted);
-            scheduleMicrotask(() {
-              _closeFns[req.subscriptionId]?.call();
-            });
-          }
-          break;
-        case ErrorRelayMessage(:final error):
-          completer.completeError(Exception(error));
-          break;
-        default:
-      }
-    }, fireImmediately: false);
-
-    addRequest(req);
-    for (final relayUrl in relayUrls) {
-      _resultsOnEose[(relayUrl, req.subscriptionId)] = [];
-    }
-
-    return completer.future;
+  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req) async {
+    final response = ndk!.requests.query(filters: [
+      Filter(kinds: [3])
+    ]);
+    final ns = await response.future;
+    // TODO: Convert NIP-01 into Map<String, dynamic>?
+    return ns.map((n) => <String, dynamic>{}).toList();
   }
 
   Future<List<T>> query<T extends BaseEvent<T>>(
@@ -182,13 +150,14 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   Future<void> publish(BaseEvent event, {bool failEarly = true}) async {
     final completer = Completer<void>();
 
-    final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
-    if (failEarly && relayUrls.isEmpty) {
-      completer.completeError(Exception('No relays are connected'));
-      return completer.future;
-    }
+    // TODO: Restore with NDK
+    // final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
+    // if (failEarly && relayUrls.isEmpty) {
+    //   completer.completeError(Exception('No relays are connected'));
+    //   return completer.future;
+    // }
 
-    pool.send(jsonEncode(["EVENT", event.toMap()]));
+    // pool.send(jsonEncode(["EVENT", event.toMap()]));
 
     _closeFns[event.id.toString()] = addListener((message) {
       if (message.subscriptionId != null &&
@@ -217,7 +186,6 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     for (final closeFn in _closeFns.values) {
       closeFn.call();
     }
-    await pool.close();
     _sub?.cancel();
     _streamSub?.cancel();
     if (mounted) {
