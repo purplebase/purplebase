@@ -56,6 +56,7 @@ Future<void> main() async {
     await for (final event in response.stream) {
       print(event);
     }
+    ndk.destroy();
   });
 
   test('general', () async {
@@ -178,5 +179,6 @@ Future<void> main() async {
         .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
     final apps = await relay.query<BaseApp>(search: 'xq');
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
+    await relay.dispose();
   });
 }
