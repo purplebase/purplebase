@@ -17,6 +17,13 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   // final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
   RelayMessageNotifier(Set<String> relayUrls) : super(NothingRelayMessage()) {
+    ndk = Ndk(
+      NdkConfig(
+        eventVerifier: Bip340EventVerifier(),
+        cache: MemCacheManager(),
+        bootstrapRelays: relayUrls.toList()
+      ),
+    );
     // _sub = pool.stream.listen((record) {
     //   final (relayUrl, data) = record;
     //   final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
@@ -97,13 +104,6 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
   void configure({bool Function(Map<String, dynamic> event)? isEventVerified}) {
     _isEventVerified ??= isEventVerified;
-
-    ndk = Ndk(
-      NdkConfig(
-        eventVerifier: Bip340EventVerifier(),
-        cache: MemCacheManager(),
-      ),
-    );
   }
 
   void addRequest(RelayRequest req) {
@@ -113,11 +113,12 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
   Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req) async {
     final response = ndk!.requests.query(filters: [
-      Filter(kinds: [3])
-    ]);
+      Filter(kinds: req.kinds.toList(), limit: req.limit, search: req.search)
+    ],
+    );
     final ns = await response.future;
     // TODO: Convert NIP-01 into Map<String, dynamic>?
-    return ns.map((n) => <String, dynamic>{}).toList();
+    return ns.map((n) => n.toJson()).toList();
   }
 
   Future<List<T>> query<T extends BaseEvent<T>>(
@@ -150,7 +151,20 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   Future<void> publish(BaseEvent event, {bool failEarly = true}) async {
     final completer = Completer<void>();
 
-    // TODO: Restore with NDK
+    NdkBroadcastResponse response =
+      ndk!.broadcast.broadcast(
+          nostrEvent: Nip01Event.fromJson(event.toMap()),
+          specificRelays: ndk!.relays.connectedRelays.map((rc) => rc.url),
+      );
+    List<RelayBroadcastResponse> relayResponses = await response.broadcastDoneFuture;
+    final firstRelayError = relayResponses.firstWhereOrNull((r) =>!r.broadcastSuccessful);
+
+    if (firstRelayError!=null) {
+        completer.completeError(Exception(firstRelayError.msg));
+    } else {
+      completer.complete();
+    }
+
     // final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
     // if (failEarly && relayUrls.isEmpty) {
     //   completer.completeError(Exception('No relays are connected'));
@@ -159,35 +173,36 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
     // pool.send(jsonEncode(["EVENT", event.toMap()]));
 
-    _closeFns[event.id.toString()] = addListener((message) {
-      if (message.subscriptionId != null &&
-          event.id.toString() != message.subscriptionId) {
-        return;
-      }
-
-      if (message is PublishedEventRelayMessage) {
-        if (message.accepted) {
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
-        } else {
-          if (!completer.isCompleted) {
-            final error = message.message ?? 'Not accepted';
-            completer.completeError(Exception(error));
-          }
-        }
-      }
-    });
+    // _closeFns[event.id.toString()] = addListener((message) {
+    //   if (message.subscriptionId != null &&
+    //       event.id.toString() != message.subscriptionId) {
+    //     return;
+    //   }
+    //
+    //   if (message is PublishedEventRelayMessage) {
+    //     if (message.accepted) {
+    //       if (!completer.isCompleted) {
+    //         completer.complete();
+    //       }
+    //     } else {
+    //       if (!completer.isCompleted) {
+    //         final error = message.message ?? 'Not accepted';
+    //         completer.completeError(Exception(error));
+    //       }
+    //     }
+    //   }
+    // });
     return completer.future;
   }
 
   @override
   Future<void> dispose() async {
-    for (final closeFn in _closeFns.values) {
-      closeFn.call();
-    }
-    _sub?.cancel();
-    _streamSub?.cancel();
+    // for (final closeFn in _closeFns.values) {
+    //   closeFn.call();
+    // }
+    // _sub?.cancel();
+    // _streamSub?.cancel();
+    ndk?.destroy();
     if (mounted) {
       super.dispose();
     }

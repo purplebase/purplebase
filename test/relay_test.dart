@@ -16,17 +16,35 @@ Future<void> main() async {
       NdkConfig(
         eventVerifier: Bip340EventVerifier(),
         cache: MemCacheManager(),
+        engine: NdkEngine.JIT
       ),
     );
 
     Logger.setLogLevel(ll.Level.warning);
 
+    String pubKey = '726a1e261cc6474674e8285e3951b3bb139be9a773d1acf49dc868db861a1c11';
+
+    /// This would be for [NdkEngine.RELAY_SETS] who pre-calculates a relay set for the outbox relays of given pubKey.
+    /// Calculating a RelaySet means go fetch each pubKey's relay list from different sources (nip65/kind3/nip05),
+    /// then tries to connect to the relays and builds the minimal list of relays that covers a relayMinCountPerPubKey.
+    /// But since this pubKey uses wss://filter.nostr.wine who needs nip-42 AUTH which is still not implemented in NDK,
+    /// and also it would require a signer somehow, so just use [NdkEngine.JIT] for now.
+
+    // RelaySet outboxRelaySet = await
+    //   ndk.relaySets.calculateRelaySet(
+    //       name: "outbox-relay-set",
+    //       ownerPubKey: pubKey,
+    //       pubKeys: [pubKey],
+    //       direction: RelayDirection.outbox,
+    //       relayMinCountPerPubKey: 2);
+
     final response = ndk.requests.query(
+      // relaySet: outboxRelaySet,
       desiredCoverage: 2,
       filters: [
         Filter(
           authors: [
-            '726a1e261cc6474674e8285e3951b3bb139be9a773d1acf49dc868db861a1c11'
+            pubKey
           ],
           kinds: [Nip01Event.TEXT_NODE_KIND],
           limit: 10,
@@ -147,7 +165,7 @@ Future<void> main() async {
   test('publish', () async {
     final container = ProviderContainer();
     final relay =
-        container.read(relayProviderFamily({'ws://localhost:3000'}).notifier);
+        container.read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
     final e = BaseRelease().sign(pk);
     // Should fail because pk is not authorized by relay.zapstore.dev
     await expectLater(() => relay.publish(e), throwsException);
