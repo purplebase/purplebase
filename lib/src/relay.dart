@@ -113,7 +113,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
   Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req) async {
     final response = ndk!.requests.query(filters: [
-      Filter(kinds: req.kinds.toList(), limit: req.limit, search: req.search)
+      Filter.fromMap(req.toMap())
     ],
     );
     final ns = await response.future;
