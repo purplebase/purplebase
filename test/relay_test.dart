@@ -128,4 +128,13 @@ Future<void> main() async {
     final apps = await relay.query<BaseApp>(search: 'xq');
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
   });
+
+  test('notifier equality', () {
+    final container = ProviderContainer();
+    final n1 = container
+        .read(relayProviderFamily(const {'wss://relay.damus.io'}).notifier);
+    final n2 = container
+        .read(relayProviderFamily(const {'wss://relay.damus.io'}).notifier);
+    expect(n1, n2);
+  });
 }
