@@ -104,16 +104,10 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
   }
 
-  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req,
-      {bool failEarly = false}) async {
+  Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req) async {
     final completer = Completer<List<Map<String, dynamic>>>();
 
-    final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
-    if (failEarly && relayUrls.isEmpty) {
-      completer.completeError(Exception('No relays are connected'));
-      return completer.future;
-    }
-
+    final relayUrls = pool.relayUrls;
     final allEvents = <Map<String, dynamic>>[];
     final eoses = <String, bool>{for (final r in relayUrls) r: false};
 
@@ -127,8 +121,10 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
               allEvents.add(event);
             }
           }
-          if (eoses.values.reduce((acc, e) => acc && e) &&
-              !completer.isCompleted) {
+          // If there are at least as much EOSEs as connected relays, we're good
+          final enoughEoses = eoses.values.where((v) => v).length >=
+              pool.connectedRelayUrls.length;
+          if (enoughEoses && !completer.isCompleted) {
             final allEventsSorted = allEvents.sortedByCompare(
                 (m) => m['created_at'] as int, (a, b) => b.compareTo(a));
             completer.complete(allEventsSorted);
