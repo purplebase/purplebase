@@ -181,4 +181,13 @@ Future<void> main() async {
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
     await relay.dispose();
   });
+
+  test('notifier equality', () {
+    final container = ProviderContainer();
+    final n1 = container
+        .read(relayProviderFamily(const {'wss://relay.damus.io'}).notifier);
+    final n2 = container
+        .read(relayProviderFamily(const {'wss://relay.damus.io'}).notifier);
+    expect(n1, n2);
+  });
 }
