@@ -7,12 +7,16 @@ class BaseUser extends BaseEvent<BaseUser> {
     Set<String>? tags,
     String? name,
     String? avatarUrl,
+    String? lud16,
   }) : super(
           createdAt: createdAt,
           pubkeys: pubkeys,
           tags: tags,
-          content: jsonEncode(
-              <String, dynamic>{'name': name, 'picture': avatarUrl}.nonNulls),
+          content: jsonEncode(<String, dynamic>{
+            'name': name,
+            'picture': avatarUrl,
+            'lud16': lud16
+          }.nonNulls),
         );
 
   BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
