@@ -57,6 +57,7 @@ class BaseUser extends BaseEvent<BaseUser> {
 
   String get npub => bech32Encode('npub', pubkey);
   String? get avatarUrl => _content['picture'];
+  String? get lud16 => _content['lud16'];
 }
 
 extension Bech32StringX on String {
