@@ -1,11 +1,63 @@
 import 'dart:async';
 
+import 'package:ndk/ndk.dart';
+import 'package:ndk/shared/logger/logger.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
+// ignore: depend_on_referenced_packages
+import 'package:logger/logger.dart' as ll;
 
 Future<void> main() async {
   final pk = 'deef3563ddbf74e62b2e8e5e44b25b8d63fb05e29a991f7e39cff56aa3ce82b8';
+
+  test('ndk', () async {
+    final ndk = Ndk(
+      NdkConfig(
+        eventVerifier: Bip340EventVerifier(),
+        cache: MemCacheManager(),
+        engine: NdkEngine.JIT
+      ),
+    );
+
+    Logger.setLogLevel(ll.Level.warning);
+
+    String pubKey = '726a1e261cc6474674e8285e3951b3bb139be9a773d1acf49dc868db861a1c11';
+
+    /// This would be for [NdkEngine.RELAY_SETS] who pre-calculates a relay set for the outbox relays of given pubKey.
+    /// Calculating a RelaySet means go fetch each pubKey's relay list from different sources (nip65/kind3/nip05),
+    /// then tries to connect to the relays and builds the minimal list of relays that covers a relayMinCountPerPubKey.
+    /// But since this pubKey uses wss://filter.nostr.wine who needs nip-42 AUTH which is still not implemented in NDK,
+    /// and also it would require a signer somehow, so just use [NdkEngine.JIT] for now.
+
+    // RelaySet outboxRelaySet = await
+    //   ndk.relaySets.calculateRelaySet(
+    //       name: "outbox-relay-set",
+    //       ownerPubKey: pubKey,
+    //       pubKeys: [pubKey],
+    //       direction: RelayDirection.outbox,
+    //       relayMinCountPerPubKey: 2);
+
+    final response = ndk.requests.query(
+      // relaySet: outboxRelaySet,
+      desiredCoverage: 2,
+      filters: [
+        Filter(
+          authors: [
+            pubKey
+          ],
+          kinds: [Nip01Event.TEXT_NODE_KIND],
+          limit: 10,
+        ),
+      ],
+    );
+
+    // result
+    await for (final event in response.stream) {
+      print(event);
+    }
+    ndk.destroy();
+  });
 
   test('general', () async {
     final container = ProviderContainer();
@@ -32,8 +84,8 @@ Future<void> main() async {
     final container = ProviderContainer();
     // NOTE: Does not work with relay.nostr.band,
     // they do not include "error" in their NOTICE messages
-    final relay =
-        container.read(relayProviderFamily({'wss://relay.zap.store'}).notifier);
+    final relay = container
+        .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
 
     final r1 = RelayRequest(kinds: {30063}, limit: 10);
     final k1s = await relay.queryRaw(r1);
@@ -114,19 +166,20 @@ Future<void> main() async {
   test('publish', () async {
     final container = ProviderContainer();
     final relay =
-        container.read(relayProviderFamily({'ws://localhost:3000'}).notifier);
+        container.read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
     final e = BaseRelease().sign(pk);
-    // Should fail because pk is not authorized by relay.zap.store
+    // Should fail because pk is not authorized by relay.zapstore.dev
     await expectLater(() => relay.publish(e), throwsException);
     await relay.dispose();
   });
 
   test('typed query', () async {
     final container = ProviderContainer();
-    final relay =
-        container.read(relayProviderFamily({'wss://relay.zap.store'}).notifier);
+    final relay = container
+        .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
     final apps = await relay.query<BaseApp>(search: 'xq');
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
+    await relay.dispose();
   });
 
   test('notifier equality', () {
