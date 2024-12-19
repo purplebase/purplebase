@@ -6,20 +6,36 @@ final relayProviderFamily = StateNotifierProvider.family<RelayMessageNotifier,
 });
 
 class RelayMessageNotifier extends StateNotifier<RelayMessage> {
-  final WebSocketPool pool;
+  WebSocketPool? pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
   bool Function(Map<String, dynamic> event)? _isEventVerified;
+  Ndk? ndk;
 
   final _closeFns = <String, void Function()>{};
   final _errorRegex = RegExp('error', caseSensitive: false);
   final _requests = <RelayRequest>{};
   final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
-  RelayMessageNotifier(Set<String> relayUrls)
-      : pool = WebSocketPool(relayUrls),
-        super(NothingRelayMessage()) {
-    _sub = pool.stream.listen((record) {
+  RelayMessageNotifier(Set<String> relayUrls) : super(NothingRelayMessage()) {
+    // NOTE: Temporary hack to enable NDK
+    // Get a mutable set (_relayUrls) from the immutable relayUrls
+    // ignore: no_leading_underscores_for_local_identifiers
+    final _relayUrls = relayUrls.toSet();
+    if (_relayUrls.remove('ndk')) {
+      ndk = Ndk(
+        NdkConfig(
+            eventVerifier: Bip340EventVerifier(),
+            cache: MemCacheManager(),
+            bootstrapRelays: _relayUrls.toList()),
+      );
+      Logger.setLogLevel(ll.Level.warning);
+      return;
+    }
+
+    pool = WebSocketPool(_relayUrls);
+
+    _sub = pool!.stream.listen((record) {
       final (relayUrl, data) = record;
       final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
 
@@ -101,13 +117,21 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
   void addRequest(RelayRequest req) {
     _requests.add(req);
-    pool.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
+    pool!.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
   }
 
   Future<List<Map<String, dynamic>>> queryRaw(RelayRequest req) async {
+    if (ndk != null) {
+      final response = ndk!.requests.query(
+        filters: [Filter.fromMap(req.toMap())],
+      );
+      final events = await response.future;
+      return events.map((e) => e.toJson()).toList();
+    }
+
     final completer = Completer<List<Map<String, dynamic>>>();
 
-    final relayUrls = pool.relayUrls;
+    final relayUrls = pool!.relayUrls;
     final allEvents = <Map<String, dynamic>>[];
     final eoses = <String, bool>{for (final r in relayUrls) r: false};
 
@@ -123,7 +147,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
           }
           // If there are at least as much EOSEs as connected relays, we're good
           final enoughEoses = eoses.values.where((v) => v).length >=
-              pool.connectedRelayUrls.length;
+              pool!.connectedRelayUrls.length;
           if (enoughEoses && !completer.isCompleted) {
             final allEventsSorted = allEvents.sortedByCompare(
                 (m) => m['created_at'] as int, (a, b) => b.compareTo(a));
@@ -178,13 +202,30 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   Future<void> publish(BaseEvent event, {bool failEarly = true}) async {
     final completer = Completer<void>();
 
-    final relayUrls = failEarly ? pool.connectedRelayUrls : pool.relayUrls;
+    if (ndk != null) {
+      final response = ndk!.broadcast.broadcast(
+        nostrEvent: Nip01Event.fromJson(event.toMap()),
+        specificRelays: ndk!.relays.connectedRelays.map((rc) => rc.url),
+      );
+      final relayResponses = await response.broadcastDoneFuture;
+      final firstRelayError =
+          relayResponses.firstWhereOrNull((r) => !r.broadcastSuccessful);
+
+      if (firstRelayError != null) {
+        completer.completeError(Exception(firstRelayError.msg));
+      } else {
+        completer.complete();
+      }
+      return;
+    }
+
+    final relayUrls = failEarly ? pool!.connectedRelayUrls : pool!.relayUrls;
     if (failEarly && relayUrls.isEmpty) {
       completer.completeError(Exception('No relays are connected'));
       return completer.future;
     }
 
-    pool.send(jsonEncode(["EVENT", event.toMap()]));
+    pool!.send(jsonEncode(["EVENT", event.toMap()]));
 
     _closeFns[event.id.toString()] = addListener((message) {
       if (message.subscriptionId != null &&
@@ -210,10 +251,15 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
   @override
   Future<void> dispose() async {
+    if (ndk != null) {
+      await ndk!.destroy();
+      return;
+    }
+
     for (final closeFn in _closeFns.values) {
       closeFn.call();
     }
-    await pool.close();
+    await pool!.close();
     _sub?.cancel();
     _streamSub?.cancel();
     if (mounted) {

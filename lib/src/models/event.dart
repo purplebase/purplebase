@@ -161,6 +161,7 @@ enum EventType { regular, ephemeral, replaceable, parameterizedReplaceable }
 typedef ReplaceableEventLink = (int, String, String?);
 
 extension RLExtension on ReplaceableEventLink {
+  // NOTE: Yes, NPREs have a trailing colon
   String get formatted => '${this.$1}:${this.$2}:${this.$3 ?? ''}';
 }
 
