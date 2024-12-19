@@ -1,5 +1,5 @@
 name: purplebase
-description: A flexible Dart nostr library
+description: A domain-centric nostr client
 version: 0.2.0
 repository: https://github.com/purplebase/purplebase
 

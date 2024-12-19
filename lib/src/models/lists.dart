@@ -8,7 +8,4 @@ class BaseAppCurationSet extends BaseEvent<BaseAppCurationSet>
 
   Set<String> get appIds =>
       linkedReplaceableEvents.map((a) => a.$3).nonNulls.toSet();
-
-  @override
-  int get kind => _kindFor<BaseAppCurationSet>();
 }

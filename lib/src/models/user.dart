@@ -39,9 +39,6 @@ class BaseUser extends BaseEvent<BaseUser> {
   Map<String, dynamic> get _content =>
       content.isNotEmpty ? jsonDecode(content) : {};
 
-  @override
-  int get kind => _kindFor<BaseUser>();
-
   String? get name {
     var name = _content['name'] as String?;
     if (name == null || name.isEmpty) {
@@ -61,8 +58,11 @@ class BaseUser extends BaseEvent<BaseUser> {
 }
 
 extension Bech32StringX on String {
-  String get npub => bech32Encode('npub', this);
-  String get hexKey => bech32Decode(this);
+  /// Attempts to convert this string (hex) to npub. Returns same if already npub.
+  String get npub => startsWith('npub') ? this : bech32Encode('npub', this);
+
+  /// Attempts to convert this string (npub) to a hex pubkey. Returns same if already hex pubkey.
+  String get hexKey => startsWith('npub') ? bech32Decode(this) : this;
 }
 
 String bech32Encode(String prefix, String hexData) {

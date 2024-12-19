@@ -60,9 +60,6 @@ class BaseRelease extends BaseEvent<BaseRelease>
     );
   }
 
-  @override
-  int get kind => _kindFor<BaseRelease>();
-
   String? get url => tagMap['url']?.firstOrNull;
   String? get version => identifier?.split('@').lastOrNull;
 }

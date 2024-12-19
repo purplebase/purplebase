@@ -66,9 +66,6 @@ class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
     );
   }
 
-  @override
-  int get kind => _kindFor<BaseFileMetadata>();
-
   Set<String> get urls => tagMap['url'] ?? {};
   String? get mimeType => tagMap['m']?.firstOrNull;
   String? get hash => tagMap['x']?.firstOrNull;

@@ -4,9 +4,10 @@ import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
-Future<void> main() async {
-  final pk = 'deef3563ddbf74e62b2e8e5e44b25b8d63fb05e29a991f7e39cff56aa3ce82b8';
+const pk = 'deef3563ddbf74e62b2e8e5e44b25b8d63fb05e29a991f7e39cff56aa3ce82b8';
+final signer = PrivateKeySigner(pk);
 
+Future<void> main() async {
   test('general', () async {
     final container = ProviderContainer();
     // NOTE: Does not work with relay.nostr.band,
@@ -32,8 +33,8 @@ Future<void> main() async {
     final container = ProviderContainer();
     // NOTE: Does not work with relay.nostr.band,
     // they do not include "error" in their NOTICE messages
-    final relay =
-        container.read(relayProviderFamily({'wss://relay.zap.store'}).notifier);
+    final relay = container
+        .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
 
     final r1 = RelayRequest(kinds: {30063}, limit: 10);
     final k1s = await relay.queryRaw(r1);
@@ -43,31 +44,28 @@ Future<void> main() async {
     await relay.dispose();
   }, timeout: Timeout(Duration(seconds: 10)));
 
-  test('event', () {
+  test('event', () async {
     final defaultEvent = BaseApp(name: 'tr', identifier: 'default');
     print(defaultEvent.toMap());
     expect(defaultEvent.isValid, isFalse);
 
     final t = DateTime.parse('2024-07-26');
     final signedEvent =
-        BaseApp(name: 'tr', createdAt: t, identifier: 's1').sign(pk);
+        await signer.sign(BaseApp(name: 'tr', createdAt: t, identifier: 's1'));
     expect(signedEvent.isValid, isTrue);
     print(signedEvent.toMap());
 
     final signedEvent2 =
-        BaseApp(name: 'tr', createdAt: t, identifier: 's1').sign(pk);
+        await signer.sign(BaseApp(name: 'tr', createdAt: t, identifier: 's1'));
     expect(signedEvent2.isValid, isTrue);
     print(signedEvent2.toMap());
     // Test equality
     expect(signedEvent, signedEvent2);
   });
 
-  test('app from dart', () {
-    final app = BaseApp(
-            content: 'test app',
-            pubkeys: {'90983aebe92bea'},
-            identifier: 'blah')
-        .sign(pk);
+  test('app from dart', () async {
+    final app = await signer.sign(BaseApp(
+        content: 'test app', pubkeys: {'90983aebe92bea'}, identifier: 'blah'));
     expect(app.isValid, isTrue);
     expect(app.kind, 32267);
     expect(app.identifier, 'blah');
@@ -115,16 +113,16 @@ Future<void> main() async {
     final container = ProviderContainer();
     final relay =
         container.read(relayProviderFamily({'ws://localhost:3000'}).notifier);
-    final e = BaseRelease().sign(pk);
-    // Should fail because pk is not authorized by relay.zap.store
+    final e = await signer.sign(BaseRelease());
+    // Should fail because pk is not authorized by relay.zapstore.dev
     await expectLater(() => relay.publish(e), throwsException);
     await relay.dispose();
   });
 
   test('typed query', () async {
     final container = ProviderContainer();
-    final relay =
-        container.read(relayProviderFamily({'wss://relay.zap.store'}).notifier);
+    final relay = container
+        .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
     final apps = await relay.query<BaseApp>(search: 'xq');
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
   });

@@ -4,7 +4,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   Object? _id;
   String? _pubkey;
   final DateTime? createdAt;
-  int get kind;
+  int kind = _kindFor<T>();
   final String content;
   final Set<(String, dynamic)> _tags;
   List<List<String>> get _tagList => _tags
@@ -78,35 +78,8 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
     return _validated = '${createdAt!.toInt()}'.length == 10 &&
         _pubkey != null &&
         _signature != null &&
-        _id == _eventId(pubkey) &&
+        _id == getEventId(pubkey) &&
         bip340.verify(pubkey, id.toString(), signature);
-  }
-
-  String? _eventId(String pubkey) {
-    final data = [
-      0,
-      pubkey.toLowerCase(),
-      createdAt!.toInt(),
-      kind,
-      _tagList,
-      content
-    ];
-    final digest =
-        sha256.convert(Uint8List.fromList(utf8.encode(json.encode(data))));
-    return digest.toString();
-  }
-
-  T sign(String privateKey) {
-    this._pubkey = getPublicKey(privateKey);
-    this._id = _eventId(pubkey);
-    // TODO: Should aux be random? random.nextInt(256)
-    final aux = hex.encode(List<int>.generate(32, (i) => 1));
-    this._signature = bip340.sign(privateKey, id.toString(), aux);
-    return this as T;
-  }
-
-  static String getPublicKey(String privateKey) {
-    return bip340.getPublicKey(privateKey).toLowerCase();
   }
 
   // [['a', 1], ['a', 2]] => {'a': {1, 2}}
@@ -151,7 +124,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
   static final Map<int, (String, BaseEvent Function(Map<String, dynamic>))>
       _kinds = {
     0: ('users', BaseUser.fromJson),
-    // 3: ('contacts', BaseUser.fromJson),
+    4: ('directMessages', BaseDirectMessage.fromJson),
     1063: ('fileMetadata', BaseFileMetadata.fromJson),
     30063: ('releases', BaseRelease.fromJson),
     30267: ('appCurationSets', BaseAppCurationSet.fromJson),
@@ -164,7 +137,7 @@ abstract class BaseEvent<T extends BaseEvent<T>> with EquatableMixin {
 
   static T Function(Map<String, dynamic>)?
       constructorForKind<T extends BaseEvent<T>>(int kind) {
-    return _kinds[kind]?.$2 as T Function(Map<String, dynamic>)?;
+    return _kinds[kind]?.$2 as T Function(Map<String, dynamic>);
   }
 
   static int? kindForType<E>(String type) {
@@ -194,4 +167,26 @@ extension RLExtension on ReplaceableEventLink {
 mixin ParameterizableReplaceableEvent<T extends BaseEvent<T>> on BaseEvent<T> {
   @override
   String? get identifier => tagMap['d']?.firstOrNull;
+}
+
+extension _PExt on BaseEvent {
+  String getEventId(String pubkey) {
+    final data = [
+      0,
+      pubkey.toLowerCase(),
+      createdAt!.toInt(),
+      kind,
+      _tagList,
+      content
+    ];
+    final digest =
+        sha256.convert(Uint8List.fromList(utf8.encode(json.encode(data))));
+    return digest.toString();
+  }
+}
+
+class BaseUtil {
+  static String getPublicKey(String privateKey) {
+    return bip340.getPublicKey(privateKey).toLowerCase();
+  }
 }

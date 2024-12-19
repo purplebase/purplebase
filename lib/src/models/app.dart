@@ -75,9 +75,6 @@ class BaseApp extends BaseEvent<BaseApp>
     );
   }
 
-  @override
-  int get kind => _kindFor<BaseApp>();
-
   String? get name => tagMap['name']?.firstOrNull;
   String? get summary => tagMap['summary']?.firstOrNull;
   String? get repository => tagMap['repository']?.firstOrNull;

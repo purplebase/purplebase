@@ -18,7 +18,9 @@ import 'package:web_socket_client/web_socket_client.dart';
 
 part 'src/pool.dart';
 part 'src/relay.dart';
+part 'src/signer.dart';
 part 'src/utils.dart';
+part 'src/models/direct_message.dart';
 part 'src/models/event.dart';
 part 'src/models/app.dart';
 part 'src/models/release.dart';
