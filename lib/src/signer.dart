@@ -3,7 +3,7 @@ part of purplebase;
 abstract class Signer {
   Future<Signer> initialize();
   Future<String?> getPublicKey();
-  Future<T> sign<T extends BaseEvent<T>>(T model, {String? forPubkey});
+  Future<T> sign<T extends BaseEvent<T>>(T model, {String? asUser});
 }
 
 class PrivateKeySigner extends Signer {
@@ -31,7 +31,7 @@ class PrivateKeySigner extends Signer {
   }
 
   @override
-  Future<T> sign<T extends BaseEvent<T>>(T model, {String? forPubkey}) async {
+  Future<T> sign<T extends BaseEvent<T>>(T model, {String? asUser}) async {
     final pubkey = BaseUtil.getPublicKey(privateKey);
     final id = model.getEventId(pubkey);
     // TODO: Should aux be random? random.nextInt(256)
