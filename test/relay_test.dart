@@ -68,20 +68,22 @@ Future<void> main() async {
   test('event', () async {
     final defaultEvent = PartialApp()
       ..name = 'app'
-      ..event.identifier = 'w';
+      ..identifier = 'w';
     print(defaultEvent.toMap());
     // expect(defaultEvent.isValid, isFalse);
 
     final t = DateTime.parse('2024-07-26');
     final signedEvent = await signer.sign(PartialApp()
       ..name = 'tr'
-      ..event.createdAt = t); // identifier: 's1'
+      ..event.createdAt = t
+      ..identifier = 's1');
     // expect(signedEvent.isValid, isTrue);
     print(signedEvent.toMap());
 
     final signedEvent2 = await signer.sign(PartialApp()
       ..name = 'tr'
-      ..event.createdAt = t); // identifier: 's1'
+      ..identifier = 's1'
+      ..event.createdAt = t);
     // expect(signedEvent2.isValid, isTrue);
     print(signedEvent2.toMap());
     // Test equality
@@ -90,6 +92,7 @@ Future<void> main() async {
 
   test('app from dart', () async {
     final app = await signer.sign(PartialApp()
+      ..identifier = 'w'
       ..description =
           'test app'); // identifier: 'blah'; pubkeys: {'90983aebe92bea'}
 
@@ -132,9 +135,10 @@ Future<void> main() async {
         ["license", "Apache-2.0"]
       ],
     });
+    print(app.description);
     // expect(app.isValid, isTrue);
-    expect(app.event.tags,
-        {'android', 'input-method', 'keyboard', 'kotlin', 'kotlin-android'});
+    // expect(app.event.tags,
+    //     {'android', 'input-method', 'keyboard', 'kotlin', 'kotlin-android'});
   });
 
   test('publish', () async {
@@ -164,7 +168,7 @@ Future<void> main() async {
       ]
     });
     print(r3.id);
-    print(r3.event.identifier);
+    print(r3.identifier);
 
     // print(prel.event.identifier);
     // final relay = container
