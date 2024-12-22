@@ -108,7 +108,6 @@ sealed class InternalEvent {
 }
 
 final class ImmutableInternalEvent extends InternalEvent {
-  // TODO: Allow FD to accept String via parameterized default type
   final Object id;
   @override
   final int kind;

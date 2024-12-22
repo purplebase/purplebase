@@ -195,9 +195,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return result.map(Event.getConstructor<E>()!.call).toList();
   }
 
-  // TODO: Remove failEarly
-  Future<void> publish<E extends Event<E>>(Event<E> event,
-      {bool failEarly = true}) async {
+  Future<void> publish<E extends Event<E>>(Event<E> event) async {
     final completer = Completer<void>();
 
     if (ndk != null) {
@@ -215,12 +213,6 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         completer.complete();
       }
       return;
-    }
-
-    final relayUrls = failEarly ? pool!.connectedRelayUrls : pool!.relayUrls;
-    if (failEarly && relayUrls.isEmpty) {
-      completer.completeError(Exception('No relays are connected'));
-      return completer.future;
     }
 
     pool!.send(jsonEncode(["EVENT", event.toMap()]));
