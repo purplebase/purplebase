@@ -11,6 +11,7 @@ class Release extends ParameterizableReplaceableEvent<Release>
     with ReleaseMixin {
   Release.fromJson(super.map) : super.fromJson();
 
+  // TODO: Remove
   @override
   EventConstructor<Release> get constructor => Release.fromJson;
 }
@@ -22,8 +23,7 @@ mixin ReleaseMixin on EventBase {
   String get releaseNotes => event.content;
 }
 
-class PartialRelease
-    extends ParameterizableReplaceablePartialEvent<PartialRelease, Release>
+class PartialRelease extends ParameterizableReplaceablePartialEvent<Release>
     with ReleaseMixin {
   set releaseNotes(String value) => event.content = value;
 }
@@ -66,18 +66,20 @@ Future<void> main() async {
   }, timeout: Timeout(Duration(seconds: 10)));
 
   test('event', () async {
-    final defaultEvent = PartialApp()..name = 'app'; // TODO: identifier
+    final defaultEvent = PartialApp()
+      ..name = 'app'
+      ..event.identifier = 'w';
     print(defaultEvent.toMap());
     // expect(defaultEvent.isValid, isFalse);
 
     final t = DateTime.parse('2024-07-26');
-    final signedEvent = await signer.sign<App, PartialApp>(PartialApp()
+    final signedEvent = await signer.sign(PartialApp()
       ..name = 'tr'
       ..event.createdAt = t); // identifier: 's1'
     // expect(signedEvent.isValid, isTrue);
     print(signedEvent.toMap());
 
-    final signedEvent2 = await signer.sign<App, PartialApp>(PartialApp()
+    final signedEvent2 = await signer.sign(PartialApp()
       ..name = 'tr'
       ..event.createdAt = t); // identifier: 's1'
     // expect(signedEvent2.isValid, isTrue);
@@ -87,7 +89,7 @@ Future<void> main() async {
   });
 
   test('app from dart', () async {
-    final app = await signer.sign<App, PartialApp>(PartialApp()
+    final app = await signer.sign(PartialApp()
       ..description =
           'test app'); // identifier: 'blah'; pubkeys: {'90983aebe92bea'}
 
@@ -136,7 +138,7 @@ Future<void> main() async {
   });
 
   test('publish', () async {
-    final container = ProviderContainer();
+    // final container = ProviderContainer();
     // final prel = PartialRelease()..event.identifier = 'hello';
     final r3 = Release.fromJson({
       "id": "1bd80e5d2fd3134ab1bb8e2d98b7868b94bff8431dc083874bd5486251af0f21",
@@ -162,17 +164,15 @@ Future<void> main() async {
       ]
     });
     print(r3.id);
-    print(r3.event.content);
-
-    return;
+    print(r3.event.identifier);
 
     // print(prel.event.identifier);
-    final relay = container
-        .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
-    final e = await signer.sign<Release, PartialRelease>(PartialRelease());
-    // Should fail because pk is not authorized by relay.zapstore.dev
-    await expectLater(() => relay.publish(e), throwsException);
-    await relay.dispose();
+    // final relay = container
+    //     .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
+    // final e = await signer.sign(PartialRelease());
+    // // Should fail because pk is not authorized by relay.zapstore.dev
+    // await expectLater(() => relay.publish(e), throwsException);
+    // await relay.dispose();
   });
 
   test('typed query', () async {

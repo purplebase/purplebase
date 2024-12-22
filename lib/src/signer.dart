@@ -1,24 +1,15 @@
 part of purplebase;
 
-mixin Signable<E extends Event<E>, P extends PartialEvent<P, E>> {
+mixin Signable<E extends Event<E>> {
   Future<E> signWith(Signer signer) {
-    return signer.sign<E, P>(this as P);
+    return signer.sign<E>(this as PartialEvent<E>);
   }
 }
-
-// class PKSigner implements Signer {
-//   @override
-//   E sign<E extends Event<E>, P extends PartialEvent<P, E>>(P model) {
-//     return Event.getConstructor<E>(model.kind)!.call(
-//         {...model.toMap(), 'id': '1whatever', 'sig': 'lalala', 'pubkey': '1p'});
-//   }
-// }
 
 abstract class Signer {
   Future<Signer> initialize();
   Future<String?> getPublicKey();
-  Future<E> sign<E extends Event<E>, P extends PartialEvent<P, E>>(
-      P partialEvent,
+  Future<E> sign<E extends Event<E>>(PartialEvent<E> partialEvent,
       {String? asUser});
 }
 
@@ -47,8 +38,7 @@ class Bip340PrivateKeySigner extends Signer {
   }
 
   @override
-  Future<E> sign<E extends Event<E>, P extends PartialEvent<P, E>>(
-      P partialEvent,
+  Future<E> sign<E extends Event<E>>(PartialEvent<E> partialEvent,
       {String? asUser}) async {
     final pubkey = BaseUtil.getPublicKey(privateKey);
     final id = partialEvent.getEventId(pubkey);

@@ -182,7 +182,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       int? limit,
       Iterable<String>? relayUrls}) async {
     final req = RelayRequest(
-        kinds: {}, // TODO: Event._types[E.toString()]!
+        kinds: {Event.types[E.toString()]!},
         ids: ids ?? {},
         authors: authors ?? {},
         tags: tags ?? {},

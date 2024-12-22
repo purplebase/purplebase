@@ -19,7 +19,7 @@ class App extends ParameterizableReplaceableEvent<App> with _AppMixin {
   EventConstructor<App> get constructor => App.fromJson;
 }
 
-class PartialApp extends ParameterizableReplaceablePartialEvent<PartialApp, App>
+class PartialApp extends ParameterizableReplaceablePartialEvent<App>
     with _AppMixin {
   set description(String value) => event.content = value;
   set name(String? value) => event.setTag('name', value);

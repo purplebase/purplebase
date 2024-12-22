@@ -61,15 +61,10 @@ sealed class Event<E extends Event<E>>
             tags: toTags(map['tags'] as Iterable),
             kind: map['kind'],
             signature: map['sig']) {
-    // Assert kind
+    // TODO: Assert kind
     // if (kind != event.kind) {
     //   throw Exception('Kind mismatch: $kind != ${event.kind}');
     // }
-    // Register tear-off constructor
-    Event.constructors[kind] = constructor;
-    // Associate type to kind
-    // TODO
-    // Event._types[E.toString()] = kind;
   }
 
   Map<String, dynamic> toMap() {
@@ -89,20 +84,14 @@ sealed class Event<E extends Event<E>>
   // >= 30000 && < 40000 => EventType.parameterizedReplaceable,
   // _ => EventType.regular,
   @override
-  List<Object?> get props {
-    return switch (this) {
-      ParameterizableReplaceableEvent() => [
-          getReplaceableEventLink().formatted
-        ],
-      // _ => [event.id],
-    };
-  }
+  List<Object?> get props => [event.id];
 
-  ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
-      (kind, pubkey ?? event.pubkey, ''); // TODO: event.identifier
-
-  static final Map<int, EventConstructor> constructors = {};
-  // static final Map<String, int> _types = {};
+  // Registerable mappings
+  static final Map<int, EventConstructor> constructors = {
+    1: Note.fromJson,
+    32267: App.fromJson
+  };
+  static final Map<String, int> types = {'Note': 1, 'App': 32267};
 
   static EventConstructor<E>? getConstructor<E extends Event<E>>(int kind) {
     return constructors[kind] as EventConstructor<E>?;
@@ -133,9 +122,17 @@ abstract class ParameterizableReplaceableEvent<E extends Event<E>>
 
   ParameterizableReplaceableEvent.fromJson(super.map) : super.fromJson() {
     __event = PREImmutableInternalEvent(
-        event: super.event, identifier: super.event.tags['d']!.first);
+      event: super.event,
+      identifier: super.event.tags['d']!.first,
+    );
     // TODO assert kind number correct
   }
+
+  ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
+      (kind, pubkey ?? event.pubkey, event.identifier);
+
+  @override
+  List<Object?> get props => [getReplaceableEventLink().formatted];
 }
 
 final class PREMutableInternalEvent extends MutableInternalEvent {
@@ -143,9 +140,8 @@ final class PREMutableInternalEvent extends MutableInternalEvent {
   PREMutableInternalEvent(super.kind);
 }
 
-abstract class ParameterizableReplaceablePartialEvent<
-    P extends PartialEvent<P, E>,
-    E extends Event<E>> extends PartialEvent<P, E> {
+abstract class ParameterizableReplaceablePartialEvent<E extends Event<E>>
+    extends PartialEvent<E> {
   @override
   PREMutableInternalEvent get event => super.event as PREMutableInternalEvent;
 
@@ -187,8 +183,8 @@ class MutableInternalEvent implements InternalEvent {
   }
 }
 
-abstract class PartialEvent<P extends PartialEvent<P, E>, E extends Event<E>>
-    with Signable<E, P>
+abstract class PartialEvent<E extends Event<E>>
+    with Signable<E>
     implements HasMutableEvent {
   @override
   late final MutableInternalEvent event;
