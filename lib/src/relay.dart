@@ -182,7 +182,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       int? limit,
       Iterable<String>? relayUrls}) async {
     final req = RelayRequest(
-        kinds: {Event.types[E.toString()]!},
+        kinds: {Event.types[E.toString()]!.$1},
         ids: ids ?? {},
         authors: authors ?? {},
         tags: tags ?? {},
@@ -192,10 +192,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         limit: limit);
 
     final result = await queryRaw(req);
-    return result
-        .map((map) =>
-            Event.getConstructor<E>(map['kind'].toString().toInt()!)!.call(map))
-        .toList();
+    return result.map(Event.getConstructor<E>()!.call).toList();
   }
 
   // TODO: Remove failEarly

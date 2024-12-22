@@ -46,6 +46,6 @@ class Bip340PrivateKeySigner extends Signer {
     final aux = hex.encode(List<int>.generate(32, (i) => 1));
     final signature = bip340.sign(privateKey, id.toString(), aux);
     final map = _prepare(partialEvent.toMap(), id, pubkey, signature);
-    return Event.getConstructor<E>(partialEvent.kind)!.call(map);
+    return Event.getConstructor<E>()!.call(map);
   }
 }

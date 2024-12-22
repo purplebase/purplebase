@@ -16,12 +16,6 @@ extension IntExt on int {
   DateTime toDate() => DateTime.fromMillisecondsSinceEpoch(this * 1000);
 }
 
-extension on String? {
-  int? toInt() {
-    return this == null ? null : int.tryParse(this!);
-  }
-}
-
 extension DateTimeExt on DateTime {
   int toInt() => millisecondsSinceEpoch ~/ 1000;
 }

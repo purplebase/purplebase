@@ -1,32 +1,17 @@
 import 'dart:async';
 
-import 'package:purplebase/purplebase.dart';
+// Hiding Release from purplebase, and using a local release definition
+// in order to test defining models outside of the library
+import 'package:purplebase/purplebase.dart' hide Release, PartialRelease;
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
+
+import 'release.dart';
 
 const pk = 'deef3563ddbf74e62b2e8e5e44b25b8d63fb05e29a991f7e39cff56aa3ce82b8';
 final signer = Bip340PrivateKeySigner(pk);
 
-class Release extends ParameterizableReplaceableEvent<Release>
-    with ReleaseMixin {
-  Release.fromJson(super.map) : super.fromJson();
-
-  // TODO: Remove
-  @override
-  EventConstructor<Release> get constructor => Release.fromJson;
-}
-
-mixin ReleaseMixin on EventBase {
-  @override
-  int get kind => 30063;
-
-  String get releaseNotes => event.content;
-}
-
-class PartialRelease extends ParameterizableReplaceablePartialEvent<Release>
-    with ReleaseMixin {
-  set releaseNotes(String value) => event.content = value;
-}
+//
 
 Future<void> main() async {
   test('general', () async {
@@ -142,41 +127,16 @@ Future<void> main() async {
   });
 
   test('publish', () async {
-    // final container = ProviderContainer();
-    // final prel = PartialRelease()..event.identifier = 'hello';
-    final r3 = Release.fromJson({
-      "id": "1bd80e5d2fd3134ab1bb8e2d98b7868b94bff8431dc083874bd5486251af0f21",
-      "pubkey":
-          "645681b9d067b1a362c4bee8ddff987d2466d49905c26cb8fec5e6fb73af5c84",
-      "sig":
-          "2291d74ac5bee27986a644d60742d8609e5a02db8e37cb44e9447b517787dae584d57f0f367eb02419d6d4489d0afd1cb4e6eb98c78d6bf4844b40cad717410e",
-      "kind": 30063,
-      "created_at": 1734697389,
-      "content":
-          "NewPokey release v0.1.3-alpha\r\n\r\n## Features\r\n\r\n<img src=\"https://image.nostr.build/6342840f0cd13ca4e23fb732f9a3d9b3b448b7914b5b427e5d48a1c3e1f337f6.jpg\" width=\"400\"/>\r\n\r\n- Notifications center\r\n- Views rearrangement\r\n\r\n## Bugs\r\n\r\n- Background service automatically recovers after fatal error\r\n\r\nhttps://github.com/KoalaSat/pokey/releases/tag/v0.1.3-alpha\r\n\r\n\r\n## What's Changed\r\n* Notifications list by @KoalaSat in https://github.com/KoalaSat/pokey/pull/65\r\n* Recover background service by @KoalaSat in https://github.com/KoalaSat/pokey/pull/6\r\n\r\n\r\n**Full Changelog**: https://github.com/KoalaSat/pokey/compare/v0.1.2-alpha...v0.1.3-alpha",
-      "tags": [
-        ["url", "https://github.com/KoalaSat/pokey/releases/tag/v0.1.3-alpha"],
-        [
-          "e",
-          "d14f7e7bbc1edd13bc4d9786f2d2da8e146869e5b9d05f6048a1d07798eb4e2e"
-        ],
-        [
-          "a",
-          "32267:645681b9d067b1a362c4bee8ddff987d2466d49905c26cb8fec5e6fb73af5c84:com.koalasat.pokey"
-        ],
-        ["d", "com.koalasat.pokey@v0.1.3-alpha"]
-      ]
-    });
-    print(r3.id);
-    print(r3.identifier);
-
-    // print(prel.event.identifier);
-    // final relay = container
-    //     .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
-    // final e = await signer.sign(PartialRelease());
-    // // Should fail because pk is not authorized by relay.zapstore.dev
-    // await expectLater(() => relay.publish(e), throwsException);
-    // await relay.dispose();
+    final container = ProviderContainer();
+    Event.types['Release'] = (30063, Release.fromJson);
+    final release = PartialRelease()..identifier = 'test';
+    final relay = container
+        .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
+    final e = await signer.sign(release);
+    print(e.toMap());
+    // Should fail because pk is not authorized by relay.zapstore.dev
+    await expectLater(() => relay.publish(e), throwsException);
+    await relay.dispose();
   });
 
   test('typed query', () async {
@@ -184,6 +144,7 @@ Future<void> main() async {
     final relay = container
         .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);
     final apps = await relay.query<App>(search: 'xq');
+    print(apps.first.toMap());
     expect(apps.first.repository, 'https://github.com/sibprogrammer/xq');
   });
 

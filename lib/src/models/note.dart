@@ -5,11 +5,6 @@ mixin _NoteMixin on EventBase {
   int get kind => 1;
 }
 
-class Note extends RegularEvent<Note> with _NoteMixin {
-  Note.fromJson(super.map) : super.fromJson();
-
-  @override
-  EventConstructor<Note> get constructor => Note.fromJson;
-}
+class Note = RegularEvent<Note> with _NoteMixin;
 
 class PartialNote extends RegularPartialEvent<Note> with _NoteMixin {}

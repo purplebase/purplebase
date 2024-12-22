@@ -5,7 +5,7 @@ abstract class EventBase {
   int get kind;
 }
 
-abstract class HasMutableEvent extends EventBase {
+abstract class PartialEventBase extends EventBase {
   @override
   MutableInternalEvent get event;
 }
@@ -18,8 +18,6 @@ sealed class Event<E extends Event<E>>
   @override
   final ImmutableInternalEvent event;
 
-  EventConstructor<E> get constructor;
-
   String get id => event.id.toString();
 
   Event.fromJson(Map<String, dynamic> map)
@@ -31,10 +29,9 @@ sealed class Event<E extends Event<E>>
             tags: toTags(map['tags'] as Iterable),
             kind: map['kind'],
             signature: map['sig']) {
-    // TODO: Assert kind
-    // if (kind != event.kind) {
-    //   throw Exception('Kind mismatch: $kind != ${event.kind}');
-    // }
+    if (kind != event.kind) {
+      throw Exception('Kind mismatch: $kind != ${event.kind}');
+    }
   }
 
   Map<String, dynamic> toMap() {
@@ -57,21 +54,27 @@ sealed class Event<E extends Event<E>>
   List<Object?> get props => [event.id];
 
   // Registerable mappings
-  static final Map<int, EventConstructor> constructors = {
-    1: Note.fromJson,
-    32267: App.fromJson
+  static final Map<String, (int, EventConstructor)> types = {
+    'Note': (1, Note.fromJson),
+    'App': (32267, App.fromJson)
   };
-  static final Map<String, int> types = {'Note': 1, 'App': 32267};
 
-  // TODO: Should not require kind, look up by E.toString()
-  static EventConstructor<E>? getConstructor<E extends Event<E>>(int kind) {
-    return constructors[kind] as EventConstructor<E>?;
+  static EventConstructor<E>? getConstructor<E extends Event<E>>() {
+    final constructor = types[E.toString()]?.$2 as EventConstructor<E>?;
+    if (constructor == null) {
+      throw Exception('''
+Could not find the constructor for ${E.toString()}. Did you forget to register the type?
+
+You can do so by calling: Event.types['${E.toString()}'] = (kind, ${E.toString()}.fromJson);
+''');
+    }
+    return constructor;
   }
 }
 
 sealed class PartialEvent<E extends Event<E>>
     with Signable<E>
-    implements HasMutableEvent {
+    implements PartialEventBase {
   late final MutableInternalEvent _event;
   @override
   MutableInternalEvent get event => _event;
@@ -161,10 +164,6 @@ abstract class RegularPartialEvent<E extends Event<E>>
 abstract class ParameterizableReplaceableEvent<E extends Event<E>>
     extends Event<E> {
   ParameterizableReplaceableEvent.fromJson(super.map) : super.fromJson() {
-    // _event = PREImmutableInternalEvent(
-    //   event: super.event,
-    //   identifier: super.event.tags['d']!.first,
-    // );
     // TODO assert kind number correct && identifier exists
   }
 
@@ -179,6 +178,7 @@ abstract class ParameterizableReplaceableEvent<E extends Event<E>>
 
 abstract class ParameterizableReplaceablePartialEvent<E extends Event<E>>
     extends PartialEvent<E> {
+  String? get identifier => event.tags['d']?.firstOrNull;
   set identifier(String? value) => event.setTag('d', value);
 }
 

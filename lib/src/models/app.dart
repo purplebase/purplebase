@@ -12,12 +12,7 @@ mixin _AppMixin on EventBase {
   Set<String> get images => event.tags['image']?.toSet() ?? {};
 }
 
-class App extends ParameterizableReplaceableEvent<App> with _AppMixin {
-  App.fromJson(super.map) : super.fromJson();
-
-  @override
-  EventConstructor<App> get constructor => App.fromJson;
-}
+class App = ParameterizableReplaceableEvent<App> with _AppMixin;
 
 class PartialApp extends ParameterizableReplaceablePartialEvent<App>
     with _AppMixin {
