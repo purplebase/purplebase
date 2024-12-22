@@ -1,8 +1,15 @@
 part of purplebase;
 
-mixin _AppMixin on EventBase {
+class Note extends ParameterizableReplaceableEvent<Note> with _NoteMixin {
+  Note.fromJson(super.map) : super.fromJson();
+
   @override
-  int get kind => 32267;
+  EventConstructor<Note> get constructor => Note.fromJson;
+}
+
+mixin _NoteMixin on EventBase {
+  @override
+  int get kind => 1;
 
   String? get name => event.tags['name']?.firstOrNull;
   String? get repository => event.tags['repository']?.firstOrNull;
@@ -12,15 +19,9 @@ mixin _AppMixin on EventBase {
   Set<String> get images => event.tags['image']?.toSet() ?? {};
 }
 
-class App extends ParameterizableReplaceableEvent<App> with _AppMixin {
-  App.fromJson(super.map) : super.fromJson();
-
-  @override
-  EventConstructor<App> get constructor => App.fromJson;
-}
-
-class PartialApp extends ParameterizableReplaceablePartialEvent<PartialApp, App>
-    with _AppMixin {
+class PartialNote
+    extends ParameterizableReplaceablePartialEvent<PartialNote, Note>
+    with _NoteMixin {
   set description(String value) => event.content = value;
   set name(String? value) => event.setTag('name', value);
   set repository(String? value) => event.setTag('repository', value);

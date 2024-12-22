@@ -172,7 +172,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return completer.future;
   }
 
-  Future<List<T>> query<T extends BaseEvent<T>>(
+  Future<List<E>> query<E extends Event<E>>(
       {Set<String>? ids,
       Set<String>? authors,
       Map<String, dynamic>? tags,
@@ -182,7 +182,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       int? limit,
       Iterable<String>? relayUrls}) async {
     final req = RelayRequest(
-        kinds: {_kindFor<T>()},
+        kinds: {}, // TODO: Event._types[E.toString()]!
         ids: ids ?? {},
         authors: authors ?? {},
         tags: tags ?? {},
@@ -194,12 +194,13 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     final result = await queryRaw(req);
     return result
         .map((map) =>
-            BaseEvent.constructorForKind<T>(map['kind'].toString().toInt()!)!
-                .call(map))
+            Event.getConstructor<E>(map['kind'].toString().toInt()!)!.call(map))
         .toList();
   }
 
-  Future<void> publish(BaseEvent event, {bool failEarly = true}) async {
+  // TODO: Remove failEarly
+  Future<void> publish<E extends Event<E>>(Event<E> event,
+      {bool failEarly = true}) async {
     final completer = Completer<void>();
 
     if (ndk != null) {
