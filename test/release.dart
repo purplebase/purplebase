@@ -6,9 +6,6 @@ class PartialRelease = ParameterizableReplaceablePartialEvent<Release>
     with ReleaseMixin, MutableReleaseMixin;
 
 mixin ReleaseMixin on EventBase {
-  @override
-  int get kind => 30063;
-
   String get releaseNotes => event.content;
 }
 

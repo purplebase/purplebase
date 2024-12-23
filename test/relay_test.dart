@@ -82,7 +82,7 @@ Future<void> main() async {
           'test app'); // identifier: 'blah'; pubkeys: {'90983aebe92bea'}
 
     // expect(app.isValid, isTrue);
-    expect(app.kind, 32267);
+    expect(app.event.kind, 32267);
     expect(app.description, 'test app');
     // expect(app.identifier, 'blah');
     // expect(app.getReplaceableEventLink(), (

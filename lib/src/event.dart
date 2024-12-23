@@ -1,36 +1,32 @@
 part of purplebase;
 
-abstract class EventBase {
-  InternalEvent get event;
-  int get kind;
-}
-
-abstract class PartialEventBase extends EventBase {
-  @override
-  MutableInternalEvent get event;
-}
-
-// Event
-
 sealed class Event<E extends Event<E>>
     with EquatableMixin
     implements EventBase {
   @override
   final ImmutableInternalEvent event;
 
-  String get id => event.id.toString();
-
   Event.fromJson(Map<String, dynamic> map)
-      : event = ImmutableInternalEvent(
+      : event = ImmutableInternalEvent<E>(
             id: map['id'],
             content: map['content'],
             pubkey: map['pubkey'],
             createdAt: (map['created_at'] as int).toDate(),
             tags: toTags(map['tags'] as Iterable),
-            kind: map['kind'],
             signature: map['sig']) {
-    if (kind != event.kind) {
-      throw Exception('Kind mismatch: $kind != ${event.kind}');
+    if (map['kind'] != event.kind) {
+      throw Exception(
+          'Kind mismatch! Incoming JSON kind is not of the kind of type $E');
+    }
+
+    final kindCheck = switch (event.kind) {
+      >= 10000 && < 20000 || 0 || 3 => this is ReplaceableEvent,
+      >= 20000 && < 30000 => this is EphemeralEvent,
+      >= 30000 && < 40000 => this is ParameterizableReplaceableEvent,
+      _ => this is RegularEvent,
+    };
+    if (!kindCheck) {
+      throw Exception('Kind does not match the type of event');
     }
   }
 
@@ -46,10 +42,6 @@ sealed class Event<E extends Event<E>>
     };
   }
 
-  // >= 10000 && < 20000 || 0 || 3 => EventType.replaceable,
-  // >= 20000 && < 30000 => EventType.ephemeral,
-  // >= 30000 && < 40000 => EventType.parameterizedReplaceable,
-  // _ => EventType.regular,
   @override
   List<Object?> get props => [event.id];
 
@@ -63,9 +55,9 @@ sealed class Event<E extends Event<E>>
     final constructor = types[E.toString()]?.$2 as EventConstructor<E>?;
     if (constructor == null) {
       throw Exception('''
-Could not find the constructor for ${E.toString()}. Did you forget to register the type?
+Could not find the constructor for $E. Did you forget to register the type?
 
-You can do so by calling: Event.types['${E.toString()}'] = (kind, ${E.toString()}.fromJson);
+You can do so by calling: Event.types['$E'] = (kind, $E.fromJson);
 ''');
     }
     return constructor;
@@ -75,13 +67,8 @@ You can do so by calling: Event.types['${E.toString()}'] = (kind, ${E.toString()
 sealed class PartialEvent<E extends Event<E>>
     with Signable<E>
     implements PartialEventBase {
-  late final MutableInternalEvent _event;
   @override
-  MutableInternalEvent get event => _event;
-
-  PartialEvent() {
-    _event = MutableInternalEvent(kind);
-  }
+  final PartialInternalEvent event = PartialInternalEvent<E>();
 
   Map<String, dynamic> toMap() {
     return {
@@ -98,19 +85,27 @@ sealed class PartialEvent<E extends Event<E>>
   }
 }
 
+mixin EventBase {
+  InternalEvent get event;
+}
+
+mixin PartialEventBase on EventBase {
+  @override
+  PartialInternalEvent get event;
+}
+
 // Internal events
 
-sealed class InternalEvent {
-  int get kind;
+sealed class InternalEvent<E extends Event<E>> {
+  final int kind = Event.types[E.toString()]!.$1;
   DateTime get createdAt;
   String get content;
   Map<String, List<String>> get tags;
 }
 
-final class ImmutableInternalEvent extends InternalEvent {
+final class ImmutableInternalEvent<E extends Event<E>>
+    extends InternalEvent<E> {
   final Object id;
-  @override
-  final int kind;
   @override
   final DateTime createdAt;
   final String pubkey;
@@ -121,7 +116,6 @@ final class ImmutableInternalEvent extends InternalEvent {
   final String signature;
   ImmutableInternalEvent(
       {required this.id,
-      required this.kind,
       required this.createdAt,
       required this.pubkey,
       required this.tags,
@@ -129,12 +123,9 @@ final class ImmutableInternalEvent extends InternalEvent {
       required this.signature});
 }
 
-final class MutableInternalEvent extends InternalEvent {
-  MutableInternalEvent(this.kind);
+final class PartialInternalEvent<E extends Event<E>> extends InternalEvent<E> {
   // No ID, pubkey or signature
-  // Kind is immutable
-  @override
-  final int kind;
+  // Kind is inherited
   @override
   String content = '';
   @override
@@ -158,25 +149,49 @@ abstract class RegularEvent<E extends Event<E>> extends Event<E> {
 abstract class RegularPartialEvent<E extends Event<E>>
     extends PartialEvent<E> {}
 
-// PRE
+// Ephemeral
 
-abstract class ParameterizableReplaceableEvent<E extends Event<E>>
-    extends Event<E> {
-  ParameterizableReplaceableEvent.fromJson(super.map) : super.fromJson() {
-    // TODO assert kind number correct && identifier exists
-  }
+abstract class EphemeralEvent<E extends Event<E>> extends Event<E> {
+  EphemeralEvent.fromJson(super.map) : super.fromJson();
+}
 
-  String get identifier => event.tags['d']!.first;
+abstract class EphemeralPartialEvent<E extends Event<E>>
+    extends PartialEvent<E> {}
+
+// Replaceable
+
+abstract class ReplaceableEvent<E extends Event<E>> extends Event<E> {
+  ReplaceableEvent.fromJson(super.map) : super.fromJson();
 
   ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
-      (kind, pubkey ?? event.pubkey, identifier);
+      (event.kind, pubkey ?? event.pubkey, null);
 
   @override
   List<Object?> get props => [getReplaceableEventLink().formatted];
 }
 
+abstract class ReplaceablePartialEvent<E extends Event<E>>
+    extends PartialEvent<E> {}
+
+// PRE
+
+abstract class ParameterizableReplaceableEvent<E extends Event<E>>
+    extends ReplaceableEvent<E> {
+  ParameterizableReplaceableEvent.fromJson(super.map) : super.fromJson() {
+    if (!event.tags.containsKey('d')) {
+      throw Exception('Event must contain a `d` tag');
+    }
+  }
+
+  String get identifier => event.tags['d']!.first;
+
+  @override
+  ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
+      (event.kind, pubkey ?? event.pubkey, identifier);
+}
+
 abstract class ParameterizableReplaceablePartialEvent<E extends Event<E>>
-    extends PartialEvent<E> {
+    extends ReplaceablePartialEvent<E> {
   String? get identifier => event.tags['d']?.firstOrNull;
   set identifier(String? value) => event.setTag('d', value);
 }
@@ -188,11 +203,9 @@ typedef EventConstructor<E extends Event<E>> = E Function(Map<String, dynamic>);
 typedef ReplaceableEventLink = (int, String, String?);
 
 extension RLExtension on ReplaceableEventLink {
-  // NOTE: Yes, NPREs have a trailing colon
+  // NOTE: Yes, plain replaceables have a trailing colon
   String get formatted => '${this.$1}:${this.$2}:${this.$3 ?? ''}';
 }
-
-enum EventType { regular, ephemeral, replaceable, parameterizedReplaceable }
 
 extension PExt on PartialEvent {
   String getEventId(String pubkey) {
@@ -200,7 +213,7 @@ extension PExt on PartialEvent {
       0,
       pubkey.toLowerCase(),
       event.createdAt.toInt(),
-      kind,
+      event.kind,
       toNostrTags(event.tags),
       event.content
     ];
@@ -209,7 +222,3 @@ extension PExt on PartialEvent {
     return digest.toString();
   }
 }
-
-// extension MExt on Map<String, List<String>> {
-//   Map<String, List<String>> ensure()
-// }

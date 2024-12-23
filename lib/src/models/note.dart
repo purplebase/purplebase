@@ -1,9 +1,6 @@
 part of purplebase;
 
-mixin _NoteMixin on EventBase {
-  @override
-  int get kind => 1;
-}
+mixin _NoteMixin on EventBase {}
 
 class Note = RegularEvent<Note> with _NoteMixin;
 

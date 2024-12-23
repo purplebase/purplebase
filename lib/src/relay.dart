@@ -217,9 +217,9 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
 
     pool!.send(jsonEncode(["EVENT", event.toMap()]));
 
-    _closeFns[event.id.toString()] = addListener((message) {
+    _closeFns[event.event.id.toString()] = addListener((message) {
       if (message.subscriptionId != null &&
-          event.id.toString() != message.subscriptionId) {
+          event.event.id.toString() != message.subscriptionId) {
         return;
       }
 

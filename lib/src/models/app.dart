@@ -1,9 +1,6 @@
 part of purplebase;
 
 mixin _AppMixin on EventBase {
-  @override
-  int get kind => 32267;
-
   String? get name => event.tags['name']?.firstOrNull;
   String? get repository => event.tags['repository']?.firstOrNull;
   String get description => event.content;
