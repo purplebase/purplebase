@@ -1,13 +1,36 @@
 part of purplebase;
 
-class User = ReplaceableEvent<User> with UserMixin;
+class User extends ReplaceableEvent<User> with UserMixin {
+  late final Map<String, dynamic> _content;
+
+  User.fromJson(super.map) : super.fromJson() {
+    _content = event.content.isNotEmpty ? jsonDecode(event.content) : {};
+  }
+
+  String get pubkey => event.pubkey;
+  String get npub => bech32Encode('npub', pubkey);
+
+  String? get name {
+    var name = _content['name'] as String?;
+    if (name == null || name.isEmpty) {
+      name = _content['display_name'] as String?;
+    }
+    if (name == null || name.isEmpty) {
+      name = _content['displayName'] as String?;
+    }
+    return name;
+  }
+
+  String? get nip05 => _content['nip05'];
+
+  String? get avatarUrl => _content['picture'];
+  String? get lud16 => _content['lud16'];
+}
 
 class PartialUser = ReplaceablePartialEvent<User>
     with UserMixin, PartialUserMixin;
 
-mixin UserMixin on EventBase {
-  // String get npub => bech32Encode('npub', event.pubkey);
-}
+mixin UserMixin on EventBase {}
 
 mixin PartialUserMixin on PartialEventBase {}
 
@@ -47,24 +70,6 @@ mixin PartialUserMixin on PartialEventBase {}
 //     );
 //   }
 
-//   Map<String, dynamic> get _content =>
-//       content.isNotEmpty ? jsonDecode(content) : {};
-
-//   String? get name {
-//     var name = _content['name'] as String?;
-//     if (name == null || name.isEmpty) {
-//       name = _content['display_name'] as String?;
-//     }
-//     if (name == null || name.isEmpty) {
-//       name = _content['displayName'] as String?;
-//     }
-//     return name;
-//   }
-
-//   String? get nip05 => _content['nip05'];
-
-//   String? get avatarUrl => _content['picture'];
-//   String? get lud16 => _content['lud16'];
 // }
 
 extension Bech32StringX on String {

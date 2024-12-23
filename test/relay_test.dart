@@ -76,11 +76,11 @@ Future<void> main() async {
   });
 
   test('app from dart', () async {
-    final app = await signer.sign(PartialApp()
+    final partialApp = PartialApp()
       ..identifier = 'w'
-      ..description =
-          'test app'); // identifier: 'blah'; pubkeys: {'90983aebe92bea'}
-
+      ..description = 'test app';
+    final app = await signer
+        .sign(partialApp); // identifier: 'blah'; pubkeys: {'90983aebe92bea'}
     // expect(app.isValid, isTrue);
     expect(app.event.kind, 32267);
     expect(app.description, 'test app');
@@ -92,6 +92,14 @@ Future<void> main() async {
     // ));
     // expect(app.pubkeys, {'90983aebe92bea'});
     expect(App.fromJson(app.toMap()), app);
+
+    // event and partial event should share a common interface
+    // final apps = [partialApp, app];
+    // apps.first.repository;
+
+    // final note = await PartialNote().signWith(signer);
+    // final List<EventBase> notes = [PartialNote(), note];
+    // notes.first.event.content;
   });
 
   test('app from json', () {
@@ -128,7 +136,7 @@ Future<void> main() async {
 
   test('publish', () async {
     final container = ProviderContainer();
-    Event.types['Release'] = (30063, Release.fromJson);
+    Event.types['Release'] = (kind: 30063, constructor: Release.fromJson);
     final release = PartialRelease()..identifier = 'test';
     final relay = container
         .read(relayProviderFamily({'wss://relay.zapstore.dev'}).notifier);

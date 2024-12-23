@@ -7,7 +7,7 @@ class PartialRelease = ParameterizableReplaceablePartialEvent<Release>
 
 mixin ReleaseMixin on EventBase {
   String get releaseNotes => event.content;
-  String get x => event.getTag('x')!;
+  String get version => event.getTag('version')!;
 }
 
 mixin PartialReleaseMixin on PartialEventBase {

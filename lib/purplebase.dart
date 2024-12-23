@@ -13,7 +13,8 @@ import 'package:bech32/bech32.dart';
 import 'package:crypto/crypto.dart';
 import 'package:equatable/equatable.dart';
 import 'package:logger/logger.dart' as ll;
-import 'package:ndk/ndk.dart';
+import 'package:ndk/ndk.dart' hide Logger;
+import 'package:ndk/shared/logger/logger.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:web_socket_client/web_socket_client.dart';
 

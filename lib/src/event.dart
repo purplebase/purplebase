@@ -12,7 +12,7 @@ sealed class Event<E extends Event<E>>
             content: map['content'],
             pubkey: map['pubkey'],
             createdAt: (map['created_at'] as int).toDate(),
-            tags: toTags(map['tags'] as Iterable),
+            tags: toTagMap(map['tags'] as Iterable),
             signature: map['sig']) {
     if (map['kind'] != event.kind) {
       throw Exception(
@@ -26,7 +26,8 @@ sealed class Event<E extends Event<E>>
       _ => this is RegularEvent,
     };
     if (!kindCheck) {
-      throw Exception('Kind does not match the type of event');
+      throw Exception(
+          'Kind does not match the type of event: ${event.kind} -> $runtimeType');
     }
   }
 
@@ -46,13 +47,19 @@ sealed class Event<E extends Event<E>>
   List<Object?> get props => [event.id];
 
   // Registerable mappings
-  static final Map<String, (int, EventConstructor)> types = {
-    'Note': (1, Note.fromJson),
-    'App': (32267, App.fromJson)
+  static final Map<String, ({int kind, EventConstructor constructor})> types = {
+    'User': (kind: 0, constructor: User.fromJson),
+    'Note': (kind: 1, constructor: Note.fromJson),
+    'DirectMessage': (kind: 4, constructor: DirectMessage.fromJson),
+    'FileMetadata': (kind: 1063, constructor: FileMetadata.fromJson),
+    'Release': (kind: 30063, constructor: Release.fromJson),
+    'AppCurationSet': (kind: 30267, constructor: AppCurationSet.fromJson),
+    'App': (kind: 32267, constructor: App.fromJson)
   };
 
   static EventConstructor<E>? getConstructor<E extends Event<E>>() {
-    final constructor = types[E.toString()]?.$2 as EventConstructor<E>?;
+    final constructor =
+        types[E.toString()]?.constructor as EventConstructor<E>?;
     if (constructor == null) {
       throw Exception('''
 Could not find the constructor for $E. Did you forget to register the type?
@@ -97,10 +104,15 @@ mixin PartialEventBase implements EventBase {
 // Internal events
 
 sealed class InternalEvent<E extends Event<E>> {
-  final int kind = Event.types[E.toString()]!.$1;
+  final int kind = Event.types[E.toString()]!.kind;
   DateTime get createdAt;
   String get content;
   Map<String, List<String>> get tags;
+
+  Set<String> get linkedEvents => getTagSet('e');
+  Set<ReplaceableEventLink> get linkedReplaceableEvents {
+    return getTagSet('a').map((e) => e.toReplaceableLink()).toSet();
+  }
 
   String? getTag(String key) => tags[key]?.firstOrNull;
   Set<String> getTagSet(String key) => tags[key]?.toSet() ?? {};
@@ -108,7 +120,7 @@ sealed class InternalEvent<E extends Event<E>> {
 
 final class ImmutableInternalEvent<E extends Event<E>>
     extends InternalEvent<E> {
-  final Object id;
+  final String id;
   @override
   final DateTime createdAt;
   final String pubkey;
@@ -116,7 +128,8 @@ final class ImmutableInternalEvent<E extends Event<E>>
   final String content;
   @override
   final Map<String, List<String>> tags;
-  final String signature;
+  // Signature is nullable as it may be removed as optimization
+  final String? signature;
   ImmutableInternalEvent(
       {required this.id,
       required this.createdAt,
@@ -143,25 +156,18 @@ final class PartialInternalEvent<E extends Event<E>> extends InternalEvent<E> {
   }
 }
 
-// Regular
+// Event types
 
-abstract class RegularEvent<E extends Event<E>> extends Event<E> {
-  RegularEvent.fromJson(super.map) : super.fromJson();
-}
+// Use an empty mixin in order to use the = class definitions
+mixin _EmptyMixin {}
 
-abstract class RegularPartialEvent<E extends Event<E>>
-    extends PartialEvent<E> {}
+abstract class RegularEvent<E extends Event<E>> = Event<E> with _EmptyMixin;
+abstract class RegularPartialEvent<E extends Event<E>> = PartialEvent<E>
+    with _EmptyMixin;
 
-// Ephemeral
-
-abstract class EphemeralEvent<E extends Event<E>> extends Event<E> {
-  EphemeralEvent.fromJson(super.map) : super.fromJson();
-}
-
-abstract class EphemeralPartialEvent<E extends Event<E>>
-    extends PartialEvent<E> {}
-
-// Replaceable
+abstract class EphemeralEvent<E extends Event<E>> = Event<E> with _EmptyMixin;
+abstract class EphemeralPartialEvent<E extends Event<E>> = PartialEvent<E>
+    with _EmptyMixin;
 
 abstract class ReplaceableEvent<E extends Event<E>> extends Event<E> {
   ReplaceableEvent.fromJson(super.map) : super.fromJson();
@@ -173,10 +179,8 @@ abstract class ReplaceableEvent<E extends Event<E>> extends Event<E> {
   List<Object?> get props => [getReplaceableEventLink().formatted];
 }
 
-abstract class ReplaceablePartialEvent<E extends Event<E>>
-    extends PartialEvent<E> {}
-
-// PRE
+abstract class ReplaceablePartialEvent<E extends Event<E>> = PartialEvent<E>
+    with _EmptyMixin;
 
 abstract class ParameterizableReplaceableEvent<E extends Event<E>>
     extends ReplaceableEvent<E> {
@@ -210,7 +214,7 @@ extension RLExtension on ReplaceableEventLink {
   String get formatted => '${this.$1}:${this.$2}:${this.$3 ?? ''}';
 }
 
-extension PExt on PartialEvent {
+extension PartialEventExt on PartialEvent {
   String getEventId(String pubkey) {
     final data = [
       0,
@@ -226,8 +230,15 @@ extension PExt on PartialEvent {
   }
 }
 
-extension StringExt on String? {
+extension StringMaybeExt on String? {
   int? toInt() {
     return this == null ? null : int.tryParse(this!);
+  }
+}
+
+extension StringExt on String {
+  ReplaceableEventLink toReplaceableLink() {
+    final [kind, pubkey, ...identifier] = split(':');
+    return (kind.toInt()!, pubkey, identifier.firstOrNull);
   }
 }

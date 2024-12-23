@@ -1,24 +1,19 @@
 part of purplebase;
 
-// class BaseDirectMessage extends BaseEvent<BaseDirectMessage> {
-//   BaseDirectMessage({
-//     required String content,
-//     required String receiver,
-//   }) : super(
-//           content: content,
-//           additionalEventTags: {('p', receiver.hexKey)},
-//         );
+mixin _DirectMessageMixin on EventBase {
+  String get receiver => event.getTag('p')!.npub;
+  String get content => event.content;
+}
 
-//   BaseDirectMessage.fromJson(super.map) : super.fromJson();
+class DirectMessage = RegularEvent<DirectMessage> with _DirectMessageMixin;
 
-//   BaseDirectMessage copyWith({
-//     String? content,
-//   }) {
-//     return BaseDirectMessage(
-//       content: content ?? this.content,
-//       receiver: receiver,
-//     );
-//   }
-
-//   String get receiver => tagMap['p']!.first.npub;
-// }
+class PartialDirectMessage extends RegularPartialEvent<DirectMessage>
+    with _DirectMessageMixin {
+  PartialDirectMessage({
+    required String content,
+    required String receiver,
+  }) {
+    event.content = content;
+    event.setTag('p', receiver.hexKey);
+  }
+}

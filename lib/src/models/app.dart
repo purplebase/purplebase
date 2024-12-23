@@ -9,6 +9,7 @@ mixin AppMixin on EventBase {
   String? get repository => event.getTag('repository');
   String get description => event.content;
   String? get url => event.getTag('url');
+  String? get license => event.getTag('license');
   Set<String> get icons => event.getTagSet('icon');
   Set<String> get images => event.getTagSet('image');
 }

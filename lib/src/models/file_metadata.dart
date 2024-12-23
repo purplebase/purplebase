@@ -1,9 +1,8 @@
 part of purplebase;
 
-class FileMetadata = ParameterizableReplaceableEvent<FileMetadata>
-    with FileMetadataMixin;
+class FileMetadata = RegularEvent<FileMetadata> with FileMetadataMixin;
 
-class PartialFileMetadata = ParameterizableReplaceablePartialEvent<FileMetadata>
+class PartialFileMetadata = RegularPartialEvent<FileMetadata>
     with FileMetadataMixin, PartialFileMetadataMixin;
 
 mixin FileMetadataMixin on EventBase {
