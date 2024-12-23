@@ -9,6 +9,7 @@ import 'package:convert/convert.dart';
 
 import 'package:bip340/bip340.dart' as bip340;
 import 'package:collection/collection.dart';
+import 'package:bech32/bech32.dart';
 import 'package:crypto/crypto.dart';
 import 'package:equatable/equatable.dart';
 import 'package:logger/logger.dart' as ll;

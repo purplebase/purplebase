@@ -1,5 +1,23 @@
 part of purplebase;
 
+class FileMetadata = ParameterizableReplaceableEvent<FileMetadata>
+    with FileMetadataMixin;
+
+class PartialFileMetadata = ParameterizableReplaceablePartialEvent<FileMetadata>
+    with FileMetadataMixin, PartialFileMetadataMixin;
+
+mixin FileMetadataMixin on EventBase {
+  Set<String> get urls => event.getTagSet('url');
+  String? get mimeType => event.getTag('m');
+  String? get hash => event.getTag('x');
+  int? get size => event.getTag('size').toInt();
+  String? get version => event.getTag('version');
+  String? get repository => event.getTag('repository');
+  Set<String> get platforms => event.getTagSet('f');
+}
+
+mixin PartialFileMetadataMixin on PartialEventBase {}
+
 // class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
 //   BaseFileMetadata({
 //     DateTime? createdAt,

@@ -89,7 +89,7 @@ mixin EventBase {
   InternalEvent get event;
 }
 
-mixin PartialEventBase on EventBase {
+mixin PartialEventBase implements EventBase {
   @override
   PartialInternalEvent get event;
 }
@@ -101,6 +101,9 @@ sealed class InternalEvent<E extends Event<E>> {
   DateTime get createdAt;
   String get content;
   Map<String, List<String>> get tags;
+
+  String? getTag(String key) => tags[key]?.firstOrNull;
+  Set<String> getTagSet(String key) => tags[key]?.toSet() ?? {};
 }
 
 final class ImmutableInternalEvent<E extends Event<E>>
@@ -192,7 +195,7 @@ abstract class ParameterizableReplaceableEvent<E extends Event<E>>
 
 abstract class ParameterizableReplaceablePartialEvent<E extends Event<E>>
     extends ReplaceablePartialEvent<E> {
-  String? get identifier => event.tags['d']?.firstOrNull;
+  String? get identifier => event.getTag('d');
   set identifier(String? value) => event.setTag('d', value);
 }
 
@@ -220,5 +223,11 @@ extension PExt on PartialEvent {
     final digest =
         sha256.convert(Uint8List.fromList(utf8.encode(json.encode(data))));
     return digest.toString();
+  }
+}
+
+extension StringExt on String? {
+  int? toInt() {
+    return this == null ? null : int.tryParse(this!);
   }
 }

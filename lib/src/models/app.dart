@@ -1,18 +1,19 @@
 part of purplebase;
 
-mixin _AppMixin on EventBase {
-  String? get name => event.tags['name']?.firstOrNull;
-  String? get repository => event.tags['repository']?.firstOrNull;
+class App = ParameterizableReplaceableEvent<App> with AppMixin;
+class PartialApp = ParameterizableReplaceablePartialEvent<App>
+    with AppMixin, PartialAppMixin;
+
+mixin AppMixin on EventBase {
+  String? get name => event.getTag('name');
+  String? get repository => event.getTag('repository');
   String get description => event.content;
-  String? get url => event.tags['url']?.firstOrNull;
-  Set<String> get icons => event.tags['icon']?.toSet() ?? {};
-  Set<String> get images => event.tags['image']?.toSet() ?? {};
+  String? get url => event.getTag('url');
+  Set<String> get icons => event.getTagSet('icon');
+  Set<String> get images => event.getTagSet('image');
 }
 
-class App = ParameterizableReplaceableEvent<App> with _AppMixin;
-
-class PartialApp extends ParameterizableReplaceablePartialEvent<App>
-    with _AppMixin {
+mixin PartialAppMixin on PartialEventBase {
   set description(String value) => event.content = value;
   set name(String? value) => event.setTag('name', value);
   set repository(String? value) => event.setTag('repository', value);
