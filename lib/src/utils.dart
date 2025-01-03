@@ -1,17 +1,5 @@
 part of purplebase;
 
-List<List<String>> toNostrTags(Map<String, List<String>> tags) {
-  return [
-    for (final t in tags.entries)
-      for (final e in t.value) [t.key, e],
-  ];
-}
-
-Map<String, List<String>> toTags(Iterable tags) {
-  return tags.groupFoldBy<String, List<String>>(
-      (e) => e[0], (acc, e) => [...?acc, ...(e..removeAt(0))]);
-}
-
 extension IntExt on int {
   DateTime toDate() => DateTime.fromMillisecondsSinceEpoch(this * 1000);
 }
@@ -21,7 +9,43 @@ extension DateTimeExt on DateTime {
 }
 
 class BaseUtil {
+  static String? getTag(Iterable tags, String key) {
+    return tags.firstWhereOrNull((tag) => tag.first == key)?[1];
+  }
+
+  static Set<String> getTagSet(Iterable tags, String key) => tags
+      .where((tag) => tag.first == key)
+      .map((tag) => tag[1]?.toString())
+      .nonNulls
+      .toSet();
+
+  static bool containsTag(Iterable tags, String key) {
+    return tags.firstWhereOrNull((tag) => tag.first == key) != null;
+  }
+
   static String getPublicKey(String privateKey) {
     return bip340.getPublicKey(privateKey).toLowerCase();
+  }
+}
+
+final kBolt11Regexp = RegExp(r'lnbc(\d+)([munp])');
+
+int getSatsFromBolt11(String bolt11) {
+  try {
+    final m = kBolt11Regexp.allMatches(bolt11);
+    final [baseAmountInBitcoin, multiplier] = m.first.groups([1, 2]);
+    final a = int.tryParse(baseAmountInBitcoin!)!;
+    final amountInBitcoin = switch (multiplier!) {
+      'm' => a * 0.001,
+      'u' => a * 0.000001,
+      'n' => a * 0.000000001,
+      'p' => a * 0.000000000001,
+      _ => a,
+    };
+    // Return converted to sats
+    return (amountInBitcoin * 100000000).floor();
+  } catch (_) {
+    // Do not bother throwing an exception, 0 sat should still convey that it was an error
+    return 0;
   }
 }

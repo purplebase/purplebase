@@ -6,9 +6,9 @@ class AppCurationSet = ParameterizableReplaceableEvent<AppCurationSet>
 class PartialAppCurationSet = ParameterizableReplaceablePartialEvent<
     AppCurationSet> with AppCurationSetMixin, PartialAppCurationSetMixin;
 
-mixin AppCurationSetMixin on EventBase {
+mixin AppCurationSetMixin on EventBase<AppCurationSet> {
   Set<String> get appIds => {};
   //linkedReplaceableEvents.map((a) => a.$3).nonNulls.toSet();
 }
 
-mixin PartialAppCurationSetMixin on PartialEventBase {}
+mixin PartialAppCurationSetMixin on PartialEventBase<AppCurationSet> {}

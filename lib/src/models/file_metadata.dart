@@ -5,7 +5,7 @@ class FileMetadata = RegularEvent<FileMetadata> with FileMetadataMixin;
 class PartialFileMetadata = RegularPartialEvent<FileMetadata>
     with FileMetadataMixin, PartialFileMetadataMixin;
 
-mixin FileMetadataMixin on EventBase {
+mixin FileMetadataMixin on EventBase<FileMetadata> {
   Set<String> get urls => event.getTagSet('url');
   String? get mimeType => event.getTag('m');
   String? get hash => event.getTag('x');
@@ -15,7 +15,7 @@ mixin FileMetadataMixin on EventBase {
   Set<String> get platforms => event.getTagSet('f');
 }
 
-mixin PartialFileMetadataMixin on PartialEventBase {}
+mixin PartialFileMetadataMixin on PartialEventBase<FileMetadata> {}
 
 // class BaseFileMetadata extends BaseEvent<BaseFileMetadata> {
 //   BaseFileMetadata({

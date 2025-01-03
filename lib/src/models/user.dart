@@ -1,5 +1,6 @@
 part of purplebase;
 
+// NOTE: We might want to call this one: Profile?
 class User extends ReplaceableEvent<User> with UserMixin {
   late final Map<String, dynamic> _content;
 
@@ -30,9 +31,9 @@ class User extends ReplaceableEvent<User> with UserMixin {
 class PartialUser = ReplaceablePartialEvent<User>
     with UserMixin, PartialUserMixin;
 
-mixin UserMixin on EventBase {}
+mixin UserMixin on EventBase<User> {}
 
-mixin PartialUserMixin on PartialEventBase {}
+mixin PartialUserMixin on PartialEventBase<User> {}
 
 // class BaseUser extends BaseEvent<BaseUser> {
 //   BaseUser({

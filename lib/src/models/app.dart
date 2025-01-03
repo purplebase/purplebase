@@ -4,7 +4,7 @@ class App = ParameterizableReplaceableEvent<App> with AppMixin;
 class PartialApp = ParameterizableReplaceablePartialEvent<App>
     with AppMixin, PartialAppMixin;
 
-mixin AppMixin on EventBase {
+mixin AppMixin on EventBase<App> {
   String? get name => event.getTag('name');
   String? get repository => event.getTag('repository');
   String get description => event.content;
@@ -14,13 +14,13 @@ mixin AppMixin on EventBase {
   Set<String> get images => event.getTagSet('image');
 }
 
-mixin PartialAppMixin on PartialEventBase {
+mixin PartialAppMixin on PartialEventBase<App> {
   set description(String value) => event.content = value;
   set name(String? value) => event.setTag('name', value);
   set repository(String? value) => event.setTag('repository', value);
   set url(String? value) => event.setTag('url', value);
-  set icon(String value) => event.setTag('icon', value);
-  set image(String value) => event.setTag('image', value);
+  void addIcon(String value) => event.addTag('icon', value);
+  void addImage(String value) => event.addTag('image', value);
 }
 
 // class BaseApp extends BaseEvent<BaseApp>

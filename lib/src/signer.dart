@@ -1,16 +1,18 @@
 part of purplebase;
 
 mixin Signable<E extends Event<E>> {
-  Future<E> signWith(Signer signer) {
-    return signer.sign<E>(this as PartialEvent<E>);
+  Future<E> signWith(Signer signer, {String? withPubkey}) {
+    return signer.sign<E>(this as PartialEvent<E>, withPubkey: withPubkey);
   }
 }
 
 abstract class Signer {
   Future<Signer> initialize();
   Future<String?> getPublicKey();
+
+  /// Sign the partial event, supply `withPubkey` to disambiguate when signer has multiple keys
   Future<E> sign<E extends Event<E>>(PartialEvent<E> partialEvent,
-      {String? asUser});
+      {String? withPubkey});
 }
 
 class Bip340PrivateKeySigner extends Signer {
@@ -39,7 +41,7 @@ class Bip340PrivateKeySigner extends Signer {
 
   @override
   Future<E> sign<E extends Event<E>>(PartialEvent<E> partialEvent,
-      {String? asUser}) async {
+      {String? withPubkey}) async {
     final pubkey = BaseUtil.getPublicKey(privateKey);
     final id = partialEvent.getEventId(pubkey);
     // TODO: Should aux be random? random.nextInt(256)

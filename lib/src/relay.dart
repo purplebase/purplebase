@@ -18,7 +18,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
   RelayMessageNotifier(Set<String> relayUrls) : super(NothingRelayMessage()) {
-    // NOTE: Temporary hack to enable NDK
+    // TODO: Temporary hack to enable NDK
     // Get a mutable set (_relayUrls) from the immutable relayUrls
     // ignore: no_leading_underscores_for_local_identifiers
     final _relayUrls = relayUrls.toSet();
@@ -115,6 +115,8 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     _isEventVerified ??= isEventVerified;
   }
 
+  NdkResponse? response;
+
   void addRequest(RelayRequest req) {
     _requests.add(req);
     pool!.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
@@ -195,7 +197,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return result.map(Event.getConstructor<E>()!.call).toList();
   }
 
-  Future<void> publish<E extends Event<E>>(Event<E> event) async {
+  Future<void> publish(Event event) async {
     final completer = Completer<void>();
 
     if (ndk != null) {
@@ -324,8 +326,7 @@ class RelayRequest extends Equatable {
   }
 
   @override
-  List<Object?> get props =>
-      [ids, kinds, authors, tags, since, until, limit, search];
+  List<Object?> get props => [toMap()];
 
   @override
   String toString() {

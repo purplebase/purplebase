@@ -1,6 +1,6 @@
 part of purplebase;
 
-mixin _DirectMessageMixin on EventBase {
+mixin _DirectMessageMixin on EventBase<DirectMessage> {
   String get receiver => event.getTag('p')!.npub;
   String get content => event.content;
 }

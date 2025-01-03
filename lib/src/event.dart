@@ -1,8 +1,14 @@
 part of purplebase;
 
+mixin EventBase<E extends Event<E>> {
+  // TODO: Make event private and access via EventBase.getFor(this)
+  InternalEvent get event;
+  Map<String, dynamic> toMap();
+}
+
 sealed class Event<E extends Event<E>>
     with EquatableMixin
-    implements EventBase {
+    implements EventBase<E> {
   @override
   final ImmutableInternalEvent event;
 
@@ -12,11 +18,11 @@ sealed class Event<E extends Event<E>>
             content: map['content'],
             pubkey: map['pubkey'],
             createdAt: (map['created_at'] as int).toDate(),
-            tags: toTagMap(map['tags'] as Iterable),
+            tags: [for (final t in map['tags']) List.from(t)],
             signature: map['sig']) {
     if (map['kind'] != event.kind) {
       throw Exception(
-          'Kind mismatch! Incoming JSON kind is not of the kind of type $E');
+          'Kind mismatch! Incoming JSON kind (${map['kind']}) is not of the kind of type $E (${event.kind})');
     }
 
     final kindCheck = switch (event.kind) {
@@ -27,10 +33,11 @@ sealed class Event<E extends Event<E>>
     };
     if (!kindCheck) {
       throw Exception(
-          'Kind does not match the type of event: ${event.kind} -> $runtimeType');
+          'Kind ${event.kind} does not match the type of event: regular, replaceable, etc. Check the model definition inherits the right one.');
     }
   }
 
+  @override
   Map<String, dynamic> toMap() {
     return {
       'id': event.id,
@@ -38,7 +45,7 @@ sealed class Event<E extends Event<E>>
       'created_at': event.createdAt.toInt(),
       'pubkey': event.pubkey,
       'kind': event.kind,
-      'tags': toNostrTags(event.tags),
+      'tags': event.tags,
       'sig': event.signature,
     };
   }
@@ -52,6 +59,8 @@ sealed class Event<E extends Event<E>>
     'Note': (kind: 1, constructor: Note.fromJson),
     'DirectMessage': (kind: 4, constructor: DirectMessage.fromJson),
     'FileMetadata': (kind: 1063, constructor: FileMetadata.fromJson),
+    'ZapRequest': (kind: 9734, constructor: ZapRequest.fromJson),
+    'ZapReceipt': (kind: 9735, constructor: ZapReceipt.fromJson),
     'Release': (kind: 30063, constructor: Release.fromJson),
     'AppCurationSet': (kind: 30267, constructor: AppCurationSet.fromJson),
     'App': (kind: 32267, constructor: App.fromJson)
@@ -71,18 +80,29 @@ You can do so by calling: Event.types['$E'] = (kind, $E.fromJson);
   }
 }
 
+mixin PartialEventBase<E extends Event<E>> implements EventBase<E> {
+  @override
+  PartialInternalEvent get event;
+
+  void addLinkedEvent(Event e) => event.setTag('e', e.event.id);
+  void removeLinkedEvent(Event e) => event.removeTag('e', e.event.id);
+
+  void addLinkedUser(User u) => event.setTag('p', u.pubkey);
+  void removeLinkedUser(User u) => event.removeTag('p', u.pubkey);
+}
+
 sealed class PartialEvent<E extends Event<E>>
-    with Signable<E>
-    implements PartialEventBase {
+    with Signable<E>, PartialEventBase<E> {
   @override
   final PartialInternalEvent event = PartialInternalEvent<E>();
 
+  @override
   Map<String, dynamic> toMap() {
     return {
       'content': event.content,
       'created_at': event.createdAt.toInt(),
       'kind': event.kind,
-      'tags': toNostrTags(event.tags),
+      'tags': event.tags,
     };
   }
 
@@ -92,30 +112,26 @@ sealed class PartialEvent<E extends Event<E>>
   }
 }
 
-mixin EventBase {
-  InternalEvent get event;
-}
-
-mixin PartialEventBase implements EventBase {
-  @override
-  PartialInternalEvent get event;
-}
-
 // Internal events
 
 sealed class InternalEvent<E extends Event<E>> {
   final int kind = Event.types[E.toString()]!.kind;
   DateTime get createdAt;
   String get content;
-  Map<String, List<String>> get tags;
+  List<List<String>> get tags;
 
   Set<String> get linkedEvents => getTagSet('e');
   Set<ReplaceableEventLink> get linkedReplaceableEvents {
     return getTagSet('a').map((e) => e.toReplaceableLink()).toSet();
   }
 
-  String? getTag(String key) => tags[key]?.firstOrNull;
-  Set<String> getTagSet(String key) => tags[key]?.toSet() ?? {};
+  String? getTag(String key) {
+    return BaseUtil.getTag(tags, key);
+  }
+
+  Set<String> getTagSet(String key) => BaseUtil.getTagSet(tags, key);
+
+  bool containsTag(String key) => BaseUtil.containsTag(tags, key);
 }
 
 final class ImmutableInternalEvent<E extends Event<E>>
@@ -127,7 +143,7 @@ final class ImmutableInternalEvent<E extends Event<E>>
   @override
   final String content;
   @override
-  final Map<String, List<String>> tags;
+  final List<List<String>> tags;
   // Signature is nullable as it may be removed as optimization
   final String? signature;
   ImmutableInternalEvent(
@@ -147,12 +163,27 @@ final class PartialInternalEvent<E extends Event<E>> extends InternalEvent<E> {
   @override
   DateTime createdAt = DateTime.now();
   @override
-  Map<String, List<String>> tags = {};
+  List<List<String>> tags = [];
 
-  void setTag(String key, String? value) {
+  void addTag(String key, Object? value) {
     if (value == null) return;
-    tags[key] ??= [];
-    tags[key] = [value];
+    if (value is Iterable) {
+      return tags.add(
+        [key, ...value.nonNulls.cast()],
+      );
+    }
+    tags.add([key, value.toString()]);
+  }
+
+  void removeTag(String key, [String? value]) {
+    tags.removeWhere(
+        (tag) => tag.first == key && (value != null ? tag[1] == value : true));
+  }
+
+  void setTag(String key, Object? value) {
+    if (value == null) return;
+    removeTag(key);
+    addTag(key, value);
   }
 }
 
@@ -182,15 +213,21 @@ abstract class ReplaceableEvent<E extends Event<E>> extends Event<E> {
 abstract class ReplaceablePartialEvent<E extends Event<E>> = PartialEvent<E>
     with _EmptyMixin;
 
+// TODO: Rethink this mixin
+mixin IdentifierMixin {
+  String? get identifier;
+}
+
 abstract class ParameterizableReplaceableEvent<E extends Event<E>>
-    extends ReplaceableEvent<E> {
+    extends ReplaceableEvent<E> implements IdentifierMixin {
   ParameterizableReplaceableEvent.fromJson(super.map) : super.fromJson() {
-    if (!event.tags.containsKey('d')) {
+    if (!event.containsTag('d')) {
       throw Exception('Event must contain a `d` tag');
     }
   }
 
-  String get identifier => event.tags['d']!.first;
+  @override
+  String get identifier => event.getTag('d')!;
 
   @override
   ReplaceableEventLink getReplaceableEventLink({String? pubkey}) =>
@@ -198,7 +235,8 @@ abstract class ParameterizableReplaceableEvent<E extends Event<E>>
 }
 
 abstract class ParameterizableReplaceablePartialEvent<E extends Event<E>>
-    extends ReplaceablePartialEvent<E> {
+    extends ReplaceablePartialEvent<E> implements IdentifierMixin {
+  @override
   String? get identifier => event.getTag('d');
   set identifier(String? value) => event.setTag('d', value);
 }
@@ -221,7 +259,7 @@ extension PartialEventExt on PartialEvent {
       pubkey.toLowerCase(),
       event.createdAt.toInt(),
       event.kind,
-      toNostrTags(event.tags),
+      event.tags,
       event.content
     ];
     final digest =

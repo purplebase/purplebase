@@ -30,3 +30,5 @@ part 'src/models/file_metadata.dart';
 part 'src/models/lists.dart';
 part 'src/models/user.dart';
 part 'src/models/note.dart';
+part 'src/models/zap_request.dart';
+part 'src/models/zap_receipt.dart';
