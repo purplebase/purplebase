@@ -7,8 +7,8 @@ class PartialAppCurationSet = ParameterizableReplaceablePartialEvent<
     AppCurationSet> with AppCurationSetMixin, PartialAppCurationSetMixin;
 
 mixin AppCurationSetMixin on EventBase<AppCurationSet> {
-  Set<String> get appIds => {};
-  //linkedReplaceableEvents.map((a) => a.$3).nonNulls.toSet();
+  Set<String> get appIds =>
+      event.linkedReplaceableEvents.map((a) => a.$3).nonNulls.toSet();
 }
 
 mixin PartialAppCurationSetMixin on PartialEventBase<AppCurationSet> {}
