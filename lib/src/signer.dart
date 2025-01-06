@@ -1,14 +1,23 @@
 part of purplebase;
 
+mixin Signable<E extends Event<E>> {
+  Future<E> signWith(Signer signer, {String? withPubkey}) {
+    return signer.sign<E>(this as PartialEvent<E>, withPubkey: withPubkey);
+  }
+}
+
 abstract class Signer {
   Future<Signer> initialize();
   Future<String?> getPublicKey();
-  Future<T> sign<T extends BaseEvent<T>>(T model, {String? asUser});
+
+  /// Sign the partial event, supply `withPubkey` to disambiguate when signer has multiple keys
+  Future<E> sign<E extends Event<E>>(PartialEvent<E> partialEvent,
+      {String? withPubkey});
 }
 
-class PrivateKeySigner extends Signer {
+class Bip340PrivateKeySigner extends Signer {
   final String privateKey;
-  PrivateKeySigner(this.privateKey);
+  Bip340PrivateKeySigner(this.privateKey);
 
   @override
   Future<Signer> initialize() async {
@@ -31,13 +40,14 @@ class PrivateKeySigner extends Signer {
   }
 
   @override
-  Future<T> sign<T extends BaseEvent<T>>(T model, {String? asUser}) async {
+  Future<E> sign<E extends Event<E>>(PartialEvent<E> partialEvent,
+      {String? withPubkey}) async {
     final pubkey = BaseUtil.getPublicKey(privateKey);
-    final id = model.getEventId(pubkey);
+    final id = partialEvent.getEventId(pubkey);
     // TODO: Should aux be random? random.nextInt(256)
     final aux = hex.encode(List<int>.generate(32, (i) => 1));
     final signature = bip340.sign(privateKey, id.toString(), aux);
-    final map = _prepare(model.toMap(), id, pubkey, signature);
-    return BaseEvent.constructorForKind<T>(model.kind)!.call(map);
+    final map = _prepare(partialEvent.toMap(), id, pubkey, signature);
+    return Event.getConstructor<E>()!.call(map);
   }
 }

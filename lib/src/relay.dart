@@ -18,7 +18,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
   final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
   RelayMessageNotifier(Set<String> relayUrls) : super(NothingRelayMessage()) {
-    // NOTE: Temporary hack to enable NDK
+    // TODO: Temporary hack to enable NDK
     // Get a mutable set (_relayUrls) from the immutable relayUrls
     // ignore: no_leading_underscores_for_local_identifiers
     final _relayUrls = relayUrls.toSet();
@@ -115,6 +115,8 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     _isEventVerified ??= isEventVerified;
   }
 
+  NdkResponse? response;
+
   void addRequest(RelayRequest req) {
     _requests.add(req);
     pool!.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
@@ -172,7 +174,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
     return completer.future;
   }
 
-  Future<List<T>> query<T extends BaseEvent<T>>(
+  Future<List<E>> query<E extends Event<E>>(
       {Set<String>? ids,
       Set<String>? authors,
       Map<String, dynamic>? tags,
@@ -182,7 +184,7 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       int? limit,
       Iterable<String>? relayUrls}) async {
     final req = RelayRequest(
-        kinds: {_kindFor<T>()},
+        kinds: {Event.types[E.toString()]!.kind},
         ids: ids ?? {},
         authors: authors ?? {},
         tags: tags ?? {},
@@ -192,14 +194,10 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
         limit: limit);
 
     final result = await queryRaw(req);
-    return result
-        .map((map) =>
-            BaseEvent.constructorForKind<T>(map['kind'].toString().toInt()!)!
-                .call(map))
-        .toList();
+    return result.map(Event.getConstructor<E>()!.call).toList();
   }
 
-  Future<void> publish(BaseEvent event, {bool failEarly = true}) async {
+  Future<void> publish(Event event) async {
     final completer = Completer<void>();
 
     if (ndk != null) {
@@ -219,17 +217,11 @@ class RelayMessageNotifier extends StateNotifier<RelayMessage> {
       return;
     }
 
-    final relayUrls = failEarly ? pool!.connectedRelayUrls : pool!.relayUrls;
-    if (failEarly && relayUrls.isEmpty) {
-      completer.completeError(Exception('No relays are connected'));
-      return completer.future;
-    }
-
     pool!.send(jsonEncode(["EVENT", event.toMap()]));
 
-    _closeFns[event.id.toString()] = addListener((message) {
+    _closeFns[event.event.id.toString()] = addListener((message) {
       if (message.subscriptionId != null &&
-          event.id.toString() != message.subscriptionId) {
+          event.event.id.toString() != message.subscriptionId) {
         return;
       }
 
@@ -334,8 +326,7 @@ class RelayRequest extends Equatable {
   }
 
   @override
-  List<Object?> get props =>
-      [ids, kinds, authors, tags, since, until, limit, search];
+  List<Object?> get props => [toMap()];
 
   @override
   String toString() {

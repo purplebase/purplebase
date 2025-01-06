@@ -1,11 +1,14 @@
 part of purplebase;
 
-class BaseAppCurationSet extends BaseEvent<BaseAppCurationSet>
-    with ParameterizableReplaceableEvent<BaseAppCurationSet> {
-  BaseAppCurationSet() : super();
+class AppCurationSet = ParameterizableReplaceableEvent<AppCurationSet>
+    with AppCurationSetMixin;
 
-  BaseAppCurationSet.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+class PartialAppCurationSet = ParameterizableReplaceablePartialEvent<
+    AppCurationSet> with AppCurationSetMixin, PartialAppCurationSetMixin;
 
+mixin AppCurationSetMixin on EventBase<AppCurationSet> {
   Set<String> get appIds =>
-      linkedReplaceableEvents.map((a) => a.$3).nonNulls.toSet();
+      event.linkedReplaceableEvents.map((a) => a.$3).nonNulls.toSet();
 }
+
+mixin PartialAppCurationSetMixin on PartialEventBase<AppCurationSet> {}

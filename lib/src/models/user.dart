@@ -1,43 +1,15 @@
 part of purplebase;
 
-class BaseUser extends BaseEvent<BaseUser> {
-  BaseUser({
-    DateTime? createdAt,
-    Set<String>? pubkeys,
-    Set<String>? tags,
-    String? name,
-    String? avatarUrl,
-    String? lud16,
-  }) : super(
-          createdAt: createdAt,
-          pubkeys: pubkeys,
-          tags: tags,
-          content: jsonEncode(<String, dynamic>{
-            'name': name,
-            'picture': avatarUrl,
-            'lud16': lud16
-          }.nonNulls),
-        );
+// NOTE: We might want to call this one: Profile?
+class User extends ReplaceableEvent<User> with UserMixin {
+  late final Map<String, dynamic> _content;
 
-  BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
-
-  BaseUser copyWith({
-    DateTime? createdAt,
-    String? content,
-    Set<String>? pubkeys,
-    Set<String>? tags,
-    String? name,
-  }) {
-    return BaseUser(
-      createdAt: createdAt ?? this.createdAt,
-      pubkeys: pubkeys ?? this.pubkeys,
-      tags: tags ?? this.tags,
-      name: name ?? this.name,
-    );
+  User.fromJson(super.map) : super.fromJson() {
+    _content = event.content.isNotEmpty ? jsonDecode(event.content) : {};
   }
 
-  Map<String, dynamic> get _content =>
-      content.isNotEmpty ? jsonDecode(content) : {};
+  String get pubkey => event.pubkey;
+  String get npub => bech32Encode('npub', pubkey);
 
   String? get name {
     var name = _content['name'] as String?;
@@ -52,10 +24,54 @@ class BaseUser extends BaseEvent<BaseUser> {
 
   String? get nip05 => _content['nip05'];
 
-  String get npub => bech32Encode('npub', pubkey);
   String? get avatarUrl => _content['picture'];
   String? get lud16 => _content['lud16'];
 }
+
+class PartialUser = ReplaceablePartialEvent<User>
+    with UserMixin, PartialUserMixin;
+
+mixin UserMixin on EventBase<User> {}
+
+mixin PartialUserMixin on PartialEventBase<User> {}
+
+// class BaseUser extends BaseEvent<BaseUser> {
+//   BaseUser({
+//     DateTime? createdAt,
+//     Set<String>? pubkeys,
+//     Set<String>? tags,
+//     String? name,
+//     String? avatarUrl,
+//     String? lud16,
+//   }) : super(
+//           createdAt: createdAt,
+//           pubkeys: pubkeys,
+//           tags: tags,
+//           content: jsonEncode(<String, dynamic>{
+//             'name': name,
+//             'picture': avatarUrl,
+//             'lud16': lud16
+//           }.nonNulls),
+//         );
+
+//   BaseUser.fromJson(Map<String, dynamic> map) : super.fromJson(map);
+
+//   BaseUser copyWith({
+//     DateTime? createdAt,
+//     String? content,
+//     Set<String>? pubkeys,
+//     Set<String>? tags,
+//     String? name,
+//   }) {
+//     return BaseUser(
+//       createdAt: createdAt ?? this.createdAt,
+//       pubkeys: pubkeys ?? this.pubkeys,
+//       tags: tags ?? this.tags,
+//       name: name ?? this.name,
+//     );
+//   }
+
+// }
 
 extension Bech32StringX on String {
   /// Attempts to convert this string (hex) to npub. Returns same if already npub.
@@ -108,11 +124,11 @@ List<int> convertBits(List<int> data, int fromBits, int toBits, bool pad) {
   return result;
 }
 
-extension on Map<String, dynamic> {
-  Map<String, dynamic> get nonNulls {
-    return {
-      for (final e in entries)
-        if (e.value != null) e.key: e.value,
-    };
-  }
-}
+// extension on Map<String, dynamic> {
+//   Map<String, dynamic> get nonNulls {
+//     return {
+//       for (final e in entries)
+//         if (e.value != null) e.key: e.value,
+//     };
+//   }
+// }

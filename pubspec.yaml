@@ -14,9 +14,8 @@ dependencies:
   convert: ^3.1.1
   crypto: ^3.0.3
   equatable: ^2.0.5
-  humanizer: ^2.2.0
   logger: ^2.5.0
-  ndk: ^0.2.0-dev005
+  ndk: ^0.2.2
   riverpod: ^2.5.0
   web_socket_client: ^0.1.5
 
