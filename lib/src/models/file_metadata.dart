@@ -11,8 +11,10 @@ mixin FileMetadataMixin on EventBase<FileMetadata> {
   String? get hash => event.getTag('x');
   int? get size => event.getTag('size').toInt();
   String? get version => event.getTag('version');
+  int? get versionCode => int.tryParse(event.getTag('version_code') ?? '');
   String? get repository => event.getTag('repository');
   Set<String> get platforms => event.getTagSet('f');
+  String? get apkSignatureHash => event.getTag('apk_signature_hash');
 }
 
 mixin PartialFileMetadataMixin on PartialEventBase<FileMetadata> {}
