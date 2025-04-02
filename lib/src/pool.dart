@@ -1,4 +1,6 @@
-part of purplebase;
+import 'dart:async';
+
+import 'package:web_socket_client/web_socket_client.dart';
 
 class WebSocketPool {
   final Iterable<String> relayUrls;

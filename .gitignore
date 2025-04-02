@@ -1,3 +1,11 @@
 .DS_Store
 .dart_tool/*
+test/.dart_tool/
 .vscode
+
+# FVM Version Cache
+.fvm/
+
+*.db
+*.db-shm
+*.db-wal
