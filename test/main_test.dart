@@ -11,11 +11,7 @@ Future<void> main() async {
   setUpAll(() async {
     container = ProviderContainer(
       overrides: [
-        storageNotifierProvider.overrideWith((ref) {
-          ref.keepAlive(); // TODO: WTF
-          return PurplebaseStorageNotifier(ref);
-        }),
-        requestNotifierProvider.overrideWith(PurplebaseRequestNotifier.new),
+        storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
       ],
     );
     await container.read(

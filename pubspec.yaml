@@ -16,6 +16,7 @@ dependencies:
   models:
     path: ../models
   sqlite3: ^2.7.5
+  collection: ^1.19.1
 
 dev_dependencies:
   lints: ^2.1.0

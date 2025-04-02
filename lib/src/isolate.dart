@@ -249,18 +249,20 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
 
         case SqliteMessageType.query:
           final stmt = db!.prepare(message.sql);
-          final result = stmt.select(message.parameters);
-          final columnNames = result.columnNames;
-          final rows =
-              result.map((row) {
-                final map = <String, dynamic>{};
-                for (var i = 0; i < columnNames.length; i++) {
-                  map[columnNames[i]] = row[i];
-                }
-                return map;
-              }).toList();
+          final result = stmt.selectWith(
+            StatementParameters.named(message.parameters.first),
+          );
+          // final columnNames = result.columnNames;
+          // final rows =
+          //     result.map((row) {
+          //       final map = <String, dynamic>{};
+          //       for (var i = 0; i < columnNames.length; i++) {
+          //         map[columnNames[i]] = row[i];
+          //       }
+          //       return map;
+          //     }).toList();
           stmt.dispose();
-          response = SqliteResponse(success: true, result: rows);
+          response = SqliteResponse(success: true, result: result.toList());
           break;
 
         case SqliteMessageType.insert:

@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
+import 'package:collection/collection.dart';
 import 'package:models/models.dart';
+import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -21,6 +25,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   late final Database db;
   var _initialized = false;
   var applyLimit = true;
+
+  WebSocketPool? pool;
+  StreamSubscription? _sub;
+  StreamSubscription? _streamSub;
+  bool Function(Map<String, dynamic> event)? _isEventVerified;
+  final _closeFns = <String, void Function()>{};
+  final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
   /// Initialize the storage with a database path
   @override
@@ -48,6 +59,105 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     // FROM json_each('[["a", "one"], ["foo", "bar"]]');''');
     //     print(z);
 
+    pool = WebSocketPool({'wss://relay.damus.io'});
+
+    _sub = pool!.stream.listen((record) {
+      final (relayUrl, data) = record;
+      final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
+
+      try {
+        switch (type) {
+          case 'EVENT':
+            final Map<String, dynamic> map = rest.first;
+            // If collecting events for EOSE, do not attempt to verify here
+            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+              _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
+              return;
+            }
+
+            final alreadyVerified = _isEventVerified?.call(map) ?? false;
+            if (alreadyVerified || _verifyEvent(map)) {
+              // state = EventRelayMessage(
+              //   relayUrl: relayUrl,
+              //   event: map,
+              //   subscriptionId: subscriptionId,
+              // );
+
+              final event = Event.getConstructorForKind(
+                map['kind'],
+              )?.call(map, ref);
+              save({event}.cast());
+            }
+            break;
+          case 'NOTICE':
+          // if (_errorRegex.hasMatch(subscriptionId)) {
+          //   // state = ErrorRelayMessage(
+          //   //     relayUrl: relayUrl,
+          //   //     subscriptionId: null,
+          //   //     error: subscriptionId);
+          //   state = RelayError(
+          //     [...?state.models],
+          //     message: 'error',
+          //     subscriptionId: subscriptionId,
+          //   );
+          // }
+          case 'CLOSED':
+          // state = ErrorRelayMessage(
+          //     relayUrl: relayUrl,
+          //     subscriptionId: subscriptionId,
+          //     error: rest.join(', '));
+          // state = RelayError(
+          //   [...?state.models],
+          //   message: rest.join(', '),
+          //   subscriptionId: subscriptionId,
+          // );
+          case 'EOSE':
+            // if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
+            //   final incomingEvents =
+            //       _resultsOnEose.remove((relayUrl, subscriptionId))!;
+            //   _verifyEventsAsync(
+            //     incomingEvents,
+            //     isEventVerified: _isEventVerified,
+            //   ).then((events) {
+            //     // TODO: Implement EoseWithEvents
+            //     // state = EoseWithEventsRelayMessage(
+            //     //   relayUrl: relayUrl,
+            //     //   events: events,
+            //     //   subscriptionId: subscriptionId,
+            //     // );
+            //   });
+            // } else {
+            //   // state = EoseRelayMessage(
+            //   //   relayUrl: relayUrl,
+            //   //   subscriptionId: subscriptionId,
+            //   // );
+            // }
+            break;
+          case 'OK':
+            // TODO: Implement publish
+            // state = PublishedEventRelayMessage(
+            //   relayUrl: relayUrl,
+            //   subscriptionId: subscriptionId,
+            //   accepted: rest.first as bool,
+            //   message: rest.lastOrNull?.toString(),
+            // );
+            break;
+        }
+      } catch (err) {
+        // state = ErrorRelayMessage(
+        //     relayUrl: relayUrl, subscriptionId: null, error: err.toString());
+        // state = RelayError(
+        //   [...?state.models],
+        //   message: err.toString(),
+        //   subscriptionId: subscriptionId,
+        // );
+        _sub?.cancel();
+        _streamSub?.cancel();
+        _closeFns[subscriptionId]?.call();
+        rethrow;
+      }
+    });
+
     _initialized = true;
   }
 
@@ -64,7 +174,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         },
     ];
     final ids = await _isolateManager.insert(
-      'INSERT INTO events (id, content, created_at, pubkey, kind, tags, sig) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :sig) RETURNING id;',
+      'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags, sig) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :sig) RETURNING id;',
       maps,
     );
     state = StorageSignal(ids);
@@ -78,14 +188,16 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  List<Event> query(
+  /// Ideally to be used for must-have sync interfaces such relationships
+  /// upon widget first load, and tests. Prefer [query] otherwise.
+  List<Event> querySync(
     RequestFilter req, {
     bool applyLimit =
         true, // Keep parameter for override compatibility, but not used directly
     Set<String>? onIds,
   }) {
     // Note: applyLimit parameter is not used here as the limit comes from req.limit
-    final (sql, params) = req.toSQL();
+    final (sql, params) = req.toSQL(onIds: onIds);
     final statement = db.prepare(sql);
     final result = statement.selectWith(
       StatementParameters.named(params),
@@ -110,14 +222,30 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<List<Event<Event>>> queryAsync(
+  Future<List<Event<Event>>> query(
     RequestFilter req, {
     bool applyLimit = true,
     Set<String>? onIds,
   }) async {
     _ensureInitialized();
-    // TODO: Query on isolate
-    return [];
+    final (sql, params) = req.toSQL(onIds: onIds);
+    final result = await _isolateManager.query(sql, [params]);
+    final events = result.map(
+      (row) => {
+        'id': row['id'],
+        'pubkey': row['pubkey'],
+        'kind': row['kind'],
+        'created_at': row['created_at'],
+        'content': row['content'],
+        'sig': row['sig'],
+        'tags': jsonDecode(row['tags']),
+      },
+    );
+
+    return events
+        .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
+        .toList()
+        .cast();
   }
 
   /// Close the database connection
@@ -133,19 +261,130 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       throw StateError('Storage not initialized. Call initialize() first.');
     }
   }
-}
-
-class PurplebaseRequestNotifier extends RequestNotifier {
-  PurplebaseRequestNotifier(super.ref, super.req);
 
   @override
   void send(RequestFilter req) {
-    // TODO: implement send
+    // final req2 = req.copyWith(since: )
+    // pool!.relayUrls;
+    pool!.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
+  }
+
+  @override
+  Future<void> dispose() async {
+    for (final closeFn in _closeFns.values) {
+      closeFn.call();
+    }
+    await pool!.close();
+    _sub?.cancel();
+    _streamSub?.cancel();
+    if (mounted) {
+      super.dispose();
+    }
+  }
+
+  // Previous query methods
+
+  // Future<List<Map<String, dynamic>>> queryRaw(RequestFilter req) async {
+  //   final completer = Completer<List<Map<String, dynamic>>>();
+
+  //   final relayUrls = pool!.relayUrls;
+  //   final allEvents = <Map<String, dynamic>>[];
+  //   final eoses = <String, bool>{for (final r in relayUrls) r: false};
+
+  //   _closeFns[req.subscriptionId] = addListener((message) {
+  //     if (message.subscriptionId != req.subscriptionId) return;
+  //     switch (message) {
+  //       case EoseWithEventsRelayMessage(:final events, :final relayUrl):
+  //         eoses[relayUrl!] = true;
+  //         for (final event in events) {
+  //           if (!allEvents.any((e) => e['id'] == event['id'])) {
+  //             allEvents.add(event);
+  //           }
+  //         }
+  //         // If there are at least as much EOSEs as connected relays, we're good
+  //         final enoughEoses = eoses.values.where((v) => v).length >=
+  //             pool!.connectedRelayUrls.length;
+  //         if (enoughEoses && !completer.isCompleted) {
+  //           final allEventsSorted = allEvents.sortedByCompare(
+  //               (m) => m['created_at'] as int, (a, b) => b.compareTo(a));
+  //           completer.complete(allEventsSorted);
+  //           scheduleMicrotask(() {
+  //             _closeFns[req.subscriptionId]?.call();
+  //           });
+  //         }
+  //         break;
+  //       case ErrorRelayMessage(:final error):
+  //         completer.completeError(Exception(error));
+  //         break;
+  //       default:
+  //     }
+  //   }, fireImmediately: false);
+
+  //   send(req);
+  //   for (final relayUrl in relayUrls) {
+  //     _resultsOnEose[(relayUrl, req.subscriptionId)] = [];
+  //   }
+
+  //   return completer.future;
+  // }
+
+  // Future<List<E>> query<E extends Event<E>>(
+  //     {Set<String>? ids,
+  //     Set<String>? authors,
+  //     Map<String, dynamic>? tags,
+  //     String? search,
+  //     DateTime? since,
+  //     DateTime? until,
+  //     int? limit,
+  //     Iterable<String>? relayUrls}) async {
+  //   final req = RequestFilter(
+  //       kinds: {Event.types[E.toString()]!.kind},
+  //       ids: ids ?? {},
+  //       authors: authors ?? {},
+  //       tags: tags,
+  //       search: search,
+  //       since: since,
+  //       until: until,
+  //       limit: limit);
+
+  //   final result = await queryRaw(req);
+  //   return result.map(Event.getConstructor<E>()!.call).toList();
+  // }
+
+  // Verification
+
+  // ignore: unused_element
+  static Future<List<Map<String, dynamic>>> _verifyEventsAsync(
+    List<Map<String, dynamic>> incomingEvents, {
+    bool Function(Map<String, dynamic> event)? isEventVerified,
+  }) async {
+    if (incomingEvents.isEmpty) return [];
+
+    final unverifiedEvents =
+        isEventVerified != null
+            ? incomingEvents.whereNot(isEventVerified).toList()
+            : incomingEvents;
+
+    if (unverifiedEvents.isNotEmpty) {
+      final notVerifiedEvents = await Isolate.run(
+        () => unverifiedEvents.whereNot(_verifyEvent).toList(),
+      );
+      for (final nve in notVerifiedEvents) {
+        incomingEvents.remove(nve);
+      }
+    }
+    return incomingEvents;
+  }
+
+  static bool _verifyEvent(Map<String, dynamic> map) {
+    // TODO RESTORE
+    // return bip340.verify(map['pubkey'], map['id'], map['sig']);
+    return true;
   }
 }
 
 extension _RFX on RequestFilter {
-  (String, Map<String, dynamic>) toSQL() {
+  (String, Map<String, dynamic>) toSQL({Set<String>? onIds}) {
     final params = <String, dynamic>{};
     final whereClauses = <String>[];
     int paramIndex = 0; // Counter for unique parameter names
@@ -154,9 +393,10 @@ extension _RFX on RequestFilter {
     String nextParamName(String base) => ':${base}_${paramIndex++}';
 
     // Handle IDs
-    if (ids.isNotEmpty) {
+    final allIds = {...ids, ...?onIds};
+    if (allIds.isNotEmpty) {
       final idParams = <String>[];
-      for (final id in ids) {
+      for (final id in allIds) {
         final paramName = nextParamName('id');
         idParams.add(paramName);
         // Add to params with the leading ':'
