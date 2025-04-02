@@ -263,9 +263,20 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  void send(RequestFilter req) {
-    // final req2 = req.copyWith(since: )
-    // pool!.relayUrls;
+  Future<void> send(RequestFilter req) async {
+    // First caching layer: ids
+    if (req.ids.isNotEmpty) {
+      final (idsSql, idsParams) = RequestFilter(
+        ids: req.ids,
+      ).toSQL(returnIds: true);
+      final storedIds = await _isolateManager.query(idsSql, [idsParams]);
+      // Modify req to only query for ids that are not in local storage
+      req = req.copyWith(
+        ids: req.ids.difference(storedIds.map((e) => e['id']).toSet()),
+      );
+    }
+    print(req.toMap());
+
     pool!.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
   }
 
@@ -384,7 +395,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 }
 
 extension _RFX on RequestFilter {
-  (String, Map<String, dynamic>) toSQL({Set<String>? onIds}) {
+  (String, Map<String, dynamic>) toSQL({
+    Set<String>? onIds,
+    bool returnIds = false,
+  }) {
     final params = <String, dynamic>{};
     final whereClauses = <String>[];
     int paramIndex = 0; // Counter for unique parameter names
@@ -467,7 +481,7 @@ extension _RFX on RequestFilter {
     }
 
     // --- Construct Final Query ---
-    var sql = 'SELECT * FROM events';
+    var sql = 'SELECT ${returnIds ? 'id' : '*'} FROM events';
 
     if (whereClauses.isNotEmpty) {
       sql += ' WHERE ${whereClauses.join(' AND ')}';

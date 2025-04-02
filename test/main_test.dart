@@ -315,4 +315,12 @@ Future<void> main() async {
     // Expected: n1 and n4 (they match all criteria)
     expect(comprehensiveResults, unorderedEquals([n1, n4]));
   });
+
+  test('send', () async {
+    final n1 = await PartialNote('yo').signWith(signer);
+    await storage.save({n1});
+    await storage.send(
+      RequestFilter(kinds: {1}, ids: {'a', n1.id}, storageOnly: true),
+    );
+  });
 }
