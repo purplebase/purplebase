@@ -1,33 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:isolate';
+import 'package:bip340/bip340.dart' as bip340;
 import 'package:sqlite3/sqlite3.dart';
-
-/// Message types for isolate communication
-enum SqliteMessageType { execute, query, insert, close }
-
-/// Message structure for isolate communication
-class SqliteMessage {
-  final SqliteMessageType type;
-  final String sql;
-  final List<Map<String, Object?>> parameters;
-  final SendPort replyPort;
-
-  SqliteMessage({
-    required this.type,
-    required this.sql,
-    this.parameters = const [],
-    required this.replyPort,
-  });
-}
-
-/// Response from isolate
-class SqliteResponse {
-  final bool success;
-  final dynamic result;
-  final String? error;
-
-  SqliteResponse({required this.success, this.result, this.error});
-}
 
 /// Manages a long-running isolate for SQLite operations
 class SqliteIsolateManager {
@@ -54,7 +29,7 @@ class SqliteIsolateManager {
   }
 
   /// Send a message to the isolate and get a response
-  Future<SqliteResponse> _sendMessage(SqliteMessage message) async {
+  Future<IsolateResponse> _sendMessage(SqliteMessage message) async {
     await _initCompleter.future;
 
     final responsePort = ReceivePort();
@@ -67,39 +42,19 @@ class SqliteIsolateManager {
 
     _sendPort!.send(msg);
 
-    return await responsePort.first as SqliteResponse;
-  }
-
-  /// Execute a SQL statement without returning results
-  Future<void> execute(
-    String sql, [
-    List<Map<String, Object?>> parameters = const [],
-  ]) async {
-    final response = await _sendMessage(
-      SqliteMessage(
-        type: SqliteMessageType.execute,
-        sql: sql,
-        parameters: parameters,
-        replyPort: const _DummySendPort(),
-      ),
-    );
-
-    if (!response.success) {
-      throw DatabaseException(response.error ?? 'Unknown database error');
-    }
+    return await responsePort.first as IsolateResponse;
   }
 
   /// Execute a query and return the results
   Future<List<Map<String, dynamic>>> query(
     String sql, [
-    List<Map<String, Object?>> parameters = const [],
+    List<Map<String, dynamic>> parameters = const [],
   ]) async {
     final response = await _sendMessage(
       SqliteMessage(
-        type: SqliteMessageType.query,
+        type: IsolateOperationType.query,
         sql: sql,
         parameters: parameters,
-        replyPort: const _DummySendPort(),
       ),
     );
 
@@ -111,17 +66,9 @@ class SqliteIsolateManager {
   }
 
   /// Insert data and return the last inserted row ID
-  Future<Set<String>> insert(
-    String sql, [
-    List<Map<String, Object?>> parameters = const [],
-  ]) async {
+  Future<Set<String>> save(List<Map<String, dynamic>> parameters) async {
     final response = await _sendMessage(
-      SqliteMessage(
-        type: SqliteMessageType.insert,
-        sql: sql,
-        parameters: parameters,
-        replyPort: const _DummySendPort(),
-      ),
+      SqliteMessage(type: IsolateOperationType.save, parameters: parameters),
     );
 
     if (!response.success) {
@@ -131,13 +78,24 @@ class SqliteIsolateManager {
     return response.result as Set<String>;
   }
 
+  /// Clear the database
+  Future<void> clear() async {
+    final response = await _sendMessage(
+      SqliteMessage(type: IsolateOperationType.clear, parameters: []),
+    );
+
+    if (!response.success) {
+      throw DatabaseException(response.error ?? 'Unknown database error');
+    }
+  }
+
   /// Close the isolate and database connection
   Future<void> close() async {
     if (_isolate == null) return;
 
     await _sendMessage(
       SqliteMessage(
-        type: SqliteMessageType.close,
+        type: IsolateOperationType.close,
         sql: '',
         replyPort: const _DummySendPort(),
       ),
@@ -185,9 +143,6 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
     db.execute('''
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
-      PRAGMA mmap_size = 30000000;
-      PRAGMA page_size = 4096;
-      PRAGMA cache_size = -4000;
       
       CREATE TABLE IF NOT EXISTS events(
         id TEXT NOT NULL,
@@ -231,68 +186,129 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
     print('Error opening database: $e');
   }
 
+  bool verifyEvent(Map<String, dynamic> map) {
+    bool verified = false;
+    if (map['sig'] != null && map['sig'] != '') {
+      verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
+    }
+    if (!verified) {
+      print(
+        '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
+      );
+    }
+    return verified;
+  }
+
   // Listen for messages
   receivePort.listen((dynamic message) {
     if (message is! SqliteMessage) return;
 
     final replyPort = message.replyPort;
-    SqliteResponse response;
+    IsolateResponse response;
 
     try {
       switch (message.type) {
-        case SqliteMessageType.execute:
-          final stmt = db!.prepare(message.sql);
-          stmt.execute(message.parameters);
-          stmt.dispose();
-          response = SqliteResponse(success: true);
-          break;
-
-        case SqliteMessageType.query:
-          final stmt = db!.prepare(message.sql);
-          final result = stmt.selectWith(
+        case IsolateOperationType.query:
+          final statement = db!.prepare(message.sql!);
+          final result = statement.selectWith(
             StatementParameters.named(message.parameters.first),
           );
-          // final columnNames = result.columnNames;
-          // final rows =
-          //     result.map((row) {
-          //       final map = <String, dynamic>{};
-          //       for (var i = 0; i < columnNames.length; i++) {
-          //         map[columnNames[i]] = row[i];
-          //       }
-          //       return map;
-          //     }).toList();
-          stmt.dispose();
-          response = SqliteResponse(success: true, result: result.toList());
+          statement.dispose();
+          response = IsolateResponse(success: true, result: result.toList());
           break;
 
-        case SqliteMessageType.insert:
-          final statement = db!.prepare(message.sql);
+        case IsolateOperationType.save:
+          // skipVerify comes as last of param list (if present), check and remove
+          final skipVerify =
+              message.parameters.lastOrNull?.containsKey('skipVerify') ?? false;
+          if (skipVerify) {
+            message.parameters.removeLast();
+          }
+          if (message.parameters.isEmpty) {
+            response = IsolateResponse(success: true, result: []);
+            break;
+          }
+
+          // Filter events by verified
+          final params =
+              message.parameters
+                  .where((m) => skipVerify ? true : verifyEvent(m))
+                  .toList();
+
+          // Check if first param has sig, and prepare query (all or none should have sig)
+          final hasSig = params.first.containsKey('sig');
+          final sql =
+              'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${hasSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${hasSig ? ', :sig' : ''}) RETURNING id;';
+          final statement = db!.prepare(sql);
+
           final ids = <String>{};
+
           db.execute('BEGIN');
-          for (final params in message.parameters) {
-            // print('inserting $params');
-            // select because it's an INSERT with a RETURNING
-            final rows = statement.selectWith(
-              StatementParameters.named(params),
-            );
+          for (final p in params) {
+            final map = {
+              for (final e in p.entries)
+                // Prefix leading : , convert tags to JSON
+                ':${e.key}': (e.value is List ? jsonEncode(e.value) : e.value),
+            };
+
+            // Use selectWith because it's an INSERT with a RETURNING
+            final rows = statement.selectWith(StatementParameters.named(map));
             if (rows.isNotEmpty) {
               ids.add(rows.first['id']);
             }
           }
           db.execute('COMMIT');
+
           statement.dispose();
-          response = SqliteResponse(success: true, result: ids);
+
+          response = IsolateResponse(success: true, result: ids);
           break;
 
-        case SqliteMessageType.close:
+        case IsolateOperationType.clear:
+          final statement = db!.prepare(
+            'DELETE FROM events; DELETE FROM events_fts;',
+          );
+          statement.execute(message.parameters);
+          statement.dispose();
+          response = IsolateResponse(success: true);
+          break;
+
+        case IsolateOperationType.close:
           db?.dispose();
-          response = SqliteResponse(success: true);
+          response = IsolateResponse(success: true);
           break;
       }
     } catch (e) {
-      response = SqliteResponse(success: false, error: e.toString());
+      response = IsolateResponse(success: false, error: e.toString());
     }
 
     replyPort.send(response);
   });
+}
+
+/// Message types for isolate communication
+enum IsolateOperationType { clear, query, save, close }
+
+/// Message structure for isolate communication
+class SqliteMessage {
+  final IsolateOperationType type;
+  final String? sql;
+  final List<Map<String, dynamic>> parameters;
+  final SendPort replyPort;
+
+  SqliteMessage({
+    required this.type,
+    this.sql,
+    this.parameters = const [],
+    this.replyPort = const _DummySendPort(),
+  });
+}
+
+/// Response from isolate
+class IsolateResponse {
+  final bool success;
+  final dynamic result;
+  final String? error;
+
+  IsolateResponse({required this.success, this.result, this.error});
 }

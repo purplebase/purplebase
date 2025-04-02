@@ -37,27 +37,27 @@ Future<void> main() async {
       'yope',
       tags: {'nostr', 'test'},
     ).signWith(signer);
-    await storage.save({n1, n2});
+    await storage.save({n1, n2}, skipVerify: true);
 
-    final r1 = storage.query(
+    final r1 = storage.querySync(
       RequestFilter(
         tags: {
-          't': {'nostr', 'test'},
+          '#t': {'nostr', 'test'},
         },
       ),
     );
     expect(r1, unorderedEquals([n2]));
 
-    final r1b = storage.query(
+    final r1b = storage.querySync(
       RequestFilter(
         tags: {
-          't': {'nostr'},
+          '#t': {'nostr'},
         },
       ),
     );
     expect(r1b, unorderedEquals([n2]));
 
-    final r2 = storage.query(
+    final r2 = storage.querySync(
       RequestFilter(
         tags: {
           'bar': {'baz'},
@@ -67,7 +67,7 @@ Future<void> main() async {
     // Empty as multiple-character tags are not indexed
     expect(r2, isEmpty);
 
-    final r3 = storage.query(RequestFilter(ids: {n1.id}));
+    final r3 = storage.querySync(RequestFilter(ids: {n1.id}));
     expect(r3, [n1]);
   });
 
@@ -78,22 +78,22 @@ Future<void> main() async {
     final n3 = await PartialNote('note 3').signWith(signer);
 
     // Save all notes to storage
-    await storage.save({n1, n2, n3});
+    await storage.save({n1, n2, n3}, skipVerify: true);
 
     // Query for a single ID
-    final r1 = storage.query(RequestFilter(ids: {n1.id}));
+    final r1 = storage.querySync(RequestFilter(ids: {n1.id}));
     expect(r1, [n1]);
 
     // Query for multiple IDs
-    final r2 = storage.query(RequestFilter(ids: {n1.id, n3.id}));
+    final r2 = storage.querySync(RequestFilter(ids: {n1.id, n3.id}));
     expect(r2, unorderedEquals([n1, n3]));
 
     // Query for non-existent ID
-    final r3 = storage.query(RequestFilter(ids: {'nonexistent_id'}));
+    final r3 = storage.querySync(RequestFilter(ids: {'nonexistent_id'}));
     expect(r3, isEmpty);
 
     // Query for mixed existing and non-existent IDs
-    final r4 = storage.query(RequestFilter(ids: {n2.id, 'nonexistent_id'}));
+    final r4 = storage.querySync(RequestFilter(ids: {n2.id, 'nonexistent_id'}));
     expect(r4, [n2]);
   });
 
@@ -109,22 +109,22 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all events to storage
-    await storage.save({note, dm});
+    await storage.save({note, dm}, skipVerify: true);
 
     // Query for kind 1 (standard note)
-    final r1 = storage.query(RequestFilter(kinds: {1}));
+    final r1 = storage.querySync(RequestFilter(kinds: {1}));
     expect(r1, [note]);
 
     // Query for kind 4 (direct message)
-    final r2 = storage.query(RequestFilter(kinds: {4}));
+    final r2 = storage.querySync(RequestFilter(kinds: {4}));
     expect(r2, [dm]);
 
     // Query for multiple kinds
-    final r3 = storage.query(RequestFilter(kinds: {1, 4}));
+    final r3 = storage.querySync(RequestFilter(kinds: {1, 4}));
     expect(r3, unorderedEquals([note, dm]));
 
     // Query for non-existent kind
-    final r4 = storage.query(RequestFilter(kinds: {999}));
+    final r4 = storage.querySync(RequestFilter(kinds: {999}));
     expect(r4, isEmpty);
   });
 
@@ -147,22 +147,26 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all notes to storage
-    await storage.save({n1, n2, n3});
+    await storage.save({n1, n2, n3}, skipVerify: true);
 
     // Query for default author
-    final r1 = storage.query(RequestFilter(authors: {pubkey!}));
+    final r1 = storage.querySync(RequestFilter(authors: {pubkey!}));
     expect(r1, unorderedEquals([n1, n3]));
 
     // Query for custom author
-    final r2 = storage.query(RequestFilter(authors: {customPubkey}));
+    final r2 = storage.querySync(RequestFilter(authors: {customPubkey}));
     expect(r2, [n2]);
 
     // Query for multiple authors
-    final r3 = storage.query(RequestFilter(authors: {pubkey, customPubkey}));
+    final r3 = storage.querySync(
+      RequestFilter(authors: {pubkey, customPubkey}),
+    );
     expect(r3, unorderedEquals([n1, n2, n3]));
 
     // Query for non-existent author
-    final r4 = storage.query(RequestFilter(authors: {'nonexistent_author'}));
+    final r4 = storage.querySync(
+      RequestFilter(authors: {'nonexistent_author'}),
+    );
     expect(r4, isEmpty);
   });
 
@@ -187,29 +191,31 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all notes to storage
-    await storage.save({n1, n2, n3});
+    await storage.save({n1, n2, n3}, skipVerify: true);
 
-    final r1 = storage.query(
+    final r1 = storage.querySync(
       RequestFilter(since: now.subtract(Duration(days: 3))),
     );
     expect(r1, [n2, n3]);
 
     // Query notes until yesterday (should include n1 and n3)
-    final r2 = storage.query(RequestFilter(until: yesterday));
+    final r2 = storage.querySync(RequestFilter(until: yesterday));
     expect(r2, unorderedEquals([n1, n3]));
 
     // Query notes within a time range (should include only n3)
-    final r3 = storage.query(
+    final r3 = storage.querySync(
       RequestFilter(since: lastWeek.add(Duration(days: 1)), until: yesterday),
     );
     expect(r3, [n3]);
 
     // Query with a future since date (should be empty)
-    final r4 = storage.query(RequestFilter(since: now.add(Duration(days: 1))));
+    final r4 = storage.querySync(
+      RequestFilter(since: now.add(Duration(days: 1))),
+    );
     expect(r4, isEmpty);
 
     // Query with a past until date (should be empty)
-    final r5 = storage.query(
+    final r5 = storage.querySync(
       RequestFilter(until: lastWeek.subtract(Duration(days: 1))),
     );
     expect(r5, isEmpty);
@@ -233,23 +239,31 @@ Future<void> main() async {
     // Create test notes
 
     // Note 1: Default author with 'announcement' tag (recent)
-    final pn1 = PartialNote('note 1', createdAt: yesterday);
-    pn1.internal.addTagValue('t', 'announcement');
+    final pn1 = PartialNote(
+      'note 1',
+      createdAt: yesterday,
+      tags: {'announcement'},
+    );
     final n1 = await pn1.signWith(signer);
 
     // Note 2: Custom author with 'question' tag (3 days ago)
-    final pn2 = PartialNote('note 2', createdAt: threeDaysAgo);
-    pn2.internal.addTagValue('t', 'question');
+    final pn2 = PartialNote(
+      'note 2',
+      createdAt: threeDaysAgo,
+      tags: {'question'},
+    );
     final n2 = await pn2.signWith(signer, withPubkey: customPubkey);
 
     // Note 3: Default author with 'archived' tag (old)
-    final pn3 = PartialNote('note 3', createdAt: lastWeek);
-    pn3.internal.addTagValue('t', 'archived');
+    final pn3 = PartialNote('note 3', createdAt: lastWeek, tags: {'archived'});
     final n3 = await pn3.signWith(signer);
 
     // Note 4: Default author with 'announcement' tag (5 days ago)
-    final pn4 = PartialNote('note 4', createdAt: fiveDaysAgo);
-    pn4.internal.addTagValue('t', 'announcement');
+    final pn4 = PartialNote(
+      'note 4',
+      createdAt: fiveDaysAgo,
+      tags: {'announcement'},
+    );
     final n4 = await pn4.signWith(signer);
 
     // Create a Direct Message
@@ -260,10 +274,10 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all events
-    await storage.save({n1, n2, n3, n4, dm});
+    await storage.save({n1, n2, n3, n4, dm}, skipVerify: true);
 
     // Run the comprehensive query with 'announcement' tag
-    final announcementResults = storage.query(
+    final announcementResults = storage.querySync(
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
@@ -271,7 +285,7 @@ Future<void> main() async {
         since: now.subtract(Duration(days: 6)), // Last 6 days
         until: now, // Until now
         tags: {
-          't': {'announcement'}, // Only notes with 'announcement' tag
+          '#t': {'announcement'}, // Only notes with 'announcement' tag
         },
       ),
     );
@@ -280,7 +294,7 @@ Future<void> main() async {
     expect(announcementResults, unorderedEquals([n1, n4]));
 
     // Run a second comprehensive query with 'question' tag
-    final questionResults = storage.query(
+    final questionResults = storage.querySync(
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
@@ -288,7 +302,7 @@ Future<void> main() async {
         since: now.subtract(Duration(days: 6)), // Last 6 days
         until: now, // Until now
         tags: {
-          't': {'question'}, // Only notes with 'question' tag
+          '#t': {'question'}, // Only notes with 'question' tag
         },
       ),
     );
@@ -297,7 +311,7 @@ Future<void> main() async {
     expect(questionResults, [n2]);
 
     // Full comprehensive query that should return multiple notes
-    final comprehensiveResults = storage.query(
+    final comprehensiveResults = storage.querySync(
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
@@ -307,7 +321,7 @@ Future<void> main() async {
         // Note: We're using only 'announcement' here based on our understanding
         // of how tag queries work
         tags: {
-          't': {'announcement'},
+          '#t': {'announcement'},
         },
       ),
     );
@@ -318,7 +332,7 @@ Future<void> main() async {
 
   test('send', () async {
     final n1 = await PartialNote('yo').signWith(signer);
-    await storage.save({n1});
+    await storage.save({n1}, skipVerify: true);
     await storage.send(
       RequestFilter(kinds: {1}, ids: {'a', n1.id}, storageOnly: true),
     );

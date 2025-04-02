@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 
-import 'package:collection/collection.dart';
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
@@ -25,11 +23,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   late final Database db;
   var _initialized = false;
   var applyLimit = true;
+  late Config config;
 
   WebSocketPool? pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
-  bool Function(Map<String, dynamic> event)? _isEventVerified;
   final _closeFns = <String, void Function()>{};
   final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
@@ -37,31 +35,23 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<void> initialize(Config config) async {
     if (_initialized) return;
+    this.config = config;
+
+    db = sqlite3.open(config.databasePath!);
+
+    // 1 GB memory mapped
+    db.execute('''
+      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+      PRAGMA page_size = 4096;
+      PRAGMA cache_size = -20000;
+      ''');
 
     _isolateManager = SqliteIsolateManager(config.databasePath!);
     await _isolateManager.initialize();
 
-    db = sqlite3.open(config.databasePath!);
-
-    // TODO: Check settings are OK on read side
-    // final z = db.select('''
-    //   PRAGMA page_size;
-    //   PRAGMA  = -4000;
-    //   cache_size
-    //   ''');
-    // print(z.first);
-
-    //     final z = db.select('''SELECT
-    //     value,
-    //     json_extract(value, '\$[0]') AS tag_name,
-    //     LENGTH(json_extract(value, '\$[0]', '\$')) AS extracted_length,
-    //     LENGTH(value ->> '\$[0]') AS value_length
-    // FROM json_each('[["a", "one"], ["foo", "bar"]]');''');
-    //     print(z);
-
     pool = WebSocketPool({'wss://relay.damus.io'});
 
-    _sub = pool!.stream.listen((record) {
+    _sub = pool!.stream.listen((record) async {
       final (relayUrl, data) = record;
       final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
 
@@ -75,19 +65,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
               return;
             }
 
-            final alreadyVerified = _isEventVerified?.call(map) ?? false;
-            if (alreadyVerified || _verifyEvent(map)) {
-              // state = EventRelayMessage(
-              //   relayUrl: relayUrl,
-              //   event: map,
-              //   subscriptionId: subscriptionId,
-              // );
+            final event = Event.getConstructorForKind(
+              map['kind'],
+            )?.call(map, ref);
 
-              final event = Event.getConstructorForKind(
-                map['kind'],
-              )?.call(map, ref);
-              save({event}.cast());
-            }
+            await save({event}.cast());
+
             break;
           case 'NOTICE':
           // if (_errorRegex.hasMatch(subscriptionId)) {
@@ -162,38 +145,37 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<void> save(Set<Event> events) async {
+  Future<void> save(Set<Event> events, {bool skipVerify = false}) async {
     _ensureInitialized();
     if (events.isEmpty) return;
-    final maps = [
-      for (final event in events)
-        {
-          for (final e in event.toMap().entries)
-            ':${e.key}':
-                (e.value is List ? jsonEncode(e.value) : e.value) as Object?,
-        },
-    ];
-    final ids = await _isolateManager.insert(
-      'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags, sig) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :sig) RETURNING id;',
-      maps,
-    );
+
+    final maps =
+        events.map((e) {
+          final map = e.toMap();
+          if (!config.keepSignatures) {
+            map.remove('sig');
+          }
+          return map;
+        }).toList();
+
+    if (skipVerify) {
+      maps.add({'skipVerify': true});
+    }
+
+    final ids = await _isolateManager.save(maps);
     state = StorageSignal(ids);
   }
 
   @override
   Future<void> clear([RequestFilter? req]) async {
     _ensureInitialized();
-    await _isolateManager.execute('DELETE FROM events');
-    await _isolateManager.execute('DELETE FROM events_fts');
+    await _isolateManager.clear();
   }
 
   @override
-  /// Ideally to be used for must-have sync interfaces such relationships
-  /// upon widget first load, and tests. Prefer [query] otherwise.
   List<Event> querySync(
     RequestFilter req, {
-    bool applyLimit =
-        true, // Keep parameter for override compatibility, but not used directly
+    bool applyLimit = true,
     Set<String>? onIds,
   }) {
     // Note: applyLimit parameter is not used here as the limit comes from req.limit
@@ -361,37 +343,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   //   final result = await queryRaw(req);
   //   return result.map(Event.getConstructor<E>()!.call).toList();
   // }
-
-  // Verification
-
-  // ignore: unused_element
-  static Future<List<Map<String, dynamic>>> _verifyEventsAsync(
-    List<Map<String, dynamic>> incomingEvents, {
-    bool Function(Map<String, dynamic> event)? isEventVerified,
-  }) async {
-    if (incomingEvents.isEmpty) return [];
-
-    final unverifiedEvents =
-        isEventVerified != null
-            ? incomingEvents.whereNot(isEventVerified).toList()
-            : incomingEvents;
-
-    if (unverifiedEvents.isNotEmpty) {
-      final notVerifiedEvents = await Isolate.run(
-        () => unverifiedEvents.whereNot(_verifyEvent).toList(),
-      );
-      for (final nve in notVerifiedEvents) {
-        incomingEvents.remove(nve);
-      }
-    }
-    return incomingEvents;
-  }
-
-  static bool _verifyEvent(Map<String, dynamic> map) {
-    // TODO RESTORE
-    // return bip340.verify(map['pubkey'], map['id'], map['sig']);
-    return true;
-  }
 }
 
 extension _RFX on RequestFilter {
@@ -446,8 +397,9 @@ extension _RFX on RequestFilter {
       // Join groups with space (implicit AND in standard FTS query syntax)
       final ftsQuery = [
         for (final e in tags.entries)
-          for (final v in e.value) '"${e.key}:$v"',
-      ].join(' ');
+          for (final v in e.value)
+            '"${e.key.startsWith('#') ? e.key.substring(1) : e.key}:$v"',
+      ].join(' AND ');
       final tagsParamName = nextParamName('tags');
       whereClauses.add(
         'id IN (SELECT id FROM events_fts WHERE tags MATCH $tagsParamName)',
