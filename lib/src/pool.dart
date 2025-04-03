@@ -69,6 +69,7 @@ class WebSocketPool
     _seenEventIds[req.subscriptionId] = {};
 
     // Reset state for new filter
+    print('resetting state for filter $req');
     state = (req, []);
 
     // Ensure we're listening to messages
@@ -331,6 +332,7 @@ class WebSocketPool
   void _emitEvents(RequestFilter filter, List<Map<String, dynamic>> newEvents) {
     if (state == null || filter.subscriptionId != state!.$1.subscriptionId) {
       // If it's a different filter than the current one, just replace state
+      print('different, replace state event # ${newEvents.length}');
       state = (filter, newEvents);
     } else {
       // Append to existing events for the same filter, but avoid duplicates

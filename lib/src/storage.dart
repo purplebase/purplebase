@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:models/models.dart';
 import 'package:purplebase/src/isolate.dart';
-import 'package:purplebase/src/pool.dart';
 import 'package:purplebase/src/request.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -24,11 +23,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   var _initialized = false;
   var applyLimit = true;
 
-  WebSocketPool? pool;
-  StreamSubscription? _sub;
-  StreamSubscription? _streamSub;
-  final _closeFns = <String, void Function()>{};
-
   /// Initialize the storage with a database path
   @override
   Future<void> initialize(StorageConfiguration config) async {
@@ -47,14 +41,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     _isolateManager = IsolateManager(config.databasePath!);
     await _isolateManager.initialize();
-
-    pool = WebSocketPool(ref);
-
-    _sub = pool!.stream.listen((record) async {
-      if (record == null) return;
-      final (req, events) = record;
-      await _saveInternal(events);
-    });
 
     _initialized = true;
   }
@@ -169,17 +155,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<void> send(RequestFilter req, {Set<String>? relayUrls}) async {
-    pool!.send(req, relayUrls: relayUrls);
+    _isolateManager.send(req, relayUrls: relayUrls);
   }
 
   @override
   Future<void> dispose() async {
-    for (final closeFn in _closeFns.values) {
-      closeFn.call();
-    }
-    pool!.dispose();
-    _sub?.cancel();
-    _streamSub?.cancel();
+    await _isolateManager.close();
     if (mounted) {
       super.dispose();
     }
@@ -252,6 +233,33 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   //   final result = await queryRaw(req);
   //   return result.map(Event.getConstructor<E>()!.call).toList();
+  // }
+
+  // Future<void> publish(Event event) async {
+  //   final completer = Completer<void>();
+
+  //   pool!.send(jsonEncode(["EVENT", event.toMap()]));
+
+  //   _closeFns[event.event.id.toString()] = addListener((message) {
+  //     if (message.subscriptionId != null &&
+  //         event.event.id.toString() != message.subscriptionId) {
+  //       return;
+  //     }
+
+  //     if (message is PublishedEventRelayMessage) {
+  //       if (message.accepted) {
+  //         if (!completer.isCompleted) {
+  //           completer.complete();
+  //         }
+  //       } else {
+  //         if (!completer.isCompleted) {
+  //           final error = message.message ?? 'Not accepted';
+  //           completer.completeError(Exception(error));
+  //         }
+  //       }
+  //     }
+  //   });
+  //   return completer.future;
   // }
 }
 

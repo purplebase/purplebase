@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:isolate';
 import 'package:bip340/bip340.dart' as bip340;
 import 'package:models/models.dart';
+import 'package:purplebase/purplebase.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 class IsolateManager {
@@ -18,7 +20,7 @@ class IsolateManager {
     if (_isolate != null) return _initCompleter.future;
 
     final receivePort = ReceivePort();
-    _isolate = await Isolate.spawn(_sqliteIsolateEntryPoint, [
+    _isolate = await Isolate.spawn(_isolateEntryPoint, [
       receivePort.sendPort,
       dbPath,
     ]);
@@ -96,6 +98,19 @@ class IsolateManager {
     }
   }
 
+  Future<void> send(RequestFilter req, {Set<String>? relayUrls}) async {
+    final response = await _sendMessage(
+      IsolateMessage(
+        type: IsolateOperationType.send,
+        sendParameters: (req, relayUrls),
+      ),
+    );
+
+    if (!response.success) {
+      throw DatabaseException(response.error ?? 'Unknown pool error');
+    }
+  }
+
   /// Close the isolate and database connection
   Future<void> close() async {
     if (_isolate == null) return;
@@ -131,8 +146,7 @@ class DatabaseException implements Exception {
   String toString() => 'DatabaseException: $message';
 }
 
-/// Entry point for the SQLite isolate
-void _sqliteIsolateEntryPoint(List<dynamic> args) {
+void _isolateEntryPoint(List<dynamic> args) {
   final SendPort mainSendPort = args[0] as SendPort;
   final String dbPath = args[1] as String;
 
@@ -200,21 +214,10 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
     print('Error opening database: $e');
   }
 
-  bool verifyEvent(Map<String, dynamic> map) {
-    bool verified = false;
-    if (map['sig'] != null && map['sig'] != '') {
-      verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
-      if (!verified) {
-        print(
-          '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
-        );
-      }
-    }
-    return verified;
-  }
+  final container = ProviderContainer();
+  final pool = WebSocketPool(container.read(refProvider));
 
-  // Listen for messages
-  receivePort.listen((dynamic message) {
+  receivePort.listen((message) {
     if (message is! IsolateMessage) return;
 
     final replyPort = message.replyPort;
@@ -294,8 +297,15 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
           response = IsolateResponse(success: true);
           break;
 
+        case IsolateOperationType.send:
+          final (req, relayUrls) = message.sendParameters!;
+          pool.send(req, relayUrls: relayUrls);
+          response = IsolateResponse(success: true);
+          break;
+
         case IsolateOperationType.close:
           db?.dispose();
+          pool.dispose();
           response = IsolateResponse(success: true);
           break;
       }
@@ -307,8 +317,21 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
   });
 }
 
+bool verifyEvent(Map<String, dynamic> map) {
+  bool verified = false;
+  if (map['sig'] != null && map['sig'] != '') {
+    verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
+    if (!verified) {
+      print(
+        '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
+      );
+    }
+  }
+  return verified;
+}
+
 /// Message types for isolate communication
-enum IsolateOperationType { clear, query, save, close }
+enum IsolateOperationType { clear, query, save, close, send }
 
 /// Message structure for isolate communication
 class IsolateMessage {
@@ -316,6 +339,7 @@ class IsolateMessage {
   final String? sql;
   final List<Map<String, dynamic>> parameters;
   final StorageConfiguration? config;
+  final (RequestFilter, Set<String>?)? sendParameters;
   final SendPort replyPort;
 
   IsolateMessage({
@@ -323,6 +347,7 @@ class IsolateMessage {
     this.sql,
     this.parameters = const [],
     this.config,
+    this.sendParameters,
     this.replyPort = const _DummySendPort(),
   });
 }
@@ -335,3 +360,5 @@ class IsolateResponse {
 
   IsolateResponse({required this.success, this.result, this.error});
 }
+
+final refProvider = Provider((ref) => ref);
