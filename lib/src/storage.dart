@@ -2,16 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:models/models.dart';
-import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
+import 'package:purplebase/src/pool.dart';
+import 'package:purplebase/src/request.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 class PurplebaseStorageNotifier extends StorageNotifier {
   final Ref ref;
 
-  // Create singleton
-  static PurplebaseStorageNotifier? _instance;
+  static PurplebaseStorageNotifier? _instance; // singleton
 
   factory PurplebaseStorageNotifier(Ref ref) {
     return _instance ??= PurplebaseStorageNotifier._internal(ref);
@@ -19,151 +19,74 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   PurplebaseStorageNotifier._internal(this.ref);
 
-  late final SqliteIsolateManager _isolateManager;
+  late final IsolateManager _isolateManager;
   late final Database db;
   var _initialized = false;
   var applyLimit = true;
-  late Config config;
 
   WebSocketPool? pool;
   StreamSubscription? _sub;
   StreamSubscription? _streamSub;
   final _closeFns = <String, void Function()>{};
-  final _resultsOnEose = <(String, String), List<Map<String, dynamic>>>{};
 
   /// Initialize the storage with a database path
   @override
-  Future<void> initialize(Config config) async {
+  Future<void> initialize(StorageConfiguration config) async {
+    await super.initialize(config);
+
     if (_initialized) return;
-    this.config = config;
 
     db = sqlite3.open(config.databasePath!);
 
-    // 1 GB memory mapped
+    // Configure sqlite: 1 GB memory mapped
     db.execute('''
       PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
       PRAGMA page_size = 4096;
       PRAGMA cache_size = -20000;
       ''');
 
-    _isolateManager = SqliteIsolateManager(config.databasePath!);
+    _isolateManager = IsolateManager(config.databasePath!);
     await _isolateManager.initialize();
 
-    pool = WebSocketPool({'wss://relay.damus.io'});
+    pool = WebSocketPool(ref);
 
     _sub = pool!.stream.listen((record) async {
-      final (relayUrl, data) = record;
-      final [type, subscriptionId, ...rest] = jsonDecode(data) as List;
-
-      try {
-        switch (type) {
-          case 'EVENT':
-            final Map<String, dynamic> map = rest.first;
-            // If collecting events for EOSE, do not attempt to verify here
-            if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
-              _resultsOnEose[(relayUrl, subscriptionId)]!.add(map);
-              return;
-            }
-
-            final event = Event.getConstructorForKind(
-              map['kind'],
-            )?.call(map, ref);
-
-            await save({event}.cast());
-
-            break;
-          case 'NOTICE':
-          // if (_errorRegex.hasMatch(subscriptionId)) {
-          //   // state = ErrorRelayMessage(
-          //   //     relayUrl: relayUrl,
-          //   //     subscriptionId: null,
-          //   //     error: subscriptionId);
-          //   state = RelayError(
-          //     [...?state.models],
-          //     message: 'error',
-          //     subscriptionId: subscriptionId,
-          //   );
-          // }
-          case 'CLOSED':
-          // state = ErrorRelayMessage(
-          //     relayUrl: relayUrl,
-          //     subscriptionId: subscriptionId,
-          //     error: rest.join(', '));
-          // state = RelayError(
-          //   [...?state.models],
-          //   message: rest.join(', '),
-          //   subscriptionId: subscriptionId,
-          // );
-          case 'EOSE':
-            // if (_resultsOnEose.containsKey((relayUrl, subscriptionId))) {
-            //   final incomingEvents =
-            //       _resultsOnEose.remove((relayUrl, subscriptionId))!;
-            //   _verifyEventsAsync(
-            //     incomingEvents,
-            //     isEventVerified: _isEventVerified,
-            //   ).then((events) {
-            //     // TODO: Implement EoseWithEvents
-            //     // state = EoseWithEventsRelayMessage(
-            //     //   relayUrl: relayUrl,
-            //     //   events: events,
-            //     //   subscriptionId: subscriptionId,
-            //     // );
-            //   });
-            // } else {
-            //   // state = EoseRelayMessage(
-            //   //   relayUrl: relayUrl,
-            //   //   subscriptionId: subscriptionId,
-            //   // );
-            // }
-            break;
-          case 'OK':
-            // TODO: Implement publish
-            // state = PublishedEventRelayMessage(
-            //   relayUrl: relayUrl,
-            //   subscriptionId: subscriptionId,
-            //   accepted: rest.first as bool,
-            //   message: rest.lastOrNull?.toString(),
-            // );
-            break;
-        }
-      } catch (err) {
-        // state = ErrorRelayMessage(
-        //     relayUrl: relayUrl, subscriptionId: null, error: err.toString());
-        // state = RelayError(
-        //   [...?state.models],
-        //   message: err.toString(),
-        //   subscriptionId: subscriptionId,
-        // );
-        _sub?.cancel();
-        _streamSub?.cancel();
-        _closeFns[subscriptionId]?.call();
-        rethrow;
-      }
+      if (record == null) return;
+      final (req, events) = record;
+      await _saveInternal(events);
     });
 
     _initialized = true;
   }
 
-  @override
-  Future<void> save(Set<Event> events, {bool skipVerify = false}) async {
+  Future<void> _saveInternal(List<Map<String, dynamic>> maps) async {
+    if (maps.isEmpty) return;
+
     _ensureInitialized();
-    if (events.isEmpty) return;
 
-    final maps =
-        events.map((e) {
-          final map = e.toMap();
-          if (!config.keepSignatures) {
-            map.remove('sig');
-          }
-          return map;
-        }).toList();
+    // Check for existing IDs in database and remove
+    // Reuse logic on RequestFilter#toSQL() for this
+    // Exclude nulls, we have no idea what is coming in
+    final requestedIds = maps.map((m) => m['id']?.toString()).nonNulls.toSet();
+    final (idsSql, idsParams) = RequestFilter(
+      ids: requestedIds,
+    ).toSQL(returnIds: true);
 
-    if (skipVerify) {
-      maps.add({'skipVerify': true});
-    }
+    final savedIds = await _isolateManager.query(idsSql, [idsParams]);
+    final idsToSave = requestedIds.difference(
+      savedIds.map((e) => e['id']!).toSet(),
+    );
 
-    final ids = await _isolateManager.save(maps);
+    final mapsToSave = maps.where((m) => idsToSave.contains(m['id'])).toList();
+
+    final ids = await _isolateManager.save(mapsToSave, config);
     state = StorageSignal(ids);
+  }
+
+  @override
+  Future<void> save(Set<Event> events) async {
+    final maps = events.map((e) => e.toMap()).toList();
+    await _saveInternal(maps);
   }
 
   @override
@@ -245,21 +168,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<void> send(RequestFilter req) async {
-    // First caching layer: ids
-    if (req.ids.isNotEmpty) {
-      final (idsSql, idsParams) = RequestFilter(
-        ids: req.ids,
-      ).toSQL(returnIds: true);
-      final storedIds = await _isolateManager.query(idsSql, [idsParams]);
-      // Modify req to only query for ids that are not in local storage
-      req = req.copyWith(
-        ids: req.ids.difference(storedIds.map((e) => e['id']).toSet()),
-      );
-    }
-    print(req.toMap());
-
-    pool!.send(jsonEncode(["REQ", req.subscriptionId, req.toMap()]));
+  Future<void> send(RequestFilter req, {Set<String>? relayUrls}) async {
+    pool!.send(req, relayUrls: relayUrls);
   }
 
   @override
@@ -267,7 +177,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     for (final closeFn in _closeFns.values) {
       closeFn.call();
     }
-    await pool!.close();
+    pool!.dispose();
     _sub?.cancel();
     _streamSub?.cancel();
     if (mounted) {
@@ -345,112 +255,17 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   // }
 }
 
-extension _RFX on RequestFilter {
-  (String, Map<String, dynamic>) toSQL({
-    Set<String>? onIds,
-    bool returnIds = false,
-  }) {
-    final params = <String, dynamic>{};
-    final whereClauses = <String>[];
-    int paramIndex = 0; // Counter for unique parameter names
-
-    // Helper function to generate unique parameter names
-    String nextParamName(String base) => ':${base}_${paramIndex++}';
-
-    // Handle IDs
-    final allIds = {...ids, ...?onIds};
-    if (allIds.isNotEmpty) {
-      final idParams = <String>[];
-      for (final id in allIds) {
-        final paramName = nextParamName('id');
-        idParams.add(paramName);
-        // Add to params with the leading ':'
-        params[paramName] = id;
-      }
-      whereClauses.add('id IN (${idParams.join(', ')})');
-    }
-
-    // Handle Kinds
-    if (kinds.isNotEmpty) {
-      final kindParams = <String>[];
-      for (final kind in kinds) {
-        final paramName = nextParamName('kind');
-        kindParams.add(paramName);
-        params[paramName] = kind;
-      }
-      whereClauses.add('kind IN (${kindParams.join(', ')})');
-    }
-
-    // Handle Authors (pubkeys)
-    if (authors.isNotEmpty) {
-      final authorParams = <String>[];
-      for (final author in authors) {
-        final paramName = nextParamName('author');
-        authorParams.add(paramName);
-        params[paramName] = author;
-      }
-      whereClauses.add('pubkey IN (${authorParams.join(', ')})');
-    }
-
-    // Handle Tags (using FTS)
-    if (tags.isNotEmpty) {
-      // Join groups with space (implicit AND in standard FTS query syntax)
-      final ftsQuery = [
-        for (final e in tags.entries)
-          for (final v in e.value)
-            '"${e.key.startsWith('#') ? e.key.substring(1) : e.key}:$v"',
-      ].join(' AND ');
-      final tagsParamName = nextParamName('tags');
-      whereClauses.add(
-        'id IN (SELECT id FROM events_fts WHERE tags MATCH $tagsParamName)',
-      );
-      params[tagsParamName] = ftsQuery;
-    }
-
-    // Handle Search (using FTS on content)
-    if (search != null && search!.isNotEmpty) {
-      final searchParamName = nextParamName('search');
-      whereClauses.add(
-        'id IN (SELECT id FROM events_fts WHERE search MATCH $searchParamName)',
-      );
-      params[searchParamName] = search!;
-    }
-
-    // Handle Since (created_at > since)
-    if (since != null) {
-      final sinceParamName = nextParamName('since');
-      whereClauses.add('created_at > $sinceParamName');
-      // Convert DateTime to Unix timestamp (seconds)
-      params[sinceParamName] = since!.millisecondsSinceEpoch ~/ 1000;
-    }
-
-    // Handle Until (created_at < until)
-    if (until != null) {
-      final untilParamName = nextParamName('until');
-      whereClauses.add('created_at < $untilParamName');
-      // Convert DateTime to Unix timestamp (seconds)
-      params[untilParamName] = until!.millisecondsSinceEpoch ~/ 1000;
-    }
-
-    // --- Construct Final Query ---
-    var sql = 'SELECT ${returnIds ? 'id' : '*'} FROM events';
-
-    if (whereClauses.isNotEmpty) {
-      sql += ' WHERE ${whereClauses.join(' AND ')}';
-    }
-
-    // Add ordering (descending by creation time is standard for Nostr)
-    sql += ' ORDER BY created_at DESC';
-
-    // Handle Limit
-    if (limit != null && limit! > 0) {
-      final limitParamName = nextParamName('limit');
-      sql += ' LIMIT $limitParamName';
-      params[limitParamName] = limit!;
-    }
-
-    return (sql, params);
-  }
+class PurplebaseConfiguration {
+  final Duration idleTimeout;
+  final Duration streamingBufferWindow;
+  PurplebaseConfiguration({
+    this.idleTimeout = const Duration(minutes: 5),
+    this.streamingBufferWindow = const Duration(seconds: 2),
+  });
 }
+
+final purplebaseConfigurationProvider = Provider(
+  (_) => PurplebaseConfiguration(),
+);
 
 // TODO: Have a DB version somewhere (for future migrations)

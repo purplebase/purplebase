@@ -2,16 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 import 'package:bip340/bip340.dart' as bip340;
+import 'package:models/models.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-/// Manages a long-running isolate for SQLite operations
-class SqliteIsolateManager {
+class IsolateManager {
   final String dbPath;
   Isolate? _isolate;
   SendPort? _sendPort;
   final Completer<void> _initCompleter = Completer<void>();
 
-  SqliteIsolateManager(this.dbPath);
+  IsolateManager(this.dbPath);
 
   /// Initialize the SQLite isolate
   Future<void> initialize() async {
@@ -29,11 +29,11 @@ class SqliteIsolateManager {
   }
 
   /// Send a message to the isolate and get a response
-  Future<IsolateResponse> _sendMessage(SqliteMessage message) async {
+  Future<IsolateResponse> _sendMessage(IsolateMessage message) async {
     await _initCompleter.future;
 
     final responsePort = ReceivePort();
-    final msg = SqliteMessage(
+    final msg = IsolateMessage(
       type: message.type,
       sql: message.sql,
       parameters: message.parameters,
@@ -51,7 +51,7 @@ class SqliteIsolateManager {
     List<Map<String, dynamic>> parameters = const [],
   ]) async {
     final response = await _sendMessage(
-      SqliteMessage(
+      IsolateMessage(
         type: IsolateOperationType.query,
         sql: sql,
         parameters: parameters,
@@ -66,9 +66,16 @@ class SqliteIsolateManager {
   }
 
   /// Insert data and return the last inserted row ID
-  Future<Set<String>> save(List<Map<String, dynamic>> parameters) async {
+  Future<Set<String>> save(
+    List<Map<String, dynamic>> events,
+    StorageConfiguration config,
+  ) async {
     final response = await _sendMessage(
-      SqliteMessage(type: IsolateOperationType.save, parameters: parameters),
+      IsolateMessage(
+        type: IsolateOperationType.save,
+        parameters: events,
+        config: config,
+      ),
     );
 
     if (!response.success) {
@@ -81,7 +88,7 @@ class SqliteIsolateManager {
   /// Clear the database
   Future<void> clear() async {
     final response = await _sendMessage(
-      SqliteMessage(type: IsolateOperationType.clear, parameters: []),
+      IsolateMessage(type: IsolateOperationType.clear, parameters: []),
     );
 
     if (!response.success) {
@@ -94,7 +101,7 @@ class SqliteIsolateManager {
     if (_isolate == null) return;
 
     await _sendMessage(
-      SqliteMessage(
+      IsolateMessage(
         type: IsolateOperationType.close,
         sql: '',
         replyPort: const _DummySendPort(),
@@ -181,6 +188,13 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
         DELETE FROM events_fts WHERE id = OLD.id;
         INSERT INTO events_fts(id, tags) VALUES (NEW.id, NEW.tags);
       END;
+
+      CREATE TABLE IF NOT EXISTS requests(
+        request TEXT,
+        until INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS request_idx ON requests(request);
     ''');
   } catch (e) {
     print('Error opening database: $e');
@@ -190,18 +204,18 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
     bool verified = false;
     if (map['sig'] != null && map['sig'] != '') {
       verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
-    }
-    if (!verified) {
-      print(
-        '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
-      );
+      if (!verified) {
+        print(
+          '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
+        );
+      }
     }
     return verified;
   }
 
   // Listen for messages
   receivePort.listen((dynamic message) {
-    if (message is! SqliteMessage) return;
+    if (message is! IsolateMessage) return;
 
     final replyPort = message.replyPort;
     IsolateResponse response;
@@ -219,14 +233,18 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
 
         case IsolateOperationType.save:
           // skipVerify comes as last of param list (if present), check and remove
-          final skipVerify =
+          var skipVerify =
               message.parameters.lastOrNull?.containsKey('skipVerify') ?? false;
           if (skipVerify) {
             message.parameters.removeLast();
           }
-          if (message.parameters.isEmpty) {
-            response = IsolateResponse(success: true, result: []);
-            break;
+
+          // Check if first param has sig, and prepare query (all or none should have sig)
+          final hasSig =
+              message.parameters.firstOrNull?.containsKey('sig') ?? false;
+
+          if (!hasSig) {
+            skipVerify = true;
           }
 
           // Filter events by verified
@@ -235,8 +253,11 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
                   .where((m) => skipVerify ? true : verifyEvent(m))
                   .toList();
 
-          // Check if first param has sig, and prepare query (all or none should have sig)
-          final hasSig = params.first.containsKey('sig');
+          if (params.isEmpty) {
+            response = IsolateResponse(success: true, result: <String>{});
+            break;
+          }
+
           final sql =
               'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${hasSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${hasSig ? ', :sig' : ''}) RETURNING id;';
           final statement = db!.prepare(sql);
@@ -290,16 +311,18 @@ void _sqliteIsolateEntryPoint(List<dynamic> args) {
 enum IsolateOperationType { clear, query, save, close }
 
 /// Message structure for isolate communication
-class SqliteMessage {
+class IsolateMessage {
   final IsolateOperationType type;
   final String? sql;
   final List<Map<String, dynamic>> parameters;
+  final StorageConfiguration? config;
   final SendPort replyPort;
 
-  SqliteMessage({
+  IsolateMessage({
     required this.type,
     this.sql,
     this.parameters = const [],
+    this.config,
     this.replyPort = const _DummySendPort(),
   });
 }

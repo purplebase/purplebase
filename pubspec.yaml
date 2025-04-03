@@ -12,7 +12,7 @@ dependencies:
   convert: ^3.1.1
   logger: ^2.5.0
   riverpod: ^2.5.0
-  web_socket_client: ^0.1.5
+  web_socket_client: ^0.2.0
   models:
     path: ../models
   sqlite3: ^2.7.5

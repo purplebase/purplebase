@@ -15,7 +15,12 @@ Future<void> main() async {
       ],
     );
     await container.read(
-      initializationProvider(Config(databasePath: 'storage.db')).future,
+      initializationProvider(
+        StorageConfiguration(
+          databasePath: 'storage.db',
+          skipVerification: true,
+        ),
+      ).future,
     );
     storage = container.read(storageNotifierProvider.notifier);
   });
@@ -37,7 +42,7 @@ Future<void> main() async {
       'yope',
       tags: {'nostr', 'test'},
     ).signWith(signer);
-    await storage.save({n1, n2}, skipVerify: true);
+    await storage.save({n1, n2});
 
     final r1 = storage.querySync(
       RequestFilter(
@@ -78,7 +83,7 @@ Future<void> main() async {
     final n3 = await PartialNote('note 3').signWith(signer);
 
     // Save all notes to storage
-    await storage.save({n1, n2, n3}, skipVerify: true);
+    await storage.save({n1, n2, n3});
 
     // Query for a single ID
     final r1 = storage.querySync(RequestFilter(ids: {n1.id}));
@@ -109,7 +114,7 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all events to storage
-    await storage.save({note, dm}, skipVerify: true);
+    await storage.save({note, dm});
 
     // Query for kind 1 (standard note)
     final r1 = storage.querySync(RequestFilter(kinds: {1}));
@@ -147,7 +152,7 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all notes to storage
-    await storage.save({n1, n2, n3}, skipVerify: true);
+    await storage.save({n1, n2, n3});
 
     // Query for default author
     final r1 = storage.querySync(RequestFilter(authors: {pubkey!}));
@@ -191,7 +196,7 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all notes to storage
-    await storage.save({n1, n2, n3}, skipVerify: true);
+    await storage.save({n1, n2, n3});
 
     final r1 = storage.querySync(
       RequestFilter(since: now.subtract(Duration(days: 3))),
@@ -274,7 +279,7 @@ Future<void> main() async {
     ).signWith(signer);
 
     // Save all events
-    await storage.save({n1, n2, n3, n4, dm}, skipVerify: true);
+    await storage.save({n1, n2, n3, n4, dm});
 
     // Run the comprehensive query with 'announcement' tag
     final announcementResults = storage.querySync(
@@ -332,9 +337,9 @@ Future<void> main() async {
 
   test('send', () async {
     final n1 = await PartialNote('yo').signWith(signer);
-    await storage.save({n1}, skipVerify: true);
+    await storage.save({n1});
     await storage.send(
-      RequestFilter(kinds: {1}, ids: {'a', n1.id}, storageOnly: true),
+      RequestFilter(kinds: {1}, ids: {'b', 'a', n1.id}, storageOnly: true),
     );
   });
 }
