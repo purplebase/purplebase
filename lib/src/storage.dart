@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:models/models.dart';
 import 'package:purplebase/src/isolate.dart';
@@ -18,12 +19,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   PurplebaseStorageNotifier._internal(this.ref);
 
-  late final IsolateManager _isolateManager;
   late final Database db;
   var _initialized = false;
   var applyLimit = true;
 
-  /// Initialize the storage with a database path
+  Isolate? _isolate;
+  SendPort? _sendPort;
+  final Completer<void> _initCompleter = Completer<void>();
+
+  /// Initialize the storage with a configuration
   @override
   Future<void> initialize(StorageConfiguration config) async {
     await super.initialize(config);
@@ -39,16 +43,32 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       PRAGMA cache_size = -20000;
       ''');
 
-    _isolateManager = IsolateManager(config.databasePath!);
-    await _isolateManager.initialize();
+    // Initialize isolate
+    if (_isolate != null) return _initCompleter.future;
 
+    final receivePort = ReceivePort();
+    _isolate = await Isolate.spawn(isolateEntryPoint, [
+      receivePort.sendPort,
+      config,
+    ]);
+
+    receivePort.listen((message) {
+      if (_sendPort == null && message is SendPort) {
+        _sendPort = message;
+        _initCompleter.complete();
+      } else {
+        state = StorageSignal(message);
+      }
+    });
+
+    await _initCompleter.future;
     _initialized = true;
   }
 
-  Future<void> _saveInternal(List<Map<String, dynamic>> maps) async {
+  @override
+  Future<void> save(Set<Event> events) async {
+    final maps = events.map((e) => e.toMap()).toList();
     if (maps.isEmpty) return;
-
-    _ensureInitialized();
 
     // Check for existing IDs in database and remove
     // Reuse logic on RequestFilter#toSQL() for this
@@ -58,27 +78,51 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       ids: requestedIds,
     ).toSQL(returnIds: true);
 
-    final savedIds = await _isolateManager.query(idsSql, [idsParams]);
+    final response = await _sendMessage(
+      IsolateMessage(
+        type: IsolateOperationType.query,
+        sql: idsSql,
+        parameters: [idsParams],
+      ),
+    );
+
+    if (!response.success) {
+      throw IsolateException(response.error ?? 'Unknown database error');
+    }
+
+    final savedIds = response.result as List<Map<String, dynamic>>;
+
     final idsToSave = requestedIds.difference(
       savedIds.map((e) => e['id']!).toSet(),
     );
 
     final mapsToSave = maps.where((m) => idsToSave.contains(m['id'])).toList();
 
-    final ids = await _isolateManager.save(mapsToSave, config);
+    final response2 = await _sendMessage(
+      IsolateMessage(
+        type: IsolateOperationType.save,
+        parameters: mapsToSave,
+        config: config,
+      ),
+    );
+
+    if (!response2.success) {
+      throw IsolateException(response.error ?? 'Unknown database error');
+    }
+
+    final ids = response2.result as Set<String>;
     state = StorageSignal(ids);
   }
 
   @override
-  Future<void> save(Set<Event> events) async {
-    final maps = events.map((e) => e.toMap()).toList();
-    await _saveInternal(maps);
-  }
-
-  @override
   Future<void> clear([RequestFilter? req]) async {
-    _ensureInitialized();
-    await _isolateManager.clear();
+    final response = await _sendMessage(
+      IsolateMessage(type: IsolateOperationType.clear, parameters: []),
+    );
+
+    if (!response.success) {
+      throw IsolateException(response.error ?? 'Unknown database error');
+    }
   }
 
   @override
@@ -118,10 +162,17 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     bool applyLimit = true,
     Set<String>? onIds,
   }) async {
-    _ensureInitialized();
     final (sql, params) = req.toSQL(onIds: onIds);
-    final result = await _isolateManager.query(sql, [params]);
-    final events = result.map(
+
+    final response = await _sendMessage(
+      IsolateMessage(
+        type: IsolateOperationType.query,
+        sql: sql,
+        parameters: [params],
+      ),
+    );
+
+    final events = (response.result as List).map(
       (row) => {
         'id': row['id'],
         'pubkey': row['pubkey'],
@@ -139,31 +190,65 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         .cast();
   }
 
-  /// Close the database connection
+  /// Close the isolate connection
   @override
   Future<void> close() async {
     if (!_initialized) return;
-    await _isolateManager.close();
+    await dispose();
     _initialized = false;
-  }
-
-  void _ensureInitialized() {
-    if (!_initialized) {
-      throw StateError('Storage not initialized. Call initialize() first.');
-    }
   }
 
   @override
   Future<void> send(RequestFilter req, {Set<String>? relayUrls}) async {
-    _isolateManager.send(req, relayUrls: relayUrls);
+    final response = await _sendMessage(
+      IsolateMessage(
+        type: IsolateOperationType.send,
+        sendParameters: (req, relayUrls),
+      ),
+    );
+
+    if (!response.success) {
+      throw IsolateException(response.error ?? 'Unknown pool error');
+    }
   }
 
   @override
   Future<void> dispose() async {
-    await _isolateManager.close();
+    if (_isolate == null) return;
+
+    await _sendMessage(
+      IsolateMessage(
+        type: IsolateOperationType.close,
+        sql: '',
+        replyPort: const DummySendPort(),
+      ),
+    );
+
+    _isolate?.kill();
+    _isolate = null;
+    _sendPort = null;
+
     if (mounted) {
       super.dispose();
     }
+  }
+
+  Future<IsolateResponse> _sendMessage(IsolateMessage message) async {
+    await _initCompleter.future;
+
+    final responsePort = ReceivePort();
+    final msg = IsolateMessage(
+      type: message.type,
+      sql: message.sql,
+      parameters: message.parameters,
+      sendParameters: message.sendParameters,
+      config: message.config,
+      replyPort: responsePort.sendPort,
+    );
+
+    _sendPort!.send(msg);
+
+    return await responsePort.first as IsolateResponse;
   }
 
   // Previous query methods
@@ -275,5 +360,3 @@ class PurplebaseConfiguration {
 final purplebaseConfigurationProvider = Provider(
   (_) => PurplebaseConfiguration(),
 );
-
-// TODO: Have a DB version somewhere (for future migrations)

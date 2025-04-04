@@ -1,165 +1,31 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
+import 'dart:math';
 import 'package:bip340/bip340.dart' as bip340;
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-class IsolateManager {
-  final String dbPath;
-  Isolate? _isolate;
-  SendPort? _sendPort;
-  final Completer<void> _initCompleter = Completer<void>();
-
-  IsolateManager(this.dbPath);
-
-  /// Initialize the SQLite isolate
-  Future<void> initialize() async {
-    if (_isolate != null) return _initCompleter.future;
-
-    final receivePort = ReceivePort();
-    _isolate = await Isolate.spawn(_isolateEntryPoint, [
-      receivePort.sendPort,
-      dbPath,
-    ]);
-
-    _sendPort = await receivePort.first as SendPort;
-    _initCompleter.complete();
-    return _initCompleter.future;
-  }
-
-  /// Send a message to the isolate and get a response
-  Future<IsolateResponse> _sendMessage(IsolateMessage message) async {
-    await _initCompleter.future;
-
-    final responsePort = ReceivePort();
-    final msg = IsolateMessage(
-      type: message.type,
-      sql: message.sql,
-      parameters: message.parameters,
-      replyPort: responsePort.sendPort,
-    );
-
-    _sendPort!.send(msg);
-
-    return await responsePort.first as IsolateResponse;
-  }
-
-  /// Execute a query and return the results
-  Future<List<Map<String, dynamic>>> query(
-    String sql, [
-    List<Map<String, dynamic>> parameters = const [],
-  ]) async {
-    final response = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.query,
-        sql: sql,
-        parameters: parameters,
-      ),
-    );
-
-    if (!response.success) {
-      throw DatabaseException(response.error ?? 'Unknown database error');
-    }
-
-    return response.result as List<Map<String, dynamic>>;
-  }
-
-  /// Insert data and return the last inserted row ID
-  Future<Set<String>> save(
-    List<Map<String, dynamic>> events,
-    StorageConfiguration config,
-  ) async {
-    final response = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.save,
-        parameters: events,
-        config: config,
-      ),
-    );
-
-    if (!response.success) {
-      throw DatabaseException(response.error ?? 'Unknown database error');
-    }
-
-    return response.result as Set<String>;
-  }
-
-  /// Clear the database
-  Future<void> clear() async {
-    final response = await _sendMessage(
-      IsolateMessage(type: IsolateOperationType.clear, parameters: []),
-    );
-
-    if (!response.success) {
-      throw DatabaseException(response.error ?? 'Unknown database error');
-    }
-  }
-
-  Future<void> send(RequestFilter req, {Set<String>? relayUrls}) async {
-    final response = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.send,
-        sendParameters: (req, relayUrls),
-      ),
-    );
-
-    if (!response.success) {
-      throw DatabaseException(response.error ?? 'Unknown pool error');
-    }
-  }
-
-  /// Close the isolate and database connection
-  Future<void> close() async {
-    if (_isolate == null) return;
-
-    await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.close,
-        sql: '',
-        replyPort: const _DummySendPort(),
-      ),
-    );
-
-    _isolate?.kill();
-    _isolate = null;
-    _sendPort = null;
-  }
-}
-
-/// Dummy SendPort used as a placeholder
-class _DummySendPort implements SendPort {
-  const _DummySendPort();
-
-  @override
-  void send(Object? message) {}
-}
-
-/// Exception class for database errors
-class DatabaseException implements Exception {
-  final String message;
-  DatabaseException(this.message);
-
-  @override
-  String toString() => 'DatabaseException: $message';
-}
-
-void _isolateEntryPoint(List<dynamic> args) {
-  final SendPort mainSendPort = args[0] as SendPort;
-  final String dbPath = args[1] as String;
+void isolateEntryPoint(List args) {
+  final [SendPort mainSendPort, StorageConfiguration config] = args;
 
   // Create a receive port for incoming messages
   final receivePort = ReceivePort();
 
-  // Send the port back to the main isolate
+  // Send this isolate's SendPort back to the main isolate
   mainSendPort.send(receivePort.sendPort);
 
+  void Function()? closeFn;
+
+  final container = ProviderContainer();
+  final pool = WebSocketPool(container.read(refProvider));
+
   // Open the database
+  // TODO: Have a DB version somewhere (for future migrations)
   Database? db;
   try {
-    db = sqlite3.open(dbPath);
+    db = sqlite3.open(config.databasePath!);
 
     db.execute('''
       PRAGMA journal_mode = WAL;
@@ -214,9 +80,62 @@ void _isolateEntryPoint(List<dynamic> args) {
     print('Error opening database: $e');
   }
 
-  final container = ProviderContainer();
-  final pool = WebSocketPool(container.read(refProvider));
+  Set<String> save(
+    List<Map<String, dynamic>> parameters,
+    StorageConfiguration config,
+  ) {
+    final keepSig = config.keepSignatures;
 
+    // Filter events by verified
+    final params =
+        parameters
+            .where((m) => config.skipVerification ? true : _verifyEvent(m))
+            .toList();
+
+    if (params.isEmpty) {
+      return {};
+    }
+
+    final sql =
+        'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${keepSig ? ', :sig' : ''}) RETURNING id;';
+    final statement = db!.prepare(sql);
+
+    final ids = <String>{};
+
+    db.execute('BEGIN');
+    for (final p in params) {
+      final map = {
+        for (final e in p.entries)
+          // Prefix leading : , convert tags to JSON
+          ':${e.key}': (e.value is List ? jsonEncode(e.value) : e.value),
+      };
+
+      if (!keepSig) {
+        map.remove(':sig');
+      }
+
+      // Use selectWith because it's an INSERT with a RETURNING
+      final rows = statement.selectWith(StatementParameters.named(map));
+      if (rows.isNotEmpty) {
+        ids.add(rows.first['id']);
+      }
+    }
+    db.execute('COMMIT');
+
+    statement.dispose();
+    return ids;
+  }
+
+  closeFn = pool.addListener((a) {
+    if (a != null) {
+      final events = a.$2;
+      save(events, config);
+      final ids = events.map((e) => e['id']).cast<String>().toSet();
+      mainSendPort.send(ids);
+    }
+  });
+
+  // TODO: close too
   receivePort.listen((message) {
     if (message is! IsolateMessage) return;
 
@@ -235,56 +154,7 @@ void _isolateEntryPoint(List<dynamic> args) {
           break;
 
         case IsolateOperationType.save:
-          // skipVerify comes as last of param list (if present), check and remove
-          var skipVerify =
-              message.parameters.lastOrNull?.containsKey('skipVerify') ?? false;
-          if (skipVerify) {
-            message.parameters.removeLast();
-          }
-
-          // Check if first param has sig, and prepare query (all or none should have sig)
-          final hasSig =
-              message.parameters.firstOrNull?.containsKey('sig') ?? false;
-
-          if (!hasSig) {
-            skipVerify = true;
-          }
-
-          // Filter events by verified
-          final params =
-              message.parameters
-                  .where((m) => skipVerify ? true : verifyEvent(m))
-                  .toList();
-
-          if (params.isEmpty) {
-            response = IsolateResponse(success: true, result: <String>{});
-            break;
-          }
-
-          final sql =
-              'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${hasSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${hasSig ? ', :sig' : ''}) RETURNING id;';
-          final statement = db!.prepare(sql);
-
-          final ids = <String>{};
-
-          db.execute('BEGIN');
-          for (final p in params) {
-            final map = {
-              for (final e in p.entries)
-                // Prefix leading : , convert tags to JSON
-                ':${e.key}': (e.value is List ? jsonEncode(e.value) : e.value),
-            };
-
-            // Use selectWith because it's an INSERT with a RETURNING
-            final rows = statement.selectWith(StatementParameters.named(map));
-            if (rows.isNotEmpty) {
-              ids.add(rows.first['id']);
-            }
-          }
-          db.execute('COMMIT');
-
-          statement.dispose();
-
+          final ids = save(message.parameters, message.config!);
           response = IsolateResponse(success: true, result: ids);
           break;
 
@@ -306,6 +176,7 @@ void _isolateEntryPoint(List<dynamic> args) {
         case IsolateOperationType.close:
           db?.dispose();
           pool.dispose();
+          closeFn?.call();
           response = IsolateResponse(success: true);
           break;
       }
@@ -317,7 +188,7 @@ void _isolateEntryPoint(List<dynamic> args) {
   });
 }
 
-bool verifyEvent(Map<String, dynamic> map) {
+bool _verifyEvent(Map<String, dynamic> map) {
   bool verified = false;
   if (map['sig'] != null && map['sig'] != '') {
     verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
@@ -348,7 +219,7 @@ class IsolateMessage {
     this.parameters = const [],
     this.config,
     this.sendParameters,
-    this.replyPort = const _DummySendPort(),
+    this.replyPort = const DummySendPort(),
   });
 }
 
@@ -359,6 +230,22 @@ class IsolateResponse {
   final String? error;
 
   IsolateResponse({required this.success, this.result, this.error});
+}
+
+/// Dummy SendPort used as a placeholder
+class DummySendPort implements SendPort {
+  const DummySendPort();
+
+  @override
+  void send(Object? message) {}
+}
+
+class IsolateException implements Exception {
+  final String message;
+  IsolateException(this.message);
+
+  @override
+  String toString() => 'IsolateException: $message';
 }
 
 final refProvider = Provider((ref) => ref);
