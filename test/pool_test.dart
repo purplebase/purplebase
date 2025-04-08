@@ -3,6 +3,7 @@ import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 import 'dart:convert';
+import 'helpers.dart';
 import 'mocks/websocket_server_mock.dart';
 
 void main() {
@@ -28,7 +29,7 @@ void main() {
 
   group('Connection Management Tests', () {
     test('connects to relays when sending requests', () async {
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
 
       // Define relay URLs
       final relayUrls = {'wss://relay1.com', 'wss://relay2.com'};
@@ -40,7 +41,7 @@ void main() {
       );
 
       // Send the request to the relays
-      await websocketPool.send(filter, relayUrls: relayUrls);
+      await webSocketPool.send(filter, relayUrls: relayUrls);
 
       // Verify connection attempts to the relays
       expect(mockClient.isConnected, true);
@@ -60,19 +61,19 @@ void main() {
     });
 
     test('sends CLOSE messages when unsubscribing', () async {
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
 
       // Create a filter and send it to a relay
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await websocketPool.send(filter, relayUrls: {relayUrl});
+      await webSocketPool.send(filter, relayUrls: {relayUrl});
 
       // Clear sent messages to start fresh
       mockClient.getSentMessages(relayUrl).clear();
 
       // Unsubscribe from the subscription
-      websocketPool.unsubscribe(filter.subscriptionId);
+      webSocketPool.unsubscribe(filter.subscriptionId);
 
       // Verify a CLOSE message was sent
       final messages = mockClient.getSentMessages(relayUrl);
@@ -87,14 +88,15 @@ void main() {
 
   group('Event Handling Tests', () {
     test('properly handles and deduplicates events', () async {
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
+      final tester = WebSocketPoolTester(webSocketPool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final relay2Url = 'wss://relay2.com';
       final filter = RequestFilter(kinds: {1});
 
-      await websocketPool.send(filter, relayUrls: {relayUrl, relay2Url});
+      await webSocketPool.send(filter, relayUrls: {relayUrl, relay2Url});
 
       // Create test events
       final event1 = {
@@ -128,27 +130,44 @@ void main() {
       mockClient.sendEose(relayUrl, filter.subscriptionId);
       mockClient.sendEose(relay2Url, filter.subscriptionId);
 
-      // Allow async operations to complete
-      await Future.delayed(Duration.zero);
+      await tester.expect(
+        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+            .having((s) => s.$1, 'models', hasLength(2))
+            .having(
+              (s) => s.$2,
+              'metadata',
+              ResponseMetadata(
+                subscriptionIds: {filter.subscriptionId},
+                relayUrls: {'wss://relay.com'},
+              ),
+            ),
+      );
 
-      // Verify state
-      final state = container.read(websocketPoolProvider.notifier).state;
-      expect(state, isNotNull);
-      expect(state!.$1.subscriptionId, filter.subscriptionId);
-      expect(state.$2.length, 2); // Only 2 events, not 3 (due to deduplication)
-
-      // Verify event content
-      expect(state.$2.map((e) => e['id']).toSet(), {'1234', '5678'});
+      await tester.expect(
+        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+            .having((s) => s.$1, 'models', [
+              {'id': '1234'},
+            ])
+            .having(
+              (s) => s.$2,
+              'metadata',
+              ResponseMetadata(
+                subscriptionIds: {filter.subscriptionId},
+                relayUrls: {'wss://relay2.com'},
+              ),
+            ),
+      );
     });
 
     test('handles events pre-EOSE with buffering', () async {
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
+      final tester = WebSocketPoolTester(webSocketPool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await websocketPool.send(filter, relayUrls: {relayUrl});
+      await webSocketPool.send(filter, relayUrls: {relayUrl});
 
       // Create test events to be received before EOSE
       final event1 = {
@@ -175,36 +194,34 @@ void main() {
       mockClient.sendEvent(relayUrl, filter.subscriptionId, event1);
       mockClient.sendEvent(relayUrl, filter.subscriptionId, event2);
 
-      // Allow async operations to complete
-      await Future.delayed(Duration.zero);
-
-      // Verify events aren't in state yet (they should be buffered)
-      var state = container.read(websocketPoolProvider.notifier).state;
-      expect(state, isNotNull);
-      expect(state!.$2.isEmpty, true);
-
       // Now send EOSE to trigger buffer flush
       mockClient.sendEose(relayUrl, filter.subscriptionId);
 
-      // Allow async operations to complete
-      await Future.delayed(Duration.zero);
-
-      // Verify all buffered events are now in state
-      state = container.read(websocketPoolProvider.notifier).state!;
-      expect(state.$2.length, 2);
-      expect(state.$2.any((e) => e['id'] == 'pre-eose1'), true);
-      expect(state.$2.any((e) => e['id'] == 'pre-eose2'), true);
+      await tester.expect(
+        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+            .having((s) => s.$1, 'models', hasLength(2))
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'pre-eose1'),
+              'any pre-eose1',
+              isTrue,
+            )
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'pre-eose2'),
+              'any pre-eose2',
+              isTrue,
+            ),
+      );
     });
 
     test('handles streaming events after EOSE with buffering', () async {
-      // Override streaming buffer window for testing
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
+      final tester = WebSocketPoolTester(webSocketPool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await websocketPool.send(filter, relayUrls: {relayUrl});
+      await webSocketPool.send(filter, relayUrls: {relayUrl});
 
       // Send EOSE first to transition to streaming mode
       mockClient.sendEose(relayUrl, filter.subscriptionId);
@@ -234,31 +251,37 @@ void main() {
       mockClient.sendEvent(relayUrl, filter.subscriptionId, streamEvent1);
 
       // Verify events aren't immediately in state (buffering)
-      var state = container.read(websocketPoolProvider.notifier).state;
-      expect(state!.$2.any((e) => e['id'] == 'stream1'), false);
+      var state = container.read(webSocketPoolProvider.notifier).state;
+      expect(state, isNull);
 
       // Send another event
       mockClient.sendEvent(relayUrl, filter.subscriptionId, streamEvent2);
 
-      // Wait for buffer to flush
-      await Future.delayed(const Duration(milliseconds: 150));
-
-      // Verify all streaming events are now in state
-      state = container.read(websocketPoolProvider.notifier).state!;
-      expect(state.$2.any((e) => e['id'] == 'stream1'), true);
-      expect(state.$2.any((e) => e['id'] == 'stream2'), true);
+      await tester.expect(
+        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'stream1'),
+              'any stream1',
+              isTrue,
+            )
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'stream2'),
+              'any stream2',
+              isTrue,
+            ),
+      );
     });
   });
 
   group('Timestamp Optimization Tests', () {
     test('optimizes requests with latest seen timestamps', () async {
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await websocketPool.send(filter, relayUrls: {relayUrl});
+      await webSocketPool.send(filter, relayUrls: {relayUrl});
 
       // Create an event with a timestamp
       final event = {
@@ -282,7 +305,7 @@ void main() {
       mockClient.getSentMessages(relayUrl).clear();
 
       // Send another request with the same filter
-      await websocketPool.send(filter, relayUrls: {relayUrl});
+      await webSocketPool.send(filter, relayUrls: {relayUrl});
 
       // Verify the optimized request includes the since parameter
       final messages = mockClient.getSentMessages(relayUrl);
@@ -300,7 +323,8 @@ void main() {
 
   group('Multiple Subscriptions Tests', () {
     test('handles multiple concurrent subscriptions', () async {
-      final websocketPool = container.read(websocketPoolProvider.notifier);
+      final webSocketPool = container.read(webSocketPoolProvider.notifier);
+      final tester = WebSocketPoolTester(webSocketPool);
 
       // Create two different filters
       final relayUrl = 'wss://relay.com';
@@ -308,7 +332,7 @@ void main() {
       final filter2 = RequestFilter(kinds: {4}, limit: 10);
 
       // Send both filters
-      await websocketPool.send(filter1, relayUrls: {relayUrl});
+      await webSocketPool.send(filter1, relayUrls: {relayUrl});
 
       // Create and send an event for filter1
       final event1 = {
@@ -324,16 +348,23 @@ void main() {
       mockClient.sendEvent(relayUrl, filter1.subscriptionId, event1);
       mockClient.sendEose(relayUrl, filter1.subscriptionId);
 
-      // Allow async operations to complete
-      await Future.delayed(Duration.zero);
-
       // Verify state has filter1's event
-      var state = container.read(websocketPoolProvider.notifier).state;
-      expect(state!.$1.subscriptionId, filter1.subscriptionId);
-      expect(state.$2.any((e) => e['id'] == 'event1'), true);
+      await tester.expect(
+        isA<(List<Map>, ResponseMetadata)>()
+            .having(
+              (s) => s.$2.subscriptionIds,
+              'metadata',
+              contains(filter1.subscriptionId),
+            )
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'event1'),
+              'models',
+              isTrue,
+            ),
+      );
 
       // Now send filter2
-      await websocketPool.send(filter2, relayUrls: {relayUrl});
+      await webSocketPool.send(filter2, relayUrls: {relayUrl});
 
       // Create and send an event for filter2
       final event2 = {
@@ -349,16 +380,25 @@ void main() {
       mockClient.sendEvent(relayUrl, filter2.subscriptionId, event2);
       mockClient.sendEose(relayUrl, filter2.subscriptionId);
 
-      // Allow async operations to complete
-      await Future.delayed(Duration.zero);
-
       // Verify state now has filter2's event
-      state = container.read(websocketPoolProvider.notifier).state;
-      expect(state!.$1.subscriptionId, filter2.subscriptionId);
-      expect(state.$2.any((e) => e['id'] == 'event2'), true);
-
-      // But not filter1's event (since we switched subscriptions)
-      expect(state.$2.any((e) => e['id'] == 'event1'), false);
+      await tester.expect(
+        isA<(List<Map>, ResponseMetadata)>()
+            .having(
+              (s) => s.$2.subscriptionIds,
+              'metadata',
+              contains(filter2.subscriptionId),
+            )
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'event2'),
+              'models',
+              isTrue,
+            )
+            .having(
+              (s) => s.$1.any((e) => e['id'] == 'event1'),
+              'models',
+              isFalse,
+            ),
+      );
     });
   });
 }

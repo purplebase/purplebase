@@ -6,7 +6,7 @@ import 'package:riverpod/riverpod.dart';
 import 'package:web_socket_client/web_socket_client.dart';
 
 class WebSocketPool
-    extends StateNotifier<(RequestFilter, List<Map<String, dynamic>>)?> {
+    extends StateNotifier<(List<Map<String, dynamic>>, ResponseMetadata)?> {
   final Ref ref;
   final WebSocketClient _webSocketClient;
   final PurplebaseConfiguration config;
@@ -14,43 +14,50 @@ class WebSocketPool
   WebSocketPool(this.ref)
     : _webSocketClient = ref.read(webSocketClientProvider),
       config = ref.read(purplebaseConfigurationProvider),
-      super(null);
+      super(null) {
+    // Ensure we're listening to messages
+    _initMessageListener();
+  }
 
   // Map of relay URLs to their idle timers
   final Map<String, Timer> _idleTimers = {};
 
-  // Map of subscription IDs to their RequestFilters
-  final Map<String, RequestFilter> _subscriptions = {};
-
-  // Map to track batched events before EOSE per subscription and relay
-  final Map<String, Map<String, List<Map<String, dynamic>>>> _preEoseBatches =
-      {};
+  /// Map to track batched events before EOSE per subscription and relay (uses [ResponseMetadata])
+  final Map<ResponseMetadata, List<Map<String, dynamic>>> _preEoseBatches = {};
 
   // Buffer for post-EOSE streaming events
-  final Map<String, List<Map<String, dynamic>>> _streamingBuffer = {};
+  final Map<ResponseMetadata, List<Map<String, dynamic>>> _streamingBuffer = {};
+
+  // Timers for flushing the streaming buffer
+  final Map<ResponseMetadata, Timer> _streamingBufferTimers = {};
 
   // Subscription tracking which relays have sent EOSE
-  final Map<String, Set<String>> _eoseReceivedFrom = {};
+  final List<ResponseMetadata> _eoseReceivedFrom = [];
+
+  final List<String> _seenEventIds = [];
+
+  final List<String> _subscriptions = [];
+
+  bool _subscriptionExists(String subscriptionId) {
+    return _subscriptions.contains(subscriptionId);
+  }
 
   // Map to track latest timestamp per (RequestFilter, relayUrl) combination
   final Map<(String, String), DateTime?> _latestTimestamps = {};
 
-  // Set to track event IDs we've already seen to avoid duplicates
-  final Map<String, Set<String>> _seenEventIds = {};
-
   // Set of connected relays
   final Set<String> _connectedRelays = {};
-
-  // Timer for flushing the streaming buffer
-  Timer? _streamingTimer;
 
   // Subscription for the messages stream
   StreamSubscription? _messagesSubscription;
 
   // Initialize the message listener
   void _initMessageListener() {
-    _messagesSubscription?.cancel();
-    _messagesSubscription = _webSocketClient.messages.listen(_handleMessage);
+    // print('socket listening');
+    _messagesSubscription ??= _webSocketClient.messages.listen((m) {
+      // print('receiving message $m');
+      _handleMessage(m);
+    });
   }
 
   // Send a request to relays
@@ -60,20 +67,7 @@ class WebSocketPool
       return;
     }
 
-    // Store the subscription
-    _subscriptions[req.subscriptionId] = req;
-
-    // Initialize tracking for this subscription
-    _preEoseBatches[req.subscriptionId] = {};
-    _eoseReceivedFrom[req.subscriptionId] = {};
-    _seenEventIds[req.subscriptionId] = {};
-
-    // Reset state for new filter
-    print('resetting state for filter $req');
-    state = (req, []);
-
-    // Ensure we're listening to messages
-    _initMessageListener();
+    _subscriptions.add(req.subscriptionId);
 
     // Send to each relay with optimized filters
     for (final url in urls) {
@@ -81,10 +75,17 @@ class WebSocketPool
       final optimizedReq = _optimizeRequestFilter(req, url);
 
       await _ensureConnected(url);
-      _preEoseBatches[req.subscriptionId]![url] = [];
+
+      final r = ResponseMetadata(
+        subscriptionIds: {req.subscriptionId},
+        relayUrls: {url},
+      );
+      _preEoseBatches[r] = [];
+      _streamingBuffer[r] = [];
 
       // Create and send the REQ message with the optimized filter
       final reqMsg = _createReqMessage(optimizedReq);
+      // print('socket sending $reqMsg');
       _webSocketClient.send(reqMsg);
 
       // Reset the idle timer
@@ -158,6 +159,7 @@ class WebSocketPool
   Future<void> _ensureConnected(String url) async {
     if (!_connectedRelays.contains(url)) {
       final uri = Uri.parse(url);
+      // print('socket connecting');
       await _webSocketClient.connect(uri);
       _connectedRelays.add(url);
     }
@@ -176,6 +178,7 @@ class WebSocketPool
 
       // If no more connected relays, we can close the client
       if (_connectedRelays.isEmpty) {
+        // print('socket closing');
         _webSocketClient.close();
       }
 
@@ -187,7 +190,7 @@ class WebSocketPool
   void _handleMessage((String relayUrl, String message) data) {
     final (relayUrl, message) = data;
     try {
-      final List<dynamic> parsed = jsonDecode(message);
+      final List parsed = jsonDecode(message);
       if (parsed.isEmpty) return;
 
       final String messageType = parsed[0];
@@ -216,50 +219,62 @@ class WebSocketPool
 
   // Handle EVENT messages
   void _handleEventMessage(List<dynamic> parsed, String relayUrl) {
-    if (parsed.length < 3) return;
+    if (parsed case [
+      _,
+      final String subscriptionId,
+      final Map<String, dynamic> event,
+    ] when _subscriptionExists(subscriptionId)) {
+      // Check if this event has an ID
+      if (!event.containsKey('id')) return;
 
-    final [_, String subId, Map<String, dynamic> event] = parsed;
+      // Add relay URL to seen
+      final eventId = event['id'].toString();
 
-    print('receiving event for $subId');
+      final r = ResponseMetadata(
+        subscriptionIds: {subscriptionId},
+        relayUrls: {relayUrl},
+      );
 
-    // Skip if we don't have this subscription
-    if (!_subscriptions.containsKey(subId)) return;
+      // Update the latest timestamp for this (filter, relay) combination if newer
+      _updateLatestTimestamp(subscriptionId, relayUrl, event);
 
-    // Check if this event has an ID
-    if (!event.containsKey('id')) return;
+      // Check if we've received EOSE for this subscription from this relay
+      if (_eoseReceivedFrom.contains(r)) {
+        // Post-EOSE (streaming) - add to streaming buffer
+        _streamingBuffer[r] ??= [];
+        if (_seenEventIds.contains(eventId)) {
+          // Add an ID-map to signal upstream that the event
+          // was already saved, and only needs a seen relay update
+          _streamingBuffer[r]!.add({'id': eventId});
+        } else {
+          _streamingBuffer[r]!.add(event);
+        }
 
-    // Check if we've already seen this event
-    final String eventId = event['id'];
-    if (_seenEventIds.containsKey(subId) &&
-        _seenEventIds[subId]!.contains(eventId)) {
-      // Skip this event as it's a duplicate
-      return;
-    }
+        // Start the streaming timer if not already running
+        // TODO: Should we cancel here?
+        // _streamingBufferTimers[r]?.cancel();
+        // print('setting up timer for $r');
+        _streamingBufferTimers[r] ??= Timer(config.streamingBufferWindow, () {
+          final events = _streamingBuffer[r]!;
+          // print('setting state (streaming flush): $events');
+          state = ([...events], r);
+          _streamingBuffer[r]!.clear();
+        });
+      } else {
+        // Pre-EOSE - add to pre-EOSE batch
+        _preEoseBatches[r] ??= [];
 
-    // Mark this event as seen
-    _seenEventIds[subId] ??= {};
-    _seenEventIds[subId]!.add(eventId);
-
-    // Update the latest timestamp for this (filter, relay) combination if newer
-    _updateLatestTimestamp(subId, relayUrl, event);
-
-    // Check if we've received EOSE for this subscription from this relay
-    if (_eoseReceivedFrom.containsKey(subId) &&
-        _eoseReceivedFrom[subId]!.contains(relayUrl)) {
-      // Post-EOSE (streaming) - add to streaming buffer
-      if (!_streamingBuffer.containsKey(subId)) {
-        _streamingBuffer[subId] = [];
+        if (_seenEventIds.contains(eventId)) {
+          // Add an ID-map to signal upstream that the event
+          // was already saved, and only needs a seen relay update
+          _preEoseBatches[r]!.add({'id': eventId});
+        } else {
+          _preEoseBatches[r]!.add(event);
+        }
       }
-      _streamingBuffer[subId]!.add(event);
 
-      // Start the streaming timer if not already running
-      _ensureStreamingTimerActive();
-    } else {
-      // Pre-EOSE - add to pre-EOSE batch
-      if (_preEoseBatches.containsKey(subId) &&
-          _preEoseBatches[subId]!.containsKey(relayUrl)) {
-        _preEoseBatches[subId]![relayUrl]!.add(event);
-      }
+      // Mark this event as seen
+      _seenEventIds.add(eventId);
     }
   }
 
@@ -285,10 +300,8 @@ class WebSocketPool
 
     // Check if the event has a created_at timestamp
     if (event.containsKey('created_at')) {
-      final int timestamp = event['created_at'];
-      final DateTime eventTime = DateTime.fromMillisecondsSinceEpoch(
-        timestamp * 1000,
-      );
+      final timestamp = event['created_at'];
+      final eventTime = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
 
       // Get the current latest timestamp
       final currentLatest = _latestTimestamps[(subId, relayUrl)];
@@ -300,110 +313,49 @@ class WebSocketPool
     }
   }
 
-  // Handle EOSE (End of Stored Events) messages
+  // Handle EOSE messages
   void _handleEoseMessage(List<dynamic> parsed, String relayUrl) {
-    if (parsed.length < 2) return;
+    if (parsed case [
+      _,
+      final subscriptionId,
+    ] when _subscriptionExists(subscriptionId)) {
+      // Mark that we've received EOSE for this subscription from this relay
+      final r = ResponseMetadata(
+        subscriptionIds: {subscriptionId},
+        relayUrls: {relayUrl},
+      );
+      _eoseReceivedFrom.add(r);
 
-    final [_, String subId] = parsed;
-
-    // Skip if we don't have this subscription
-    if (!_subscriptions.containsKey(subId)) return;
-    final filter = _subscriptions[subId]!;
-
-    // Mark that we've received EOSE for this subscription from this relay
-    if (!_eoseReceivedFrom.containsKey(subId)) {
-      _eoseReceivedFrom[subId] = {};
-    }
-    _eoseReceivedFrom[subId]!.add(relayUrl);
-
-    // Emit pre-EOSE batch for this relay
-    if (_preEoseBatches.containsKey(subId) &&
-        _preEoseBatches[subId]!.containsKey(relayUrl) &&
-        _preEoseBatches[subId]![relayUrl]!.isNotEmpty) {
-      final batch = _preEoseBatches[subId]![relayUrl]!;
-      if (batch.isNotEmpty) {
-        _emitEvents(filter, batch);
-        _preEoseBatches[subId]![relayUrl] = [];
+      // Emit pre-EOSE batch for this relay
+      if (_preEoseBatches[r] != null && _preEoseBatches[r]!.isNotEmpty) {
+        final events = _preEoseBatches[r]!;
+        // print('sending state (pre eose): $events - $r');
+        state = ([...events], r);
+        _preEoseBatches[r]!.clear();
       }
     }
-  }
-
-  // Emit events with their associated filter, with deduplication
-  void _emitEvents(RequestFilter filter, List<Map<String, dynamic>> newEvents) {
-    if (state == null || filter.subscriptionId != state!.$1.subscriptionId) {
-      // If it's a different filter than the current one, just replace state
-      print('different, replace state event # ${newEvents.length}');
-      state = (filter, newEvents);
-    } else {
-      // Append to existing events for the same filter, but avoid duplicates
-      final existingEvents = state!.$2;
-
-      // Create a set of IDs from existing events for efficient lookup
-      final existingIds =
-          existingEvents
-              .where((e) => e.containsKey('id'))
-              .map((e) => e['id'] as String)
-              .toSet();
-
-      // Filter out events that already exist in the state
-      final uniqueNewEvents =
-          newEvents
-              .where(
-                (event) =>
-                    event.containsKey('id') &&
-                    !existingIds.contains(event['id']),
-              )
-              .toList();
-
-      // Only update state if we have new unique events
-      if (uniqueNewEvents.isNotEmpty) {
-        print('emitting ${uniqueNewEvents.length} new events');
-        state = (filter, [...existingEvents, ...uniqueNewEvents]);
-      }
-    }
-  }
-
-  // Ensure the streaming timer is active
-  void _ensureStreamingTimerActive() {
-    _streamingTimer?.cancel();
-    _streamingTimer = Timer(
-      config.streamingBufferWindow,
-      _flushStreamingBuffer,
-    );
-  }
-
-  // Flush the streaming buffer
-  void _flushStreamingBuffer() {
-    if (_streamingBuffer.isEmpty) return;
-
-    // Process each subscription's events
-    for (final entry in _streamingBuffer.entries) {
-      final subId = entry.key;
-      final events = entry.value;
-
-      if (events.isNotEmpty && _subscriptions.containsKey(subId)) {
-        final filter = _subscriptions[subId]!;
-        _emitEvents(filter, events);
-      }
-    }
-
-    _streamingBuffer.clear();
   }
 
   // Unsubscribe from a subscription
   void unsubscribe(String subscriptionId) {
-    if (_subscriptions.containsKey(subscriptionId)) {
+    if (_subscriptionExists(subscriptionId)) {
       final closeMsg = jsonEncode(['CLOSE', subscriptionId]);
 
       // Send CLOSE message
+      // print('socket sending close $closeMsg');
       _webSocketClient.send(closeMsg);
 
       // Clean up subscription data
       _subscriptions.remove(subscriptionId);
-      _preEoseBatches.remove(subscriptionId);
-      _eoseReceivedFrom.remove(subscriptionId);
-      _streamingBuffer.remove(subscriptionId);
-      _seenEventIds.remove(subscriptionId);
+      _preEoseBatches.removeWhere(
+        (r, _) => r.subscriptionIds.contains(subscriptionId),
+      );
+      _streamingBuffer.removeWhere(
+        (r, _) => r.subscriptionIds.contains(subscriptionId),
+      );
+      _eoseReceivedFrom.removeWhere(
+        (r) => r.subscriptionIds.contains(subscriptionId),
+      );
     }
   }
 
@@ -416,26 +368,24 @@ class WebSocketPool
     for (final timer in _idleTimers.values) {
       timer.cancel();
     }
-    _streamingTimer?.cancel();
+    for (final timer in _streamingBufferTimers.values) {
+      timer.cancel();
+    }
 
     // Close the client
+    // print('socket closing');
     _webSocketClient.close();
 
-    // Clear all tracking maps
+    // Clear maps
+    _subscriptions.clear();
+    _preEoseBatches.clear();
+    _streamingBuffer.clear();
+    _eoseReceivedFrom.clear();
     _seenEventIds.clear();
 
     super.dispose();
   }
 }
-
-// Interface for WebSocket functionality needed in WebsocketPool
-// abstract class NostrWebSocketClient {
-//   Future<void> connect(Uri uri);
-//   void send(String message);
-//   void close();
-//   Stream<(String relayUrl, String message)> get messages;
-//   bool get isConnected;
-// }
 
 class WebSocketClient {
   final Map<Uri, WebSocket> _sockets = {};
@@ -507,7 +457,7 @@ final webSocketClientProvider = Provider<WebSocketClient>((ref) {
 });
 
 // Provider for WebsocketPool
-final websocketPoolProvider = StateNotifierProvider<
+final webSocketPoolProvider = StateNotifierProvider<
   WebSocketPool,
-  (RequestFilter, List<Map<String, dynamic>>)?
+  (List<Map<String, dynamic>>, ResponseMetadata)?
 >(WebSocketPool.new);

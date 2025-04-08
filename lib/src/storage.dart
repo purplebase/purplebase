@@ -34,7 +34,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     if (_initialized) return;
 
-    db = sqlite3.open(config.databasePath!);
+    db = sqlite3.open(config.databasePath);
 
     // Configure sqlite: 1 GB memory mapped
     db.execute('''
@@ -157,7 +157,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<List<Event<Event>>> query(
+  Future<List<Event>> query(
     RequestFilter req, {
     bool applyLimit = true,
     Set<String>? onIds,

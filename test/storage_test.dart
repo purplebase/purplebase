@@ -19,6 +19,8 @@ Future<void> main() async {
         StorageConfiguration(
           databasePath: 'storage.db',
           skipVerification: true,
+          relayGroups: {},
+          defaultRelayGroup: '',
         ),
       ).future,
     );
@@ -341,5 +343,17 @@ Future<void> main() async {
     await storage.send(
       RequestFilter(kinds: {1}, ids: {'b', 'a', n1.id}, storageOnly: true),
     );
+  });
+
+  test('response metadata', () {
+    final r1 = ResponseMetadata(
+      subscriptionIds: {'a'},
+      relayUrls: {'wss://test'},
+    );
+    final r2 = ResponseMetadata(
+      subscriptionIds: {'a'},
+      relayUrls: {'wss://test'},
+    );
+    expect(r1, equals(r2));
   });
 }

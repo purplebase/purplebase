@@ -46,7 +46,7 @@ class MockWebSocketClient implements WebSocketClient {
       _connectionStatus.values.any((connected) => connected);
 
   // Test helper methods
-  void receiveMessage(String url, String message) {
+  void sendMessage(String url, String message) {
     if (!_connectionStatus.containsKey(url) || !_connectionStatus[url]!) {
       throw Exception('Cannot receive message when disconnected');
     }
@@ -59,12 +59,12 @@ class MockWebSocketClient implements WebSocketClient {
     Map<String, dynamic> event,
   ) {
     final message = jsonEncode(['EVENT', subscriptionId, event]);
-    receiveMessage(url, message);
+    sendMessage(url, message);
   }
 
   void sendEose(String url, String subscriptionId) {
     final message = jsonEncode(['EOSE', subscriptionId]);
-    receiveMessage(url, message);
+    sendMessage(url, message);
   }
 
   List<String> getSentMessages(String url) {

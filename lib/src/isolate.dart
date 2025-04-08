@@ -25,8 +25,9 @@ void isolateEntryPoint(List args) {
   // TODO: Have a DB version somewhere (for future migrations)
   Database? db;
   try {
-    db = sqlite3.open(config.databasePath!);
+    db = sqlite3.open(config.databasePath);
 
+    // TODO: How to handle replaceable events? (FTS5 rows can't be updated), test
     db.execute('''
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
@@ -80,58 +81,12 @@ void isolateEntryPoint(List args) {
     print('Error opening database: $e');
   }
 
-  Set<String> save(
-    List<Map<String, dynamic>> parameters,
-    StorageConfiguration config,
-  ) {
-    final keepSig = config.keepSignatures;
+  closeFn = pool.addListener((args) {
+    if (args case (final events, final responseMetadata)) {
+      _save(db!, events, responseMetadata.relayUrls, config);
 
-    // Filter events by verified
-    final params =
-        parameters
-            .where((m) => config.skipVerification ? true : _verifyEvent(m))
-            .toList();
-
-    if (params.isEmpty) {
-      return {};
-    }
-
-    final sql =
-        'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${keepSig ? ', :sig' : ''}) RETURNING id;';
-    final statement = db!.prepare(sql);
-
-    final ids = <String>{};
-
-    db.execute('BEGIN');
-    for (final p in params) {
-      final map = {
-        for (final e in p.entries)
-          // Prefix leading : , convert tags to JSON
-          ':${e.key}': (e.value is List ? jsonEncode(e.value) : e.value),
-      };
-
-      if (!keepSig) {
-        map.remove(':sig');
-      }
-
-      // Use selectWith because it's an INSERT with a RETURNING
-      final rows = statement.selectWith(StatementParameters.named(map));
-      if (rows.isNotEmpty) {
-        ids.add(rows.first['id']);
-      }
-    }
-    db.execute('COMMIT');
-
-    statement.dispose();
-    return ids;
-  }
-
-  closeFn = pool.addListener((a) {
-    if (a != null) {
-      final events = a.$2;
-      save(events, config);
       final ids = events.map((e) => e['id']).cast<String>().toSet();
-      mainSendPort.send(ids);
+      mainSendPort.send((ids, responseMetadata));
     }
   });
 
@@ -154,7 +109,7 @@ void isolateEntryPoint(List args) {
           break;
 
         case IsolateOperationType.save:
-          final ids = save(message.parameters, message.config!);
+          final ids = _save(db!, message.parameters, {}, message.config!);
           response = IsolateResponse(success: true, result: ids);
           break;
 
@@ -199,6 +154,67 @@ bool _verifyEvent(Map<String, dynamic> map) {
     }
   }
   return verified;
+}
+
+Set<String> _save(
+  Database db,
+  List<Map<String, dynamic>> parameters,
+  Set<String> relayUrls,
+  StorageConfiguration config,
+) {
+  final keepSig = config.keepSignatures;
+
+  // Filter events by verified
+  final params =
+      parameters
+          .where((m) => config.skipVerification ? true : _verifyEvent(m))
+          .toList();
+
+  if (params.isEmpty) {
+    return {};
+  }
+
+  // TODO: How about id in replaceable events?
+  final sql =
+      'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${keepSig ? ', :sig' : ''}) RETURNING id;';
+  final statement = db.prepare(sql);
+
+  final sqlFts = '''UPDATE events_fts SET tags = tags || ' ' || ?''';
+  final statementFts = db.prepare(sqlFts);
+
+  final ids = <String>{};
+
+  db.execute('BEGIN');
+  for (final p in params) {
+    final map = {
+      for (final e in p.entries)
+        // Prefix leading ':' and convert tags to JSON
+        ':${e.key}': (e.value is List ? jsonEncode(e.value) : e.value),
+    };
+
+    if (!keepSig) {
+      map.remove(':sig');
+    }
+
+    // Use selectWith because it's an INSERT with a RETURNING
+    final rows = statement.selectWith(StatementParameters.named(map));
+    if (rows.isNotEmpty) {
+      final id = rows.first['id'];
+      ids.add(id);
+      // Add relays where it's been seen
+      if (relayUrls.isNotEmpty) {
+        statementFts.execute([
+          map['id'],
+          relayUrls.map((r) => '^r:$r').join(' '),
+        ]);
+      }
+    }
+  }
+  db.execute('COMMIT');
+
+  statement.dispose();
+
+  return ids;
 }
 
 /// Message types for isolate communication
