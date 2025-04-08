@@ -3,6 +3,8 @@ import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
+import 'helpers.dart';
+
 Future<void> main() async {
   late ProviderContainer container;
   late StorageNotifier storage;
@@ -355,5 +357,17 @@ Future<void> main() async {
       relayUrls: {'wss://test'},
     );
     expect(r1, equals(r2));
+  });
+
+  group('request notifier', () {
+    test('relay request should notify with events', () async {
+      final tester = container.testerFor(query(kinds: {1}));
+      final n1 = await PartialNote('yo').signWith(signer);
+      await storage.save({n1});
+
+      await tester.expect(
+        isA<StorageData>().having((s) => s.models, 'models', {n1}),
+      );
+    });
   });
 }

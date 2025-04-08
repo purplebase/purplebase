@@ -57,7 +57,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         _sendPort = message;
         _initCompleter.complete();
       } else {
-        state = StorageSignal(message);
+        state = StorageSignal(message as (Set<String>, ResponseMetadata));
       }
     });
 
@@ -110,8 +110,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       throw IsolateException(response.error ?? 'Unknown database error');
     }
 
-    final ids = response2.result as Set<String>;
-    state = StorageSignal(ids);
+    final record = response2.result as (Set<String>, ResponseMetadata);
+    state = StorageSignal(record);
   }
 
   @override

@@ -89,7 +89,7 @@ void main() {
   group('Event Handling Tests', () {
     test('properly handles and deduplicates events', () async {
       final webSocketPool = container.read(webSocketPoolProvider.notifier);
-      final tester = WebSocketPoolTester(webSocketPool);
+      final tester = StateNotifierTester(webSocketPool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
@@ -161,7 +161,7 @@ void main() {
 
     test('handles events pre-EOSE with buffering', () async {
       final webSocketPool = container.read(webSocketPoolProvider.notifier);
-      final tester = WebSocketPoolTester(webSocketPool);
+      final tester = StateNotifierTester(webSocketPool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
@@ -215,7 +215,7 @@ void main() {
 
     test('handles streaming events after EOSE with buffering', () async {
       final webSocketPool = container.read(webSocketPoolProvider.notifier);
-      final tester = WebSocketPoolTester(webSocketPool);
+      final tester = StateNotifierTester(webSocketPool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
@@ -324,7 +324,7 @@ void main() {
   group('Multiple Subscriptions Tests', () {
     test('handles multiple concurrent subscriptions', () async {
       final webSocketPool = container.read(webSocketPoolProvider.notifier);
-      final tester = WebSocketPoolTester(webSocketPool);
+      final tester = StateNotifierTester(webSocketPool);
 
       // Create two different filters
       final relayUrl = 'wss://relay.com';
