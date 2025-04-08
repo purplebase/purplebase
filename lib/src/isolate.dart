@@ -173,13 +173,15 @@ Set<String> _save(
   if (params.isEmpty) {
     return {};
   }
+  // TODO: Add try/finally block here
 
   // TODO: How about id in replaceable events?
   final sql =
       'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${keepSig ? ', :sig' : ''}) RETURNING id;';
   final statement = db.prepare(sql);
 
-  final sqlFts = '''UPDATE events_fts SET tags = tags || ' ' || ?''';
+  final sqlFts =
+      '''UPDATE events_fts SET tags = tags || ' ' || ? WHERE id = ?''';
   final statementFts = db.prepare(sqlFts);
 
   final ids = <String>{};
@@ -204,8 +206,8 @@ Set<String> _save(
       // Add relays where it's been seen
       if (relayUrls.isNotEmpty) {
         statementFts.execute([
-          map['id'],
           relayUrls.map((r) => '^r:$r').join(' '),
+          map['id'],
         ]);
       }
     }
