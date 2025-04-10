@@ -16,18 +16,15 @@ Future<void> main() async {
         storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
       ],
     );
-    await container.read(
-      initializationProvider(
-        StorageConfiguration(
-          databasePath: 'storage.db',
-          skipVerification: true,
-          relayGroups: {
-            'test': {'wss://test.com'},
-          },
-          defaultRelayGroup: 'test',
-        ),
-      ).future,
+    final config = StorageConfiguration(
+      databasePath: 'storage.db',
+      skipVerification: true,
+      relayGroups: {
+        'test': {'wss://test.com'},
+      },
+      defaultRelayGroup: 'test',
     );
+    await container.read(initializationProvider(config).future);
     storage = container.read(storageNotifierProvider.notifier);
   });
 

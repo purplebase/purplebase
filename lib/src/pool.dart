@@ -9,7 +9,7 @@ class WebSocketPool
     extends StateNotifier<(List<Map<String, dynamic>>, ResponseMetadata)?> {
   final Ref ref;
   final WebSocketClient _webSocketClient;
-  final PurplebaseConfiguration config;
+  final PurplebaseStorageConfiguration config;
 
   WebSocketPool(this.ref)
     : _webSocketClient = ref.read(webSocketClientProvider),

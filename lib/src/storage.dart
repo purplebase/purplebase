@@ -108,7 +108,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   List<Event> querySync(RequestFilter req, {bool applyLimit = true}) {
     Iterable<Map<String, dynamic>> events;
     // Note: applyLimit parameter is not used here as the limit comes from req.limit
-    final relayUrls = config.getRelays(req.on, false);
+    final relayUrls = config.getRelays(relayGroup: req.on, useDefault: false);
     final (sql, params) = req.toSQL(relayUrls: relayUrls);
     final statement = db.prepare(sql);
     try {
@@ -127,7 +127,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<List<Event>> query(RequestFilter req, {bool applyLimit = true}) async {
-    final relayUrls = config.getRelays(req.on, false);
+    final relayUrls = config.getRelays(relayGroup: req.on, useDefault: false);
     final (sql, params) = req.toSQL(relayUrls: relayUrls);
 
     final response = await _sendMessage(
@@ -233,16 +233,32 @@ extension on Iterable<Row> {
   }
 }
 
-// TODO: Should extend StorageConfiguration
-class PurplebaseConfiguration {
+class PurplebaseStorageConfiguration extends StorageConfiguration {
   final Duration idleTimeout;
   final Duration streamingBufferWindow;
-  PurplebaseConfiguration({
+
+  PurplebaseStorageConfiguration({
     this.idleTimeout = const Duration(minutes: 5),
     this.streamingBufferWindow = const Duration(seconds: 2),
+    required super.databasePath,
+    super.keepSignatures = false,
+    super.skipVerification = false,
+    required super.relayGroups,
+    required super.defaultRelayGroup,
   });
+
+  @override
+  List<Object?> get props => [
+    idleTimeout,
+    streamingBufferWindow,
+    ...super.props,
+  ];
 }
 
 final purplebaseConfigurationProvider = Provider(
-  (_) => PurplebaseConfiguration(),
+  (_) => PurplebaseStorageConfiguration(
+    databasePath: '',
+    relayGroups: {},
+    defaultRelayGroup: '',
+  ),
 );

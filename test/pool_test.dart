@@ -17,7 +17,12 @@ void main() {
       overrides: [
         webSocketClientProvider.overrideWithValue(mockClient),
         purplebaseConfigurationProvider.overrideWithValue(
-          PurplebaseConfiguration(streamingBufferWindow: Duration.zero),
+          PurplebaseStorageConfiguration(
+            databasePath: '',
+            relayGroups: {},
+            defaultRelayGroup: '',
+            streamingBufferWindow: Duration.zero,
+          ),
         ),
       ],
     );

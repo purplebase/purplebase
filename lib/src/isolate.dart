@@ -64,7 +64,10 @@ void isolateEntryPoint(List args) {
             response = IsolateResponse(success: true, result: result.toList());
 
           case SaveIsolateOperation(:final events, :final relayGroup):
-            final relayUrls = config.getRelays(relayGroup, false);
+            final relayUrls = config.getRelays(
+              relayGroup: relayGroup,
+              useDefault: false,
+            );
             final ids = _save(db!, events, relayUrls, config);
             response = IsolateResponse(success: true, result: ids);
 
@@ -75,7 +78,10 @@ void isolateEntryPoint(List args) {
             response = IsolateResponse(success: true);
 
           case SendEventIsolateOperation(:final req, :final relayGroup):
-            final relayUrls = config.getRelays(relayGroup);
+            final relayUrls = config.getRelays(
+              relayGroup: relayGroup,
+              useDefault: false,
+            );
             pool.send(req, relayUrls: relayUrls);
             response = IsolateResponse(success: true);
 
