@@ -31,7 +31,7 @@ void isolateEntryPoint(List args) {
   Database? db;
   try {
     final dirPath = path.join(Directory.current.path, config.databasePath);
-    print('Opening database at $dirPath');
+    print('Opening database at $dirPath [database isolate]');
     db = sqlite3.open(dirPath);
 
     db.execute('''
@@ -112,64 +112,57 @@ void isolateEntryPoint(List args) {
   });
 
   sub = receivePort.listen((message) {
-    if (message is! IsolateMessage) return;
+    if (message case (
+      final IsolateOperation operation,
+      final SendPort replyPort,
+    )) {
+      IsolateResponse response;
+      PreparedStatement? statement;
 
-    final replyPort = message.replyPort;
-    IsolateResponse response;
+      try {
+        switch (operation) {
+          case QueryIsolateOperation(:final sql, :final params):
+            statement = db!.prepare(sql);
+            final result = statement.selectWith(
+              StatementParameters.named(params),
+            );
+            response = IsolateResponse(success: true, result: result.toList());
 
-    try {
-      switch (message.type) {
-        case IsolateOperationType.query:
-          final statement = db!.prepare(message.sql!);
-          final result = statement.selectWith(
-            StatementParameters.named(message.parameters.first),
-          );
-          statement.dispose();
-          response = IsolateResponse(success: true, result: result.toList());
-          break;
+          case SaveIsolateOperation(:final events, :final relayGroup):
+            final relayUrls = config.getRelays(relayGroup);
+            final ids = _save(db!, events, relayUrls, config);
+            response = IsolateResponse(success: true, result: ids);
 
-        case IsolateOperationType.save:
-          final relayUrls = config.getRelays(message.relayGroup);
-          final ids = _save(
-            db!,
-            message.parameters,
-            relayUrls,
-            message.config!,
-          );
-          response = IsolateResponse(success: true, result: ids);
-          break;
+          case ClearIsolateOperation():
+            statement = db!.prepare(
+              'DELETE FROM events; DELETE FROM events_fts;',
+            );
+            statement.execute();
+            response = IsolateResponse(success: true);
 
-        case IsolateOperationType.clear:
-          final statement = db!.prepare(
-            'DELETE FROM events; DELETE FROM events_fts;',
-          );
-          statement.execute(message.parameters);
-          statement.dispose();
-          response = IsolateResponse(success: true);
-          break;
+          case SendEventIsolateOperation(:final req, :final relayGroup):
+            final relayUrls = config.getRelays(relayGroup);
+            pool.send(req, relayUrls: relayUrls);
+            response = IsolateResponse(success: true);
 
-        case IsolateOperationType.send:
-          final relayUrls = config.getRelays(message.relayGroup);
-          pool.send(message.req!, relayUrls: relayUrls);
-          response = IsolateResponse(success: true);
-          break;
-
-        case IsolateOperationType.close:
-          // TODO: Test this closes correctly and is restartable
-          db?.dispose();
-          pool.dispose();
-          closeFn?.call();
-          response = IsolateResponse(success: true);
-          Future.microtask(() {
-            sub?.cancel();
-          });
-          break;
+          case CloseIsolateOperation():
+            // TODO: Check this closes correctly and is restartable
+            db?.dispose();
+            pool.dispose();
+            closeFn?.call();
+            response = IsolateResponse(success: true);
+            Future.microtask(() {
+              sub?.cancel();
+            });
+        }
+      } catch (e) {
+        response = IsolateResponse(success: false, error: e.toString());
+      } finally {
+        statement?.dispose();
       }
-    } catch (e) {
-      response = IsolateResponse(success: false, error: e.toString());
-    }
 
-    replyPort.send(response);
+      replyPort.send(response);
+    }
   });
 }
 
@@ -241,6 +234,7 @@ Set<String> _save(
 
         final id = map[':id'];
 
+        print('inserting $map');
         eventPs.executeWith(StatementParameters.named(map));
         if (db.updatedRows > 0) {
           ids.add(id);
@@ -249,13 +243,13 @@ Set<String> _save(
         // TODO: This will fail with replaceable events, can't recreate the addressable ID
         // If it is not a full event (i.e. just a {'id': id})
         // or it was already saved, update relays
-        if (sortedRelays != null) {
-          relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);
-          if (db.updatedRows > 0) {
-            // If rows were updated then value changed, so send ID to notifier
-            ids.add(param['id']);
-          }
-        }
+        // if (sortedRelays != null) {
+        //   relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);
+        //   if (db.updatedRows > 0) {
+        //     // If rows were updated then value changed, so send ID to notifier
+        //     ids.add(param['id']);
+        //   }
+        // }
       }
     }
     db.execute('COMMIT');
@@ -284,29 +278,34 @@ bool _verifyEvent(Map<String, dynamic> map) {
   return verified;
 }
 
-/// Message types for isolate communication
-enum IsolateOperationType { clear, query, save, close, send }
+//
 
-/// Message structure for isolate communication
-class IsolateMessage {
-  final IsolateOperationType type;
-  final String? sql;
-  final List<Map<String, dynamic>> parameters;
-  final StorageConfiguration? config;
-  final String? relayGroup;
-  final RequestFilter? req;
-  final SendPort replyPort;
+sealed class IsolateOperation {}
 
-  IsolateMessage({
-    required this.type,
-    this.sql,
-    this.parameters = const [],
-    this.config,
-    this.req,
-    this.relayGroup,
-    this.replyPort = const DummySendPort(),
-  });
+final class QueryIsolateOperation extends IsolateOperation {
+  final String sql;
+  final Map<String, dynamic> params;
+
+  QueryIsolateOperation({required this.sql, required this.params});
 }
+
+final class SaveIsolateOperation extends IsolateOperation {
+  final List<Map<String, dynamic>> events;
+  final String? relayGroup;
+
+  SaveIsolateOperation({required this.events, this.relayGroup});
+}
+
+final class SendEventIsolateOperation extends IsolateOperation {
+  final RequestFilter req;
+  final String? relayGroup;
+
+  SendEventIsolateOperation({required this.req, this.relayGroup});
+}
+
+final class ClearIsolateOperation extends IsolateOperation {}
+
+final class CloseIsolateOperation extends IsolateOperation {}
 
 /// Response from isolate
 class IsolateResponse {
@@ -317,17 +316,9 @@ class IsolateResponse {
   IsolateResponse({required this.success, this.result, this.error});
 }
 
-/// Dummy SendPort used as a placeholder
-class DummySendPort implements SendPort {
-  const DummySendPort();
-
-  @override
-  void send(Object? message) {}
-}
-
 class IsolateException implements Exception {
-  final String message;
-  IsolateException(this.message);
+  final String? message;
+  IsolateException([this.message]);
 
   @override
   String toString() => 'IsolateException: $message';

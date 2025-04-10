@@ -1,17 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 
 import 'package:models/models.dart';
+import 'package:path/path.dart' as path;
 import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/request.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
+/// Singleton
 class PurplebaseStorageNotifier extends StorageNotifier {
   final Ref ref;
 
-  static PurplebaseStorageNotifier? _instance; // singleton
+  static PurplebaseStorageNotifier? _instance;
 
   factory PurplebaseStorageNotifier(Ref ref) {
     return _instance ??= PurplebaseStorageNotifier._internal(ref);
@@ -25,7 +28,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   Isolate? _isolate;
   SendPort? _sendPort;
-  final Completer<void> _initCompleter = Completer<void>();
+  final _initCompleter = Completer<void>();
   StreamSubscription? sub;
 
   /// Initialize the storage with a configuration
@@ -35,7 +38,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     if (_initialized) return;
 
-    db = sqlite3.open(config.databasePath);
+    final dirPath = path.join(Directory.current.path, config.databasePath);
+    print('Opening database at $dirPath [main isolate]');
+    db = sqlite3.open(dirPath);
 
     // Configure sqlite: 1 GB memory mapped
     db.execute('''
@@ -74,13 +79,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final maps = events.map((e) => e.toMap()).toList();
 
-    final response = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.save,
-        parameters: maps,
-        config: config,
-      ),
-    );
+    final response = await _sendMessage(SaveIsolateOperation(events: maps));
 
     if (!response.success) {
       throw IsolateException(response.error ?? 'Unknown database error');
@@ -96,12 +95,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<void> clear([RequestFilter? req]) async {
-    final response = await _sendMessage(
-      IsolateMessage(type: IsolateOperationType.clear, parameters: []),
-    );
+    final response = await _sendMessage(ClearIsolateOperation());
 
     if (!response.success) {
-      throw IsolateException(response.error ?? 'Unknown database error');
+      throw IsolateException(response.error);
     }
   }
 
@@ -147,16 +144,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final (sql, params) = req.toSQL(onIds: onIds);
 
     final response = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.query,
-        sql: sql,
-        parameters: [params],
-      ),
+      QueryIsolateOperation(sql: sql, params: params),
     );
 
+    // TODO: Repeated code
     final events = (response.result as List).map(
       (row) => {
-        'id': row['id'],
+        'id': row['lid'] ?? row['id'],
         'pubkey': row['pubkey'],
         'kind': row['kind'],
         'created_at': row['created_at'],
@@ -175,15 +169,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<void> send(RequestFilter req, {String? relayGroup}) async {
     final response = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.send,
-        req: req,
-        relayGroup: relayGroup,
-      ),
+      SendEventIsolateOperation(req: req, relayGroup: relayGroup),
     );
 
     if (!response.success) {
-      throw IsolateException(response.error ?? 'Unknown pool error');
+      throw IsolateException(response.error);
     }
   }
 
@@ -193,13 +183,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     sub?.cancel();
 
-    await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.close,
-        sql: '',
-        replyPort: const DummySendPort(),
-      ),
-    );
+    await _sendMessage(CloseIsolateOperation());
 
     _isolate?.kill();
     _isolate = null;
@@ -211,93 +195,14 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
   }
 
-  Future<IsolateResponse> _sendMessage(IsolateMessage message) async {
+  Future<IsolateResponse> _sendMessage(IsolateOperation operation) async {
     await _initCompleter.future;
 
-    final responsePort = ReceivePort();
-    final msg = IsolateMessage(
-      type: message.type,
-      sql: message.sql,
-      parameters: message.parameters,
-      req: message.req,
-      relayGroup: message.relayGroup,
-      config: message.config,
-      replyPort: responsePort.sendPort,
-    );
+    final receivePort = ReceivePort();
+    _sendPort!.send((operation, receivePort.sendPort));
 
-    _sendPort!.send(msg);
-
-    return await responsePort.first as IsolateResponse;
+    return await receivePort.first as IsolateResponse;
   }
-
-  // Previous query methods
-
-  // Future<List<Map<String, dynamic>>> queryRaw(RequestFilter req) async {
-  //   final completer = Completer<List<Map<String, dynamic>>>();
-
-  //   final relayUrls = pool!.relayUrls;
-  //   final allEvents = <Map<String, dynamic>>[];
-  //   final eoses = <String, bool>{for (final r in relayUrls) r: false};
-
-  //   _closeFns[req.subscriptionId] = addListener((message) {
-  //     if (message.subscriptionId != req.subscriptionId) return;
-  //     switch (message) {
-  //       case EoseWithEventsRelayMessage(:final events, :final relayUrl):
-  //         eoses[relayUrl!] = true;
-  //         for (final event in events) {
-  //           if (!allEvents.any((e) => e['id'] == event['id'])) {
-  //             allEvents.add(event);
-  //           }
-  //         }
-  //         // If there are at least as much EOSEs as connected relays, we're good
-  //         final enoughEoses = eoses.values.where((v) => v).length >=
-  //             pool!.connectedRelayUrls.length;
-  //         if (enoughEoses && !completer.isCompleted) {
-  //           final allEventsSorted = allEvents.sortedByCompare(
-  //               (m) => m['created_at'] as int, (a, b) => b.compareTo(a));
-  //           completer.complete(allEventsSorted);
-  //           scheduleMicrotask(() {
-  //             _closeFns[req.subscriptionId]?.call();
-  //           });
-  //         }
-  //         break;
-  //       case ErrorRelayMessage(:final error):
-  //         completer.completeError(Exception(error));
-  //         break;
-  //       default:
-  //     }
-  //   }, fireImmediately: false);
-
-  //   send(req);
-  //   for (final relayUrl in relayUrls) {
-  //     _resultsOnEose[(relayUrl, req.subscriptionId)] = [];
-  //   }
-
-  //   return completer.future;
-  // }
-
-  // Future<List<E>> query<E extends Event<E>>(
-  //     {Set<String>? ids,
-  //     Set<String>? authors,
-  //     Map<String, dynamic>? tags,
-  //     String? search,
-  //     DateTime? since,
-  //     DateTime? until,
-  //     int? limit,
-  //     Iterable<String>? relayUrls}) async {
-  //   final req = RequestFilter(
-  //       kinds: {Event.types[E.toString()]!.kind},
-  //       ids: ids ?? {},
-  //       authors: authors ?? {},
-  //       tags: tags,
-  //       search: search,
-  //       since: since,
-  //       until: until,
-  //       limit: limit);
-
-  //   final result = await queryRaw(req);
-  //   return result.map(Event.getConstructor<E>()!.call).toList();
-  // }
 
   // Future<void> publish(Event event) async {
   //   final completer = Completer<void>();
@@ -327,6 +232,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   // }
 }
 
+// TODO: Should extend StorageConfiguration
 class PurplebaseConfiguration {
   final Duration idleTimeout;
   final Duration streamingBufferWindow;
