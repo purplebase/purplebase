@@ -108,6 +108,33 @@ Future<void> main() async {
     expect(r4, [n2]);
   });
 
+  test('massive query by tag', () async {
+    final amount = 3000;
+    final futures = List.generate(
+      amount,
+      (i) => PartialNote('note $i', tags: {'test $i'}).signWith(signer),
+    );
+    final notes = await Future.wait(futures);
+
+    // Save all notes to storage
+    await storage.save(notes.toSet());
+    notes.shuffle();
+
+    // final m1 = DateTime.now().millisecondsSinceEpoch;
+    for (final i in List.generate(amount, (i) => i)) {
+      final r1 = storage.querySync(
+        RequestFilter(
+          tags: {
+            '#t': {'test $i'},
+          },
+        ),
+      );
+      expect(r1.map((e) => e.internal.content), contains('note $i'));
+    }
+    // final m2 = DateTime.now().millisecondsSinceEpoch;
+    // print(m2 - m1);
+  });
+
   test('query by kinds', () async {
     // Create a Note (kind 1)
     final note = await PartialNote('regular note').signWith(signer);
