@@ -26,6 +26,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   Isolate? _isolate;
   SendPort? _sendPort;
   final Completer<void> _initCompleter = Completer<void>();
+  StreamSubscription? sub;
 
   /// Initialize the storage with a configuration
   @override
@@ -52,7 +53,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       config,
     ]);
 
-    receivePort.listen((message) {
+    sub = receivePort.listen((message) {
       if (_sendPort == null && message is SendPort) {
         _sendPort = message;
         _initCompleter.complete();
@@ -65,24 +66,19 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _initialized = true;
   }
 
+  /// Client-facing save method
+  /// (framework calls _save internally in isolate)
   @override
-  Future<void> save(Set<Event> events) async {
-    final maps = events.map((e) => e.toMap()).toList();
-    if (maps.isEmpty) return;
+  Future<void> save(Set<Event> events, {String? relayGroup}) async {
+    if (events.isEmpty) return;
 
-    // Check for existing IDs in database and remove
-    // Reuse logic on RequestFilter#toSQL() for this
-    // Exclude nulls, we have no idea what is coming in
-    final requestedIds = maps.map((m) => m['id']?.toString()).nonNulls.toSet();
-    final (idsSql, idsParams) = RequestFilter(
-      ids: requestedIds,
-    ).toSQL(returnIds: true);
+    final maps = events.map((e) => e.toMap()).toList();
 
     final response = await _sendMessage(
       IsolateMessage(
-        type: IsolateOperationType.query,
-        sql: idsSql,
-        parameters: [idsParams],
+        type: IsolateOperationType.save,
+        parameters: maps,
+        config: config,
       ),
     );
 
@@ -90,28 +86,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       throw IsolateException(response.error ?? 'Unknown database error');
     }
 
-    final savedIds = response.result as List<Map<String, dynamic>>;
-
-    final idsToSave = requestedIds.difference(
-      savedIds.map((e) => e['id']!).toSet(),
-    );
-
-    final mapsToSave = maps.where((m) => idsToSave.contains(m['id'])).toList();
-
-    final response2 = await _sendMessage(
-      IsolateMessage(
-        type: IsolateOperationType.save,
-        parameters: mapsToSave,
-        config: config,
-      ),
-    );
-
-    if (!response2.success) {
-      throw IsolateException(response.error ?? 'Unknown database error');
-    }
-
-    final record = response2.result as (Set<String>, ResponseMetadata);
-    state = StorageSignal(record);
+    // Since these events have been created locally and
+    // do not come from a relay, their metadata is empty
+    // TODO: ^
+    final r = ResponseMetadata(relayUrls: {});
+    final record = response.result as Set<String>;
+    state = StorageSignal((record, r));
   }
 
   @override
@@ -140,13 +120,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     statement.dispose();
     final events = result.map(
       (row) => {
-        'id': row['id'],
+        // Apply lid (latest ID) of a replaceable, otherwise regular ID
+        'id': row['lid'] ?? row['id'],
         'pubkey': row['pubkey'],
         'kind': row['kind'],
         'created_at': row['created_at'],
         'content': row['content'],
         'sig': row['sig'],
         'tags': jsonDecode(row['tags']),
+        'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
       },
     );
 
@@ -190,20 +172,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         .cast();
   }
 
-  /// Close the isolate connection
   @override
-  Future<void> close() async {
-    if (!_initialized) return;
-    await dispose();
-    _initialized = false;
-  }
-
-  @override
-  Future<void> send(RequestFilter req, {Set<String>? relayUrls}) async {
+  Future<void> send(RequestFilter req, {String? relayGroup}) async {
     final response = await _sendMessage(
       IsolateMessage(
         type: IsolateOperationType.send,
-        sendParameters: (req, relayUrls),
+        req: req,
+        relayGroup: relayGroup,
       ),
     );
 
@@ -214,7 +189,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<void> dispose() async {
-    if (_isolate == null) return;
+    if (!_initialized || _isolate == null) return;
+
+    sub?.cancel();
 
     await _sendMessage(
       IsolateMessage(
@@ -227,6 +204,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _isolate?.kill();
     _isolate = null;
     _sendPort = null;
+    _initialized = false;
 
     if (mounted) {
       super.dispose();
@@ -241,7 +219,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       type: message.type,
       sql: message.sql,
       parameters: message.parameters,
-      sendParameters: message.sendParameters,
+      req: message.req,
+      relayGroup: message.relayGroup,
       config: message.config,
       replyPort: responsePort.sendPort,
     );

@@ -21,8 +21,10 @@ Future<void> main() async {
         StorageConfiguration(
           databasePath: 'storage.db',
           skipVerification: true,
-          relayGroups: {},
-          defaultRelayGroup: '',
+          relayGroups: {
+            'test': {'wss://test.com'},
+          },
+          defaultRelayGroup: 'test',
         ),
       ).future,
     );
@@ -33,8 +35,8 @@ Future<void> main() async {
     await storage.clear();
   });
 
-  tearDownAll(() async {
-    await storage.close();
+  tearDownAll(() {
+    storage.dispose();
   });
 
   test('query by tag', () async {
@@ -347,15 +349,20 @@ Future<void> main() async {
     );
   });
 
+  test('query by relay', () async {
+    final n1 = await PartialNote('yo').signWith(signer);
+    final n2 = await PartialNote('yope').signWith(signer);
+    await storage.save({n1});
+    await storage.save({n2}, relayGroup: 'test');
+
+    final r1 = storage.querySync(RequestFilter(relays: {'wss://test.com'}));
+    print(r1.first.internal.relays);
+    expect(r1, unorderedEquals([n2]));
+  });
+
   test('response metadata', () {
-    final r1 = ResponseMetadata(
-      subscriptionIds: {'a'},
-      relayUrls: {'wss://test'},
-    );
-    final r2 = ResponseMetadata(
-      subscriptionIds: {'a'},
-      relayUrls: {'wss://test'},
-    );
+    final r1 = ResponseMetadata(subscriptionId: 'a', relayUrls: {'wss://test'});
+    final r2 = ResponseMetadata(subscriptionId: 'a', relayUrls: {'wss://test'});
     expect(r1, equals(r2));
   });
 

@@ -62,6 +62,17 @@ extension RequestFilterExt on RequestFilter {
       params[tagsParamName] = ftsQuery;
     }
 
+    // Handle Relays (using FTS)
+    if (relays.isNotEmpty) {
+      // Join groups with space (implicit AND in standard FTS query syntax)
+      final ftsQuery = [for (final e in relays) '"$e"'].join(' AND ');
+      final tagsParamName = nextParamName('relays');
+      whereClauses.add(
+        'id IN (SELECT id FROM events_fts WHERE relays MATCH $tagsParamName)',
+      );
+      params[tagsParamName] = ftsQuery;
+    }
+
     // Handle Search (using FTS on content)
     if (search != null && search!.isNotEmpty) {
       final searchParamName = nextParamName('search');

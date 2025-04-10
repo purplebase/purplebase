@@ -137,7 +137,7 @@ void main() {
               (s) => s.$2,
               'metadata',
               ResponseMetadata(
-                subscriptionIds: {filter.subscriptionId},
+                subscriptionId: filter.subscriptionId,
                 relayUrls: {'wss://relay.com'},
               ),
             ),
@@ -152,7 +152,7 @@ void main() {
               (s) => s.$2,
               'metadata',
               ResponseMetadata(
-                subscriptionIds: {filter.subscriptionId},
+                subscriptionId: filter.subscriptionId,
                 relayUrls: {'wss://relay2.com'},
               ),
             ),
@@ -352,9 +352,9 @@ void main() {
       await tester.expect(
         isA<(List<Map>, ResponseMetadata)>()
             .having(
-              (s) => s.$2.subscriptionIds,
+              (s) => s.$2.subscriptionId,
               'metadata',
-              contains(filter1.subscriptionId),
+              filter1.subscriptionId,
             )
             .having(
               (s) => s.$1.any((e) => e['id'] == 'event1'),
@@ -384,9 +384,9 @@ void main() {
       await tester.expect(
         isA<(List<Map>, ResponseMetadata)>()
             .having(
-              (s) => s.$2.subscriptionIds,
+              (s) => s.$2.subscriptionId,
               'metadata',
-              contains(filter2.subscriptionId),
+              filter2.subscriptionId,
             )
             .having(
               (s) => s.$1.any((e) => e['id'] == 'event2'),

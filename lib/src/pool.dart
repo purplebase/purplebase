@@ -77,7 +77,7 @@ class WebSocketPool
       await _ensureConnected(url);
 
       final r = ResponseMetadata(
-        subscriptionIds: {req.subscriptionId},
+        subscriptionId: req.subscriptionId,
         relayUrls: {url},
       );
       _preEoseBatches[r] = [];
@@ -231,7 +231,7 @@ class WebSocketPool
       final eventId = event['id'].toString();
 
       final r = ResponseMetadata(
-        subscriptionIds: {subscriptionId},
+        subscriptionId: subscriptionId,
         relayUrls: {relayUrl},
       );
 
@@ -251,9 +251,6 @@ class WebSocketPool
         }
 
         // Start the streaming timer if not already running
-        // TODO: Should we cancel here?
-        // _streamingBufferTimers[r]?.cancel();
-        // print('setting up timer for $r');
         _streamingBufferTimers[r] ??= Timer(config.streamingBufferWindow, () {
           final events = _streamingBuffer[r]!;
           // print('setting state (streaming flush): $events');
@@ -321,7 +318,7 @@ class WebSocketPool
     ] when _subscriptionExists(subscriptionId)) {
       // Mark that we've received EOSE for this subscription from this relay
       final r = ResponseMetadata(
-        subscriptionIds: {subscriptionId},
+        subscriptionId: subscriptionId,
         relayUrls: {relayUrl},
       );
       _eoseReceivedFrom.add(r);
@@ -347,15 +344,11 @@ class WebSocketPool
 
       // Clean up subscription data
       _subscriptions.remove(subscriptionId);
-      _preEoseBatches.removeWhere(
-        (r, _) => r.subscriptionIds.contains(subscriptionId),
-      );
+      _preEoseBatches.removeWhere((r, _) => r.subscriptionId == subscriptionId);
       _streamingBuffer.removeWhere(
-        (r, _) => r.subscriptionIds.contains(subscriptionId),
+        (r, _) => r.subscriptionId == subscriptionId,
       );
-      _eoseReceivedFrom.removeWhere(
-        (r) => r.subscriptionIds.contains(subscriptionId),
-      );
+      _eoseReceivedFrom.removeWhere((r) => r.subscriptionId == subscriptionId);
     }
   }
 

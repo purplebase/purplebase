@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 import 'package:bip340/bip340.dart' as bip340;
+import 'package:collection/collection.dart';
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:path/path.dart' as path;
 
 void isolateEntryPoint(List args) {
   final [SendPort mainSendPort, StorageConfiguration config] = args;
@@ -17,6 +21,7 @@ void isolateEntryPoint(List args) {
   mainSendPort.send(receivePort.sendPort);
 
   void Function()? closeFn;
+  StreamSubscription? sub;
 
   final container = ProviderContainer();
   final pool = WebSocketPool(container.read(refProvider));
@@ -25,49 +30,65 @@ void isolateEntryPoint(List args) {
   // TODO: Have a DB version somewhere (for future migrations)
   Database? db;
   try {
-    db = sqlite3.open(config.databasePath);
+    final dirPath = path.join(Directory.current.path, config.databasePath);
+    print('Opening database at $dirPath');
+    db = sqlite3.open(dirPath);
 
-    // TODO: How to handle replaceable events? (FTS5 rows can't be updated), test
     db.execute('''
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
+      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+      PRAGMA page_size = 4096;
+      PRAGMA cache_size = -20000;
       
       CREATE TABLE IF NOT EXISTS events(
-        id TEXT NOT NULL,
+        id TEXT PRIMARY KEY,
+        lid TEXT, -- latest ID of a replaceable
         pubkey TEXT NOT NULL,
         kind INTEGER NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        content TEXT,
-        tags TEXT,
+        content TEXT NOT NULL,
+        tags TEXT NOT NULL,
+        relays TEXT,
         sig TEXT
       );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS id_idx ON events(id);
       CREATE INDEX IF NOT EXISTS pubkey_idx ON events(pubkey);
       CREATE INDEX IF NOT EXISTS kind_idx ON events(kind);
       CREATE INDEX IF NOT EXISTS created_at_idx ON events(created_at);
 
       -- FTS5 virtual table for tags and search
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-        id UNINDEXED,  -- Reference to main table
-        tags,          -- Space-separated tags
-        search         -- Optional for other
+        id UNINDEXED,
+        tags,
+        relays,
+        content='events',
+        content_rowid='rowid'
       );
 
       CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
-        INSERT INTO events_fts (id, tags)
-          SELECT new.id, GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
-            FROM json_each(new.tags)
-            WHERE LENGTH(value ->> '\$[0]') = 1;
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
-        DELETE FROM events_fts WHERE id = OLD.id;
+        INSERT INTO events_fts (rowid, tags, relays)
+          VALUES (
+            NEW.rowid,
+            (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
+              FROM json_each(NEW.tags)
+              WHERE LENGTH(value ->> '\$[0]') = 1),
+            (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
+          );
       END;
 
       CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
-        DELETE FROM events_fts WHERE id = OLD.id;
-        INSERT INTO events_fts(id, tags) VALUES (NEW.id, NEW.tags);
+        UPDATE events_fts 
+        SET 
+          tags = (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
+                  FROM json_each(NEW.tags)
+                  WHERE LENGTH(value ->> '\$[0]') = 1),
+          relays = (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
+        WHERE rowid = NEW.rowid;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+        DELETE FROM events_fts WHERE rowid = OLD.rowid;
       END;
 
       CREATE TABLE IF NOT EXISTS requests(
@@ -90,8 +111,7 @@ void isolateEntryPoint(List args) {
     }
   });
 
-  // TODO: close too
-  receivePort.listen((message) {
+  sub = receivePort.listen((message) {
     if (message is! IsolateMessage) return;
 
     final replyPort = message.replyPort;
@@ -109,7 +129,13 @@ void isolateEntryPoint(List args) {
           break;
 
         case IsolateOperationType.save:
-          final ids = _save(db!, message.parameters, {}, message.config!);
+          final relayUrls = config.getRelays(message.relayGroup);
+          final ids = _save(
+            db!,
+            message.parameters,
+            relayUrls,
+            message.config!,
+          );
           response = IsolateResponse(success: true, result: ids);
           break;
 
@@ -123,16 +149,20 @@ void isolateEntryPoint(List args) {
           break;
 
         case IsolateOperationType.send:
-          final (req, relayUrls) = message.sendParameters!;
-          pool.send(req, relayUrls: relayUrls);
+          final relayUrls = config.getRelays(message.relayGroup);
+          pool.send(message.req!, relayUrls: relayUrls);
           response = IsolateResponse(success: true);
           break;
 
         case IsolateOperationType.close:
+          // TODO: Test this closes correctly and is restartable
           db?.dispose();
           pool.dispose();
           closeFn?.call();
           response = IsolateResponse(success: true);
+          Future.microtask(() {
+            sub?.cancel();
+          });
           break;
       }
     } catch (e) {
@@ -141,19 +171,6 @@ void isolateEntryPoint(List args) {
 
     replyPort.send(response);
   });
-}
-
-bool _verifyEvent(Map<String, dynamic> map) {
-  bool verified = false;
-  if (map['sig'] != null && map['sig'] != '') {
-    verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
-    if (!verified) {
-      print(
-        '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
-      );
-    }
-  }
-  return verified;
 }
 
 Set<String> _save(
@@ -173,50 +190,98 @@ Set<String> _save(
   if (params.isEmpty) {
     return {};
   }
-  // TODO: Add try/finally block here
 
-  // TODO: How about id in replaceable events?
-  final sql =
-      'INSERT OR IGNORE INTO events (id, content, created_at, pubkey, kind, tags${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags${keepSig ? ', :sig' : ''}) RETURNING id;';
-  final statement = db.prepare(sql);
+  final sortedRelays =
+      relayUrls.isNotEmpty ? jsonEncode(relayUrls.sorted()) : null;
+  print('saving for relays: $sortedRelays');
 
-  final sqlFts =
-      '''UPDATE events_fts SET tags = tags || ' ' || ? WHERE id = ?''';
-  final statementFts = db.prepare(sqlFts);
+  final nonReplaceableIncomingIds =
+      params
+          // If param map is bigger than a single entry it means it's a full event
+          .where((p) => p.length > 1 && !Event.isReplaceable(p))
+          .map((p) => p['id'])
+          .toList();
+
+  final sql = '''
+    SELECT id FROM events WHERE id IN (${nonReplaceableIncomingIds.map((_) => '?').join(', ')});
+    INSERT OR REPLACE INTO events (id, lid, content, created_at, pubkey, kind, tags, relays${keepSig ? ', sig' : ''}) VALUES (:id, :lid, :content, :created_at, :pubkey, :kind, :tags, :relays${keepSig ? ', :sig' : ''});
+    UPDATE events SET relays = ? WHERE id = ? AND relays != ?;
+  ''';
+  final [existingPs, eventPs, relayUpdatePs] = db.prepareMultiple(sql);
 
   final ids = <String>{};
+  try {
+    db.execute('BEGIN');
+    final existingNonReplaceableIds =
+        existingPs
+            .select(nonReplaceableIncomingIds)
+            .map((e) => e['id'])
+            .toSet();
 
-  db.execute('BEGIN');
-  for (final p in params) {
-    final map = {
-      for (final e in p.entries)
-        // Prefix leading ':' and convert tags to JSON
-        ':${e.key}': (e.value is List ? jsonEncode(e.value) : e.value),
-    };
+    for (final param in params) {
+      final isFullEvent = param.length > 1;
+      final alreadySaved = existingNonReplaceableIds.contains(param['id']);
 
-    if (!keepSig) {
-      map.remove(':sig');
-    }
+      if (isFullEvent && !alreadySaved) {
+        final map = {
+          for (final e in param.entries)
+            // Prefix leading ':'
+            ':${e.key}': switch (e.key) {
+              'id' => Event.addressableId(param),
+              'tags' => jsonEncode(e.value),
+              _ => e.value,
+            },
+          ':lid': Event.isReplaceable(param) ? param['id'] : null,
+          ':relays': sortedRelays,
+        };
 
-    // Use selectWith because it's an INSERT with a RETURNING
-    final rows = statement.selectWith(StatementParameters.named(map));
-    if (rows.isNotEmpty) {
-      final id = rows.first['id'];
-      ids.add(id);
-      // Add relays where it's been seen
-      if (relayUrls.isNotEmpty) {
-        statementFts.execute([
-          relayUrls.map((r) => '^r:$r').join(' '),
-          map['id'],
-        ]);
+        if (!keepSig) {
+          map.remove(':sig');
+        }
+
+        final id = map[':id'];
+
+        eventPs.executeWith(StatementParameters.named(map));
+        if (db.updatedRows > 0) {
+          ids.add(id);
+        }
+      } else {
+        // TODO: This will fail with replaceable events, can't recreate the addressable ID
+        // If it is not a full event (i.e. just a {'id': id})
+        // or it was already saved, update relays
+        if (sortedRelays != null) {
+          relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);
+          if (db.updatedRows > 0) {
+            // If rows were updated then value changed, so send ID to notifier
+            ids.add(param['id']);
+          }
+        }
       }
     }
+    db.execute('COMMIT');
+  } catch (e) {
+    db.execute('ROLLBACK');
+    print(e);
+  } finally {
+    existingPs.dispose();
+    eventPs.dispose();
+    relayUpdatePs.dispose();
   }
-  db.execute('COMMIT');
-
-  statement.dispose();
 
   return ids;
+}
+
+bool _verifyEvent(Map<String, dynamic> map) {
+  bool verified = false;
+  if (map['sig'] != null && map['sig'] != '') {
+    verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
+    if (!verified) {
+      print(
+        '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
+      );
+    }
+  }
+  return verified;
 }
 
 /// Message types for isolate communication
@@ -228,7 +293,8 @@ class IsolateMessage {
   final String? sql;
   final List<Map<String, dynamic>> parameters;
   final StorageConfiguration? config;
-  final (RequestFilter, Set<String>?)? sendParameters;
+  final String? relayGroup;
+  final RequestFilter? req;
   final SendPort replyPort;
 
   IsolateMessage({
@@ -236,7 +302,8 @@ class IsolateMessage {
     this.sql,
     this.parameters = const [],
     this.config,
-    this.sendParameters,
+    this.req,
+    this.relayGroup,
     this.replyPort = const DummySendPort(),
   });
 }
