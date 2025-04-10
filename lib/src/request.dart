@@ -1,10 +1,7 @@
 import 'package:models/models.dart';
 
 extension RequestFilterExt on RequestFilter {
-  (String, Map<String, dynamic>) toSQL({
-    Set<String>? relayUrls,
-    Set<String>? onIds,
-  }) {
+  (String, Map<String, dynamic>) toSQL({Set<String>? relayUrls}) {
     final params = <String, dynamic>{};
     final whereClauses = <String>[];
     int paramIndex = 0; // Counter for unique parameter names
@@ -13,10 +10,9 @@ extension RequestFilterExt on RequestFilter {
     String nextParamName(String base) => ':${base}_${paramIndex++}';
 
     // Handle IDs
-    final allIds = {...ids, ...?onIds};
-    if (allIds.isNotEmpty) {
+    if (ids.isNotEmpty) {
       final idParams = <String>[];
-      for (final id in allIds) {
+      for (final id in ids) {
         final paramName = nextParamName('id');
         idParams.add(paramName);
         // Add to params with the leading ':'

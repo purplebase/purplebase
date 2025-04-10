@@ -27,12 +27,10 @@ void isolateEntryPoint(List args) {
   final container = ProviderContainer();
   final pool = WebSocketPool(container.read(refProvider));
 
-  // Open the database
-  // TODO: Have a DB version somewhere (for future migrations)
   Database? db;
   try {
     final dirPath = path.join(Directory.current.path, config.databasePath);
-    print('Opening database at $dirPath [database isolate]');
+    // print('Opening database at $dirPath [database isolate]');
     db = sqlite3.open(dirPath);
     db.execute(setUpSql);
   } catch (e) {
@@ -122,7 +120,6 @@ Set<String> _save(
 
   final sortedRelays =
       relayUrls.isNotEmpty ? jsonEncode(relayUrls.sorted()) : null;
-  print('saving for relays: $sortedRelays');
 
   final incomingIds = params.map((p) => p['id']).toList();
 
@@ -136,9 +133,9 @@ Set<String> _save(
   final ids = <String>{};
   try {
     db.execute('BEGIN');
+    // TODO: Test existing
     final existingIds =
         existingPs.select(incomingIds).map((e) => e['id']).toSet();
-    print('existing $existingIds');
 
     for (final param in params) {
       final isFullEvent = param.containsKey('pubkey');
@@ -162,12 +159,12 @@ Set<String> _save(
           map.remove(':sig');
         }
 
-        print('inserting $map');
         eventPs.executeWith(StatementParameters.named(map));
         if (db.updatedRows > 0) {
           ids.add(map[':id']);
         }
       } else {
+        // TODO: Test this case
         // If it is not a full event or it was already saved, update relays
         if (sortedRelays != null) {
           relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);

@@ -39,7 +39,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (_initialized) return;
 
     final dirPath = path.join(Directory.current.path, config.databasePath);
-    print('Opening database at $dirPath [main isolate]');
+    // print('Opening database at $dirPath [main isolate]');
     db = sqlite3.open(dirPath);
 
     // Configure sqlite: 1 GB memory mapped
@@ -105,31 +105,16 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  List<Event> querySync(
-    RequestFilter req, {
-    bool applyLimit = true,
-    Set<String>? onIds,
-  }) {
+  List<Event> querySync(RequestFilter req, {bool applyLimit = true}) {
     Iterable<Map<String, dynamic>> events;
     // Note: applyLimit parameter is not used here as the limit comes from req.limit
     final relayUrls = config.getRelays(req.on, false);
-    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
+    final (sql, params) = req.toSQL(relayUrls: relayUrls);
     final statement = db.prepare(sql);
     try {
       final result = statement.selectWith(StatementParameters.named(params));
 
-      events = result.map(
-        (row) => {
-          'id': row['id'],
-          'pubkey': row['pubkey'],
-          'kind': row['kind'],
-          'created_at': row['created_at'],
-          'content': row['content'],
-          'sig': row['sig'],
-          'tags': jsonDecode(row['tags']),
-          'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
-        },
-      );
+      events = result.decoded();
     } finally {
       statement.dispose();
     }
@@ -141,30 +126,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<List<Event>> query(
-    RequestFilter req, {
-    bool applyLimit = true,
-    Set<String>? onIds,
-  }) async {
+  Future<List<Event>> query(RequestFilter req, {bool applyLimit = true}) async {
     final relayUrls = config.getRelays(req.on, false);
-    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
+    final (sql, params) = req.toSQL(relayUrls: relayUrls);
 
     final response = await _sendMessage(
       QueryIsolateOperation(sql: sql, params: params),
     );
 
-    // TODO: Repeated code
-    final events = (response.result as List).map(
-      (row) => {
-        'id': row['id'],
-        'pubkey': row['pubkey'],
-        'kind': row['kind'],
-        'created_at': row['created_at'],
-        'content': row['content'],
-        'sig': row['sig'],
-        'tags': jsonDecode(row['tags']),
-      },
-    );
+    final events = (response.result as Iterable<Row>).decoded();
 
     return events
         .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
@@ -244,6 +214,23 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   //   });
   //   return completer.future;
   // }
+}
+
+extension on Iterable<Row> {
+  List<Map<String, dynamic>> decoded() {
+    return map(
+      (row) => {
+        'id': row['id'],
+        'pubkey': row['pubkey'],
+        'kind': row['kind'],
+        'created_at': row['created_at'],
+        'content': row['content'],
+        'sig': row['sig'],
+        'tags': jsonDecode(row['tags']),
+        'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
+      },
+    ).toList();
+  }
 }
 
 // TODO: Should extend StorageConfiguration
