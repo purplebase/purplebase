@@ -350,14 +350,16 @@ Future<void> main() async {
   });
 
   test('query by relay', () async {
-    final n1 = await PartialNote('yo').signWith(signer);
-    final n2 = await PartialNote('yope').signWith(signer);
+    final n1 = await PartialNote('no relay').signWith(signer);
+    final n2 = await PartialNote('yes relay').signWith(signer);
     await storage.save({n1});
     await storage.save({n2}, relayGroup: 'test');
 
-    final r1 = storage.querySync(RequestFilter(relays: {'wss://test.com'}));
-    // print(r1.first.internal.relays);
-    // expect(r1, unorderedEquals([n2]));
+    final r1 =
+        storage
+            .querySync(RequestFilter(relays: {'wss://test.com'}))
+            .cast<Note>();
+    expect(r1.map((n) => n.content), contains('yes relay'));
   });
 
   test('response metadata', () {

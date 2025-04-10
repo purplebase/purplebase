@@ -23,6 +23,7 @@ void isolateEntryPoint(List args) {
   void Function()? closeFn;
   StreamSubscription? sub;
 
+  // Initialize Riverpod in isolate
   final container = ProviderContainer();
   final pool = WebSocketPool(container.read(refProvider));
 
@@ -33,71 +34,7 @@ void isolateEntryPoint(List args) {
     final dirPath = path.join(Directory.current.path, config.databasePath);
     print('Opening database at $dirPath [database isolate]');
     db = sqlite3.open(dirPath);
-
-    db.execute('''
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
-      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
-      PRAGMA page_size = 4096;
-      PRAGMA cache_size = -20000;
-      
-      CREATE TABLE IF NOT EXISTS events(
-        id TEXT PRIMARY KEY,
-        lid TEXT, -- latest ID of a replaceable
-        pubkey TEXT NOT NULL,
-        kind INTEGER NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        content TEXT NOT NULL,
-        tags TEXT NOT NULL,
-        relays TEXT,
-        sig TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS pubkey_idx ON events(pubkey);
-      CREATE INDEX IF NOT EXISTS kind_idx ON events(kind);
-      CREATE INDEX IF NOT EXISTS created_at_idx ON events(created_at);
-
-      -- FTS5 virtual table for tags and search
-      CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-        id UNINDEXED,
-        tags,
-        relays,
-        content='events',
-        content_rowid='rowid'
-      );
-
-      CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
-        INSERT INTO events_fts (rowid, tags, relays)
-          VALUES (
-            NEW.rowid,
-            (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
-              FROM json_each(NEW.tags)
-              WHERE LENGTH(value ->> '\$[0]') = 1),
-            (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
-          );
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
-        UPDATE events_fts 
-        SET 
-          tags = (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
-                  FROM json_each(NEW.tags)
-                  WHERE LENGTH(value ->> '\$[0]') = 1),
-          relays = (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
-        WHERE rowid = NEW.rowid;
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
-        DELETE FROM events_fts WHERE rowid = OLD.rowid;
-      END;
-
-      CREATE TABLE IF NOT EXISTS requests(
-        request TEXT,
-        until INTEGER
-      );
-
-      CREATE INDEX IF NOT EXISTS request_idx ON requests(request);
-    ''');
+    db.execute(setUpSql);
   } catch (e) {
     print('Error opening database: $e');
   }
@@ -129,15 +66,14 @@ void isolateEntryPoint(List args) {
             response = IsolateResponse(success: true, result: result.toList());
 
           case SaveIsolateOperation(:final events, :final relayGroup):
-            final relayUrls = config.getRelays(relayGroup);
+            final relayUrls = config.getRelays(relayGroup, false);
             final ids = _save(db!, events, relayUrls, config);
             response = IsolateResponse(success: true, result: ids);
 
           case ClearIsolateOperation():
-            statement = db!.prepare(
-              'DELETE FROM events; DELETE FROM events_fts;',
-            );
-            statement.execute();
+            // Drop all tables and set up again, deleting tables was problematic
+            db!.execute(tearDownSql);
+            db.execute(setUpSql);
             response = IsolateResponse(success: true);
 
           case SendEventIsolateOperation(:final req, :final relayGroup):
@@ -188,16 +124,11 @@ Set<String> _save(
       relayUrls.isNotEmpty ? jsonEncode(relayUrls.sorted()) : null;
   print('saving for relays: $sortedRelays');
 
-  final nonReplaceableIncomingIds =
-      params
-          // If param map is bigger than a single entry it means it's a full event
-          .where((p) => p.length > 1 && !Event.isReplaceable(p))
-          .map((p) => p['id'])
-          .toList();
+  final incomingIds = params.map((p) => p['id']).toList();
 
   final sql = '''
-    SELECT id FROM events WHERE id IN (${nonReplaceableIncomingIds.map((_) => '?').join(', ')});
-    INSERT OR REPLACE INTO events (id, lid, content, created_at, pubkey, kind, tags, relays${keepSig ? ', sig' : ''}) VALUES (:id, :lid, :content, :created_at, :pubkey, :kind, :tags, :relays${keepSig ? ', :sig' : ''});
+    SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
+    INSERT OR REPLACE INTO events (id, content, created_at, pubkey, kind, tags, relays${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :relays${keepSig ? ', :sig' : ''});
     UPDATE events SET relays = ? WHERE id = ? AND relays != ?;
   ''';
   final [existingPs, eventPs, relayUpdatePs] = db.prepareMultiple(sql);
@@ -205,26 +136,25 @@ Set<String> _save(
   final ids = <String>{};
   try {
     db.execute('BEGIN');
-    final existingNonReplaceableIds =
-        existingPs
-            .select(nonReplaceableIncomingIds)
-            .map((e) => e['id'])
-            .toSet();
+    final existingIds =
+        existingPs.select(incomingIds).map((e) => e['id']).toSet();
+    print('existing $existingIds');
 
     for (final param in params) {
-      final isFullEvent = param.length > 1;
-      final alreadySaved = existingNonReplaceableIds.contains(param['id']);
+      final isFullEvent = param.containsKey('pubkey');
+      final alreadySaved = existingIds.contains(param['id']);
 
       if (isFullEvent && !alreadySaved) {
         final map = {
           for (final e in param.entries)
             // Prefix leading ':'
             ':${e.key}': switch (e.key) {
-              'id' => Event.addressableId(param),
+              // 'id' => Event.addressableId(param),
               'tags' => jsonEncode(e.value),
+              // 'relays' => sortedRelays,
               _ => e.value,
             },
-          ':lid': Event.isReplaceable(param) ? param['id'] : null,
+          // ':lid': Event.isReplaceable(param) ? param['id'] : null,
           ':relays': sortedRelays,
         };
 
@@ -232,24 +162,20 @@ Set<String> _save(
           map.remove(':sig');
         }
 
-        final id = map[':id'];
-
         print('inserting $map');
         eventPs.executeWith(StatementParameters.named(map));
         if (db.updatedRows > 0) {
-          ids.add(id);
+          ids.add(map[':id']);
         }
       } else {
-        // TODO: This will fail with replaceable events, can't recreate the addressable ID
-        // If it is not a full event (i.e. just a {'id': id})
-        // or it was already saved, update relays
-        // if (sortedRelays != null) {
-        //   relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);
-        //   if (db.updatedRows > 0) {
-        //     // If rows were updated then value changed, so send ID to notifier
-        //     ids.add(param['id']);
-        //   }
-        // }
+        // If it is not a full event or it was already saved, update relays
+        if (sortedRelays != null) {
+          relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);
+          if (db.updatedRows > 0) {
+            // If rows were updated then value changed, so send ID to notifier
+            ids.add(param['id']);
+          }
+        }
       }
     }
     db.execute('COMMIT');
@@ -277,6 +203,81 @@ bool _verifyEvent(Map<String, dynamic> map) {
   }
   return verified;
 }
+
+//
+
+final setUpSql = '''
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+  PRAGMA page_size = 4096;
+  PRAGMA cache_size = -20000;
+
+  CREATE TABLE IF NOT EXISTS events(
+    id TEXT PRIMARY KEY,
+    pubkey TEXT NOT NULL,
+    kind INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    content TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    relays TEXT,
+    sig TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS pubkey_idx ON events(pubkey);
+  CREATE INDEX IF NOT EXISTS kind_idx ON events(kind);
+  CREATE INDEX IF NOT EXISTS created_at_idx ON events(created_at);
+
+  -- FTS5 virtual table for tags and search
+  CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    id UNINDEXED,
+    tags,
+    relays,
+    content='events',
+    content_rowid='rowid'
+  );
+
+  CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
+    INSERT INTO events_fts (rowid, tags, relays)
+      VALUES (
+        NEW.rowid,
+        (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
+          FROM json_each(NEW.tags)
+          WHERE LENGTH(value ->> '\$[0]') = 1),
+        (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
+      );
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
+    UPDATE events_fts 
+    SET 
+      tags = (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
+              FROM json_each(NEW.tags)
+              WHERE LENGTH(value ->> '\$[0]') = 1),
+      relays = (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
+    WHERE rowid = NEW.rowid;
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+    DELETE FROM events_fts WHERE rowid = OLD.rowid;
+  END;
+
+  CREATE TABLE IF NOT EXISTS requests(
+    request TEXT,
+    until INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS request_idx ON requests(request);
+    ''';
+
+final tearDownSql = '''
+  DROP TRIGGER IF EXISTS events_ad;
+  DROP TRIGGER IF EXISTS events_au;
+  DROP TRIGGER IF EXISTS events_ai;
+  DROP TABLE IF EXISTS events_fts;
+  DROP TABLE IF EXISTS events;
+  DROP TABLE IF EXISTS requests;
+''';
 
 //
 

@@ -227,7 +227,6 @@ class WebSocketPool
       // Check if this event has an ID
       if (!event.containsKey('id')) return;
 
-      // Add relay URL to seen
       final eventId = event['id'].toString();
 
       final r = ResponseMetadata(

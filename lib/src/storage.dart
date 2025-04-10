@@ -79,7 +79,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final maps = events.map((e) => e.toMap()).toList();
 
-    final response = await _sendMessage(SaveIsolateOperation(events: maps));
+    final response = await _sendMessage(
+      SaveIsolateOperation(events: maps, relayGroup: relayGroup),
+    );
 
     if (!response.success) {
       throw IsolateException(response.error ?? 'Unknown database error');
@@ -108,26 +110,28 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     bool applyLimit = true,
     Set<String>? onIds,
   }) {
+    Iterable<Map<String, dynamic>> events;
     // Note: applyLimit parameter is not used here as the limit comes from req.limit
     final (sql, params) = req.toSQL(onIds: onIds);
     final statement = db.prepare(sql);
-    final result = statement.selectWith(
-      StatementParameters.named(params),
-    ); // params
-    statement.dispose();
-    final events = result.map(
-      (row) => {
-        // Apply lid (latest ID) of a replaceable, otherwise regular ID
-        'id': row['lid'] ?? row['id'],
-        'pubkey': row['pubkey'],
-        'kind': row['kind'],
-        'created_at': row['created_at'],
-        'content': row['content'],
-        'sig': row['sig'],
-        'tags': jsonDecode(row['tags']),
-        'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
-      },
-    );
+    try {
+      final result = statement.selectWith(StatementParameters.named(params));
+
+      events = result.map(
+        (row) => {
+          'id': row['id'],
+          'pubkey': row['pubkey'],
+          'kind': row['kind'],
+          'created_at': row['created_at'],
+          'content': row['content'],
+          'sig': row['sig'],
+          'tags': jsonDecode(row['tags']),
+          'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
+        },
+      );
+    } finally {
+      statement.dispose();
+    }
 
     return events
         .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
@@ -150,7 +154,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     // TODO: Repeated code
     final events = (response.result as List).map(
       (row) => {
-        'id': row['lid'] ?? row['id'],
+        'id': row['id'],
         'pubkey': row['pubkey'],
         'kind': row['kind'],
         'created_at': row['created_at'],
@@ -178,12 +182,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<void> dispose() async {
+  void dispose() {
     if (!_initialized || _isolate == null) return;
 
     sub?.cancel();
-
-    await _sendMessage(CloseIsolateOperation());
 
     _isolate?.kill();
     _isolate = null;
@@ -193,6 +195,16 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (mounted) {
       super.dispose();
     }
+
+    // Obliterate database
+    Directory.current.listSync().forEach((entity) {
+      if (entity is File &&
+          entity.path.startsWith(
+            path.join(Directory.current.path, config.databasePath),
+          )) {
+        entity.deleteSync();
+      }
+    });
   }
 
   Future<IsolateResponse> _sendMessage(IsolateOperation operation) async {
