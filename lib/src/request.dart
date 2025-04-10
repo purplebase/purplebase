@@ -2,8 +2,8 @@ import 'package:models/models.dart';
 
 extension RequestFilterExt on RequestFilter {
   (String, Map<String, dynamic>) toSQL({
+    Set<String>? relayUrls,
     Set<String>? onIds,
-    bool returnIds = false,
   }) {
     final params = <String, dynamic>{};
     final whereClauses = <String>[];
@@ -63,9 +63,9 @@ extension RequestFilterExt on RequestFilter {
     }
 
     // Handle Relays (using FTS)
-    if (relays.isNotEmpty) {
+    if (relayUrls != null && relayUrls.isNotEmpty) {
       // Join groups with space (implicit AND in standard FTS query syntax)
-      final ftsQuery = [for (final e in relays) '"$e"'].join(' AND ');
+      final ftsQuery = [for (final url in relayUrls) '"$url"'].join(' AND ');
       final tagsParamName = nextParamName('relays');
       whereClauses.add(
         'id IN (SELECT id FROM events_fts WHERE relays MATCH $tagsParamName)',
@@ -98,8 +98,7 @@ extension RequestFilterExt on RequestFilter {
       params[untilParamName] = until!.millisecondsSinceEpoch ~/ 1000;
     }
 
-    // --- Construct Final Query ---
-    var sql = 'SELECT ${returnIds ? 'id' : '*'} FROM events';
+    var sql = 'SELECT * FROM events';
 
     if (whereClauses.isNotEmpty) {
       sql += ' WHERE ${whereClauses.join(' AND ')}';

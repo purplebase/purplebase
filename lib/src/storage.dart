@@ -112,7 +112,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }) {
     Iterable<Map<String, dynamic>> events;
     // Note: applyLimit parameter is not used here as the limit comes from req.limit
-    final (sql, params) = req.toSQL(onIds: onIds);
+    final relayUrls = config.getRelays(req.on, false);
+    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
     final statement = db.prepare(sql);
     try {
       final result = statement.selectWith(StatementParameters.named(params));
@@ -145,7 +146,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     bool applyLimit = true,
     Set<String>? onIds,
   }) async {
-    final (sql, params) = req.toSQL(onIds: onIds);
+    final relayUrls = config.getRelays(req.on, false);
+    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
 
     final response = await _sendMessage(
       QueryIsolateOperation(sql: sql, params: params),
