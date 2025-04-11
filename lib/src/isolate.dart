@@ -63,12 +63,43 @@ void isolateEntryPoint(List args) {
             );
             response = IsolateResponse(success: true, result: result.toList());
 
-          case SaveIsolateOperation(:final events, :final relayGroup):
+          case SaveIsolateOperation(
+            :final events,
+            :final relayGroup,
+            :final publish,
+          ):
             final relayUrls = config.getRelays(
               relayGroup: relayGroup,
               useDefault: false,
             );
             final ids = _save(db!, events, relayUrls, config);
+            if (publish) {
+              // TODO: Implement publish to relays
+              //   final completer = Completer<void>();
+
+              //   pool!.send(jsonEncode(["EVENT", event.toMap()]));
+
+              //   _closeFns[event.event.id.toString()] = addListener((message) {
+              //     if (message.subscriptionId != null &&
+              //         event.event.id.toString() != message.subscriptionId) {
+              //       return;
+              //     }
+
+              //     if (message is PublishedEventRelayMessage) {
+              //       if (message.accepted) {
+              //         if (!completer.isCompleted) {
+              //           completer.complete();
+              //         }
+              //       } else {
+              //         if (!completer.isCompleted) {
+              //           final error = message.message ?? 'Not accepted';
+              //           completer.completeError(Exception(error));
+              //         }
+              //       }
+              //     }
+              //   });
+              //   return completer.future;
+            }
             response = IsolateResponse(success: true, result: ids);
 
           case ClearIsolateOperation():
@@ -114,20 +145,20 @@ Set<String> _save(
 ) {
   final keepSig = config.keepSignatures;
 
+  if (parameters.isEmpty) {
+    return {};
+  }
+
   // Filter events by verified
-  final params =
+  final verifiedEvents =
       parameters
           .where((m) => config.skipVerification ? true : _verifyEvent(m))
           .toList();
 
-  if (params.isEmpty) {
-    return {};
-  }
-
   final sortedRelays =
       relayUrls.isNotEmpty ? jsonEncode(relayUrls.sorted()) : null;
 
-  final incomingIds = params.map((p) => p['id']).toList();
+  final incomingIds = verifiedEvents.map((p) => p['id']).toList();
 
   final sql = '''
     SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
@@ -143,21 +174,18 @@ Set<String> _save(
     final existingIds =
         existingPs.select(incomingIds).map((e) => e['id']).toSet();
 
-    for (final param in params) {
-      final isFullEvent = param.containsKey('pubkey');
-      final alreadySaved = existingIds.contains(param['id']);
+    for (final event in verifiedEvents) {
+      final isFullEvent = event.containsKey('pubkey');
+      final alreadySaved = existingIds.contains(event['id']);
 
       if (isFullEvent && !alreadySaved) {
         final map = {
-          for (final e in param.entries)
+          for (final e in event.entries)
             // Prefix leading ':'
             ':${e.key}': switch (e.key) {
-              // 'id' => Event.addressableId(param),
               'tags' => jsonEncode(e.value),
-              // 'relays' => sortedRelays,
               _ => e.value,
             },
-          // ':lid': Event.isReplaceable(param) ? param['id'] : null,
           ':relays': sortedRelays,
         };
 
@@ -173,10 +201,10 @@ Set<String> _save(
         // TODO: Test this case
         // If it is not a full event or it was already saved, update relays
         if (sortedRelays != null) {
-          relayUpdatePs.execute([sortedRelays, param['id'], sortedRelays]);
+          relayUpdatePs.execute([sortedRelays, event['id'], sortedRelays]);
           if (db.updatedRows > 0) {
             // If rows were updated then value changed, so send ID to notifier
-            ids.add(param['id']);
+            ids.add(event['id']);
           }
         }
       }
@@ -296,8 +324,13 @@ final class QueryIsolateOperation extends IsolateOperation {
 final class SaveIsolateOperation extends IsolateOperation {
   final List<Map<String, dynamic>> events;
   final String? relayGroup;
+  final bool publish;
 
-  SaveIsolateOperation({required this.events, this.relayGroup});
+  SaveIsolateOperation({
+    required this.events,
+    this.relayGroup,
+    this.publish = true,
+  });
 }
 
 final class SendEventIsolateOperation extends IsolateOperation {

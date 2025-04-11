@@ -74,25 +74,31 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   /// Client-facing save method
   /// (framework calls _save internally in isolate)
   @override
-  Future<void> save(Set<Event> events, {String? relayGroup}) async {
+  Future<void> save(
+    Set<Event> events, {
+    String? relayGroup,
+    bool publish = true,
+  }) async {
     if (events.isEmpty) return;
 
     final maps = events.map((e) => e.toMap()).toList();
 
     final response = await _sendMessage(
-      SaveIsolateOperation(events: maps, relayGroup: relayGroup),
+      SaveIsolateOperation(
+        events: maps,
+        relayGroup: relayGroup,
+        publish: publish,
+      ),
     );
 
     if (!response.success) {
-      throw IsolateException(response.error ?? 'Unknown database error');
+      throw IsolateException(response.error);
     }
 
-    // Since these events have been created locally and
-    // do not come from a relay, their metadata is empty
-    // TODO: ^
-    final r = ResponseMetadata(relayUrls: {});
+    // Empty response metadata as these events do not come from a relay
+    final responseMetadata = ResponseMetadata(relayUrls: {});
     final record = response.result as Set<String>;
-    state = StorageSignal((record, r));
+    state = StorageSignal((record, responseMetadata));
   }
 
   @override
@@ -187,33 +193,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     return await receivePort.first as IsolateResponse;
   }
-
-  // Future<void> publish(Event event) async {
-  //   final completer = Completer<void>();
-
-  //   pool!.send(jsonEncode(["EVENT", event.toMap()]));
-
-  //   _closeFns[event.event.id.toString()] = addListener((message) {
-  //     if (message.subscriptionId != null &&
-  //         event.event.id.toString() != message.subscriptionId) {
-  //       return;
-  //     }
-
-  //     if (message is PublishedEventRelayMessage) {
-  //       if (message.accepted) {
-  //         if (!completer.isCompleted) {
-  //           completer.complete();
-  //         }
-  //       } else {
-  //         if (!completer.isCompleted) {
-  //           final error = message.message ?? 'Not accepted';
-  //           completer.completeError(Exception(error));
-  //         }
-  //       }
-  //     }
-  //   });
-  //   return completer.future;
-  // }
 }
 
 extension on Iterable<Row> {
