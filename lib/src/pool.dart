@@ -54,10 +54,7 @@ class WebSocketPool
   // Initialize the message listener
   void _initMessageListener() {
     // print('socket listening');
-    _messagesSubscription ??= _webSocketClient.messages.listen((m) {
-      // print('receiving message $m');
-      _handleMessage(m);
-    });
+    _messagesSubscription ??= _webSocketClient.messages.listen(_handleMessage);
   }
 
   // Send a request to relays
@@ -85,7 +82,7 @@ class WebSocketPool
 
       // Create and send the REQ message with the optimized filter
       final reqMsg = _createReqMessage(optimizedReq);
-      // print('socket sending $reqMsg');
+      print('socket sending $reqMsg');
       _webSocketClient.send(reqMsg);
 
       // Reset the idle timer
@@ -155,12 +152,12 @@ class WebSocketPool
     return jsonEncode(['REQ', filter.subscriptionId, filter.toMap()]);
   }
 
-  // Ensure a connection to a relay is established
+  // TODO: Its not ensure, it just connects and queues
   Future<void> _ensureConnected(String url) async {
     if (!_connectedRelays.contains(url)) {
       final uri = Uri.parse(url);
-      // print('socket connecting');
-      await _webSocketClient.connect(uri);
+      print('socket connecting $url');
+      _webSocketClient.connect(uri);
       _connectedRelays.add(url);
     }
   }
@@ -187,33 +184,35 @@ class WebSocketPool
   }
 
   // Handle incoming messages with relay URL
-  void _handleMessage((String relayUrl, String message) data) {
-    final (relayUrl, message) = data;
-    try {
-      final List parsed = jsonDecode(message);
-      if (parsed.isEmpty) return;
+  void _handleMessage(data) {
+    if (data case (final String relayUrl, final message)) {
+      print('received from $relayUrl');
+      try {
+        final parsed = jsonDecode(message) as List;
+        if (parsed.isEmpty) return;
 
-      final String messageType = parsed[0];
+        final [messageType, ..._] = parsed;
 
-      switch (messageType) {
-        case 'EVENT':
-          _handleEventMessage(parsed, relayUrl);
-          break;
-        case 'EOSE':
-          _handleEoseMessage(parsed, relayUrl);
-          break;
-        case 'NOTICE':
-          // Handle notices if needed
-          break;
-        case 'OK':
-          // Handle OK messages if needed
-          break;
+        switch (messageType) {
+          case 'EVENT':
+            _handleEventMessage(parsed, relayUrl);
+            break;
+          case 'EOSE':
+            _handleEoseMessage(parsed, relayUrl);
+            break;
+          case 'NOTICE':
+            // Handle notices if needed
+            break;
+          case 'OK':
+            // Handle OK messages if needed
+            break;
+        }
+
+        // Reset idle timer as we received a message
+        _resetIdleTimer(relayUrl);
+      } catch (e) {
+        print('Error handling message: $e');
       }
-
-      // Reset idle timer as we received a message
-      _resetIdleTimer(relayUrl);
-    } catch (e) {
-      print('Error handling message: $e');
     }
   }
 
@@ -384,63 +383,67 @@ class WebSocketClient {
   final StreamController<(String relayUrl, String message)>
   _messagesController =
       StreamController<(String relayUrl, String message)>.broadcast();
-  final Map<String, bool> _connectionStatus = {};
+  final _subs = <StreamSubscription>{};
+  final _queue = <Uri, List<String>>{};
 
-  Future<void> connect(Uri uri) async {
+  void connect(Uri uri) {
     if (!_sockets.containsKey(uri)) {
       final socket = WebSocket(uri);
       _sockets[uri] = socket;
-      _connectionStatus[uri.toString()] = true;
 
       // Setup listeners for this socket
-      socket.messages.listen((message) {
-        if (message is String) {
+      _subs.add(
+        socket.messages.listen((message) {
           _messagesController.add((uri.toString(), message));
-        }
-      });
+        }),
+      );
 
-      socket.connection.listen((state) {
-        if (state is Disconnected) {
-          _connectionStatus[uri.toString()] = false;
-        } else if (state is Connected) {
-          _connectionStatus[uri.toString()] = true;
-        }
-      });
+      _subs.add(
+        socket.connection.listen((state) {
+          switch (state) {
+            case Connected() || Reconnected():
+              while (_queue[uri]?.isNotEmpty ?? false) {
+                _sockets[uri]!.send(_queue[uri]!.removeAt(0));
+              }
+            case _:
+            // TODO: Reconnection logic, re-request events since connection dropped
+          }
+        }),
+      );
     }
-    return Future.value();
   }
 
   void send(String message) {
     // Send to all connected sockets
-    for (final entry in _sockets.entries) {
-      final uri = entry.key;
-      final socket = entry.value;
-      final url = uri.toString();
-
-      if (_connectionStatus[url] == true) {
-        socket.send(message);
+    for (final MapEntry(key: uri, value: client) in _sockets.entries) {
+      _queue[uri] ??= [];
+      switch (client.connection.state) {
+        case Connected() || Reconnected():
+          print(
+            '[${DateTime.now().toIso8601String()}] Sending req to $uri: $message',
+          );
+          client.send(message);
+        case _:
+          print('[${DateTime.now().toIso8601String()}] QUEUING req to $uri');
+          if (!_queue[uri]!.contains(message)) {
+            _queue[uri]!.add(message);
+          }
       }
     }
   }
 
   void close() {
-    // Close all sockets
     for (final socket in _sockets.values) {
-      socket.close();
+      socket.close(1000, 'CLOSE_NORMAL');
     }
     _sockets.clear();
-
-    // Set all connections to false
-    for (final url in _connectionStatus.keys) {
-      _connectionStatus[url] = false;
-    }
   }
 
   Stream<(String relayUrl, String message)> get messages =>
       _messagesController.stream;
 
-  bool get isConnected =>
-      _connectionStatus.values.any((connected) => connected);
+  // bool get isConnected => _sockets.values.any((s) => s.)
+  //     _connectionStatus.values.any((connected) => connected);
 }
 
 // Provider for NostrWebSocketClient

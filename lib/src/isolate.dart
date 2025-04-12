@@ -73,6 +73,7 @@ void isolateEntryPoint(List args) {
               useDefault: false,
             );
             final ids = _save(db!, events, relayUrls, config);
+
             if (publish) {
               // TODO: Implement publish to relays
               //   final completer = Completer<void>();
@@ -108,11 +109,8 @@ void isolateEntryPoint(List args) {
             db.execute(setUpSql);
             response = IsolateResponse(success: true);
 
-          case SendEventIsolateOperation(:final req, :final relayGroup):
-            final relayUrls = config.getRelays(
-              relayGroup: relayGroup,
-              useDefault: false,
-            );
+          case SendEventIsolateOperation(:final req):
+            final relayUrls = config.getRelays(relayGroup: req.on);
             pool.send(req, relayUrls: relayUrls);
             response = IsolateResponse(success: true);
 
@@ -335,9 +333,7 @@ final class SaveIsolateOperation extends IsolateOperation {
 
 final class SendEventIsolateOperation extends IsolateOperation {
   final RequestFilter req;
-  final String? relayGroup;
-
-  SendEventIsolateOperation({required this.req, this.relayGroup});
+  SendEventIsolateOperation({required this.req});
 }
 
 final class ClearIsolateOperation extends IsolateOperation {}

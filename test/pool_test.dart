@@ -48,9 +48,6 @@ void main() {
       // Send the request to the relays
       await webSocketPool.send(filter, relayUrls: relayUrls);
 
-      // Verify connection attempts to the relays
-      expect(mockClient.isConnected, true);
-
       // Verify a REQ message was sent containing our filter parameters
       for (final url in relayUrls) {
         final messages = mockClient.getSentMessages(url);

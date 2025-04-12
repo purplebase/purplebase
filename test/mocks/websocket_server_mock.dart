@@ -41,10 +41,6 @@ class MockWebSocketClient implements WebSocketClient {
     return _messagesController.stream;
   }
 
-  @override
-  bool get isConnected =>
-      _connectionStatus.values.any((connected) => connected);
-
   // Test helper methods
   void sendMessage(String url, String message) {
     if (!_connectionStatus.containsKey(url) || !_connectionStatus[url]!) {

@@ -149,10 +149,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<void> send(RequestFilter req, {String? relayGroup}) async {
-    final response = await _sendMessage(
-      SendEventIsolateOperation(req: req, relayGroup: relayGroup),
-    );
+  Future<void> send(RequestFilter req) async {
+    final response = await _sendMessage(SendEventIsolateOperation(req: req));
 
     if (!response.success) {
       throw IsolateException(response.error);
