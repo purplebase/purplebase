@@ -63,7 +63,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         _sendPort = message;
         _initCompleter.complete();
       } else {
-        state = StorageSignal(message as (Set<String>, ResponseMetadata));
+        state = (message as (Set<String>, ResponseMetadata));
       }
     });
 
@@ -98,7 +98,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     // Empty response metadata as these events do not come from a relay
     final responseMetadata = ResponseMetadata(relayUrls: {});
     final record = response.result as Set<String>;
-    state = StorageSignal((record, responseMetadata));
+    state = (record, responseMetadata);
   }
 
   @override
@@ -158,6 +158,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
+  Future<void> cancel(RequestFilter req) async {
+    // TODO: implement cancel
+  }
+
+  @override
   void dispose() {
     if (!_initialized || _isolate == null) return;
 
@@ -171,16 +176,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (mounted) {
       super.dispose();
     }
-
-    // Obliterate database
-    Directory.current.listSync().forEach((entity) {
-      if (entity is File &&
-          entity.path.startsWith(
-            path.join(Directory.current.path, config.databasePath),
-          )) {
-        entity.deleteSync();
-      }
-    });
   }
 
   Future<IsolateResponse> _sendMessage(IsolateOperation operation) async {

@@ -73,7 +73,7 @@ extension RequestFilterExt on RequestFilter {
     if (search != null && search!.isNotEmpty) {
       final searchParamName = nextParamName('search');
       whereClauses.add(
-        'id IN (SELECT id FROM events_fts WHERE search MATCH $searchParamName)',
+        'id IN (SELECT id FROM events_fts WHERE tags MATCH $searchParamName)',
       );
       params[searchParamName] = search!;
     }

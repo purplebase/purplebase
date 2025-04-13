@@ -1,10 +1,13 @@
 # purplebase
 
-A high level, strongly typed nostr client for Dart.
+A powerful local-first nostr client framework written in Dart.
 
-## Design goals
+Reference implementation of [models](https://github.com/purplebase/models).
 
- - Leverage the Dart language to provide maximum type safety and beautiful interfaces that make sense
- - Allow consuming nostr events using domain language and not NIP technicality
- - Allow access to lower level interfaces
- - Allow defining new classes in an intuitive way
+## TODO
+
+ - [ ] Cancel subs on disposing request notifier
+ - [ ] Latest req timestamp in database and use for subsequent requests (pool)
+ - [ ] Reconnect and rerequest unclosed subscriptions, use latest timestamp (pool)
+ - [ ] Publish to relays
+ - [ ] Outbox model
