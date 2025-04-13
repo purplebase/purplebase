@@ -32,8 +32,9 @@ Future<void> main() async {
     await storage.clear();
   });
 
-  tearDownAll(() {
+  tearDownAll(() async {
     storage.dispose();
+    storage.obliterateDatabase();
   });
 
   test('query by tag', () async {
@@ -379,10 +380,7 @@ Future<void> main() async {
     await storage.save({n1});
     await storage.save({n2}, relayGroup: 'test');
 
-    final r1 =
-        storage
-            .querySync(RequestFilter(relays: {'wss://test.com'}))
-            .cast<Note>();
+    final r1 = storage.querySync(RequestFilter(on: 'test')).cast<Note>();
     expect(r1.map((n) => n.content), contains('yes relay'));
   });
 

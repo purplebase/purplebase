@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:models/models.dart';
+import 'package:path/path.dart' as path;
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -54,5 +57,19 @@ extension ProviderContainerExt on ProviderContainer {
       read(provider.notifier),
       fireImmediately: fireImmediately,
     );
+  }
+}
+
+extension StorageExt on StorageNotifier {
+  void obliterateDatabase() {
+    // Obliterate database
+    Directory.current.listSync().forEach((entity) {
+      if (entity is File &&
+          entity.path.startsWith(
+            path.join(Directory.current.path, config.databasePath),
+          )) {
+        entity.deleteSync();
+      }
+    });
   }
 }
