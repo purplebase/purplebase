@@ -254,6 +254,7 @@ class WebSocketPool
           // print('setting state (streaming flush): $events');
           state = ([...events], r);
           _streamingBuffer[r]!.clear();
+          _streamingBufferTimers.remove(r);
         });
       } else {
         // Pre-EOSE - add to pre-EOSE batch
@@ -364,7 +365,7 @@ class WebSocketPool
     }
 
     // Close the client
-    // print('socket closing');
+    print('socket closing');
     _webSocketClient.close();
 
     // Clear maps
