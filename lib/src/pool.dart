@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:models/models.dart';
-import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:web_socket_client/web_socket_client.dart';
 
@@ -9,11 +8,10 @@ class WebSocketPool
     extends StateNotifier<(List<Map<String, dynamic>>, ResponseMetadata)?> {
   final Ref ref;
   final WebSocketClient _webSocketClient;
-  final PurplebaseStorageConfiguration config;
+  final StorageConfiguration config;
 
-  WebSocketPool(this.ref)
+  WebSocketPool(this.ref, this.config)
     : _webSocketClient = ref.read(webSocketClientProvider),
-      config = ref.read(purplebaseConfigurationProvider),
       super(null) {
     // Ensure we're listening to messages
     _initMessageListener();
@@ -442,18 +440,8 @@ class WebSocketClient {
 
   Stream<(String relayUrl, String message)> get messages =>
       _messagesController.stream;
-
-  // bool get isConnected => _sockets.values.any((s) => s.)
-  //     _connectionStatus.values.any((connected) => connected);
 }
 
-// Provider for NostrWebSocketClient
 final webSocketClientProvider = Provider<WebSocketClient>((ref) {
   return WebSocketClient();
 });
-
-// Provider for WebsocketPool
-final webSocketPoolProvider = StateNotifierProvider<
-  WebSocketPool,
-  (List<Map<String, dynamic>>, ResponseMetadata)?
->(WebSocketPool.new);

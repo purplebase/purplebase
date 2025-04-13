@@ -48,7 +48,7 @@ Future<void> main() async {
     ).signWith(signer);
     await storage.save({n1, n2});
 
-    final r1 = storage.querySync(
+    final r1 = await storage.query(
       RequestFilter(
         tags: {
           '#t': {'nostr', 'test'},
@@ -57,7 +57,7 @@ Future<void> main() async {
     );
     expect(r1, unorderedEquals([n2]));
 
-    final r1b = storage.querySync(
+    final r1b = await storage.query(
       RequestFilter(
         tags: {
           '#t': {'nostr'},
@@ -66,7 +66,7 @@ Future<void> main() async {
     );
     expect(r1b, unorderedEquals([n2]));
 
-    final r2 = storage.querySync(
+    final r2 = await storage.query(
       RequestFilter(
         tags: {
           'bar': {'baz'},
@@ -76,7 +76,7 @@ Future<void> main() async {
     // Empty as multiple-character tags are not indexed
     expect(r2, isEmpty);
 
-    final r3 = storage.querySync(RequestFilter(ids: {n1.id}));
+    final r3 = await storage.query(RequestFilter(ids: {n1.id}));
     expect(r3, [n1]);
   });
 
@@ -90,19 +90,21 @@ Future<void> main() async {
     await storage.save({n1, n2, n3});
 
     // Query for a single ID
-    final r1 = storage.querySync(RequestFilter(ids: {n1.id}));
+    final r1 = await storage.query(RequestFilter(ids: {n1.id}));
     expect(r1, [n1]);
 
     // Query for multiple IDs
-    final r2 = storage.querySync(RequestFilter(ids: {n1.id, n3.id}));
+    final r2 = await storage.query(RequestFilter(ids: {n1.id, n3.id}));
     expect(r2, unorderedEquals([n1, n3]));
 
     // Query for non-existent ID
-    final r3 = storage.querySync(RequestFilter(ids: {'nonexistent_id'}));
+    final r3 = await storage.query(RequestFilter(ids: {'nonexistent_id'}));
     expect(r3, isEmpty);
 
     // Query for mixed existing and non-existent IDs
-    final r4 = storage.querySync(RequestFilter(ids: {n2.id, 'nonexistent_id'}));
+    final r4 = await storage.query(
+      RequestFilter(ids: {n2.id, 'nonexistent_id'}),
+    );
     expect(r4, [n2]);
   });
 
@@ -120,7 +122,7 @@ Future<void> main() async {
 
     // final m1 = DateTime.now().millisecondsSinceEpoch;
     for (final i in List.generate(amount, (i) => i)) {
-      final r1 = storage.querySync(
+      final r1 = await storage.query(
         RequestFilter(
           tags: {
             '#t': {'test $i'},
@@ -148,19 +150,19 @@ Future<void> main() async {
     await storage.save({note, dm});
 
     // Query for kind 1 (standard note)
-    final r1 = storage.querySync(RequestFilter(kinds: {1}));
+    final r1 = await storage.query(RequestFilter(kinds: {1}));
     expect(r1, [note]);
 
     // Query for kind 4 (direct message)
-    final r2 = storage.querySync(RequestFilter(kinds: {4}));
+    final r2 = await storage.query(RequestFilter(kinds: {4}));
     expect(r2, [dm]);
 
     // Query for multiple kinds
-    final r3 = storage.querySync(RequestFilter(kinds: {1, 4}));
+    final r3 = await storage.query(RequestFilter(kinds: {1, 4}));
     expect(r3, unorderedEquals([note, dm]));
 
     // Query for non-existent kind
-    final r4 = storage.querySync(RequestFilter(kinds: {999}));
+    final r4 = await storage.query(RequestFilter(kinds: {999}));
     expect(r4, isEmpty);
   });
 
@@ -186,21 +188,21 @@ Future<void> main() async {
     await storage.save({n1, n2, n3});
 
     // Query for default author
-    final r1 = storage.querySync(RequestFilter(authors: {pubkey!}));
+    final r1 = await storage.query(RequestFilter(authors: {pubkey!}));
     expect(r1, unorderedEquals([n1, n3]));
 
     // Query for custom author
-    final r2 = storage.querySync(RequestFilter(authors: {customPubkey}));
+    final r2 = await storage.query(RequestFilter(authors: {customPubkey}));
     expect(r2, [n2]);
 
     // Query for multiple authors
-    final r3 = storage.querySync(
+    final r3 = await storage.query(
       RequestFilter(authors: {pubkey, customPubkey}),
     );
     expect(r3, unorderedEquals([n1, n2, n3]));
 
     // Query for non-existent author
-    final r4 = storage.querySync(
+    final r4 = await storage.query(
       RequestFilter(authors: {'nonexistent_author'}),
     );
     expect(r4, isEmpty);
@@ -229,29 +231,29 @@ Future<void> main() async {
     // Save all notes to storage
     await storage.save({n1, n2, n3});
 
-    final r1 = storage.querySync(
+    final r1 = await storage.query(
       RequestFilter(since: now.subtract(Duration(days: 3))),
     );
     expect(r1, [n2, n3]);
 
     // Query notes until yesterday (should include n1 and n3)
-    final r2 = storage.querySync(RequestFilter(until: yesterday));
+    final r2 = await storage.query(RequestFilter(until: yesterday));
     expect(r2, unorderedEquals([n1, n3]));
 
     // Query notes within a time range (should include only n3)
-    final r3 = storage.querySync(
+    final r3 = await storage.query(
       RequestFilter(since: lastWeek.add(Duration(days: 1)), until: yesterday),
     );
     expect(r3, [n3]);
 
     // Query with a future since date (should be empty)
-    final r4 = storage.querySync(
+    final r4 = await storage.query(
       RequestFilter(since: now.add(Duration(days: 1))),
     );
     expect(r4, isEmpty);
 
     // Query with a past until date (should be empty)
-    final r5 = storage.querySync(
+    final r5 = await storage.query(
       RequestFilter(until: lastWeek.subtract(Duration(days: 1))),
     );
     expect(r5, isEmpty);
@@ -313,7 +315,7 @@ Future<void> main() async {
     await storage.save({n1, n2, n3, n4, dm});
 
     // Run the comprehensive query with 'announcement' tag
-    final announcementResults = storage.querySync(
+    final announcementResults = await storage.query(
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
@@ -330,7 +332,7 @@ Future<void> main() async {
     expect(announcementResults, unorderedEquals([n1, n4]));
 
     // Run a second comprehensive query with 'question' tag
-    final questionResults = storage.querySync(
+    final questionResults = await storage.query(
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
@@ -347,7 +349,7 @@ Future<void> main() async {
     expect(questionResults, [n2]);
 
     // Full comprehensive query that should return multiple notes
-    final comprehensiveResults = storage.querySync(
+    final comprehensiveResults = await storage.query(
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
@@ -380,8 +382,8 @@ Future<void> main() async {
     await storage.save({n1});
     await storage.save({n2}, relayGroup: 'test');
 
-    final r1 = storage.querySync(RequestFilter(on: 'test')).cast<Note>();
-    expect(r1.map((n) => n.content), contains('yes relay'));
+    final r1 = await storage.query(RequestFilter(on: 'test'));
+    expect(r1.cast<Note>().map((n) => n.content), contains('yes relay'));
   });
 
   test('response metadata', () {

@@ -25,7 +25,7 @@ void isolateEntryPoint(List args) {
 
   // Initialize Riverpod in isolate
   final container = ProviderContainer();
-  final pool = WebSocketPool(container.read(refProvider));
+  final pool = WebSocketPool(container.read(refProvider), config);
 
   Database? db;
   try {

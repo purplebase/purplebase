@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:isolate';
 
 import 'package:models/models.dart';
-import 'package:path/path.dart' as path;
 import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/request.dart';
 import 'package:riverpod/riverpod.dart';
@@ -38,16 +36,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     if (_initialized) return;
 
-    final dirPath = path.join(Directory.current.path, config.databasePath);
-    // print('Opening database at $dirPath [main isolate]');
-    db = sqlite3.open(dirPath);
+    // final dirPath = path.join(Directory.current.path, config.databasePath);
+    // db = sqlite3.open(dirPath);
 
-    // Configure sqlite: 1 GB memory mapped
-    db.execute('''
-      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
-      PRAGMA page_size = 4096;
-      PRAGMA cache_size = -20000;
-      ''');
+    // // Configure sqlite: 1 GB memory mapped
+    // db.execute('''
+    //   PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+    //   PRAGMA page_size = 4096;
+    //   PRAGMA cache_size = -20000;
+    //   ''');
 
     // Initialize isolate
     if (_isolate != null) return _initCompleter.future;
@@ -110,26 +107,26 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
   }
 
-  @override
-  List<Event> querySync(RequestFilter req, {bool applyLimit = true}) {
-    Iterable<Map<String, dynamic>> events;
-    // Note: applyLimit parameter is not used here as the limit comes from req.limit
-    final relayUrls = config.getRelays(relayGroup: req.on, useDefault: false);
-    final (sql, params) = req.toSQL(relayUrls: relayUrls);
-    final statement = db.prepare(sql);
-    try {
-      final result = statement.selectWith(StatementParameters.named(params));
+  // @override
+  // List<Event> querySync(RequestFilter req, {bool applyLimit = true}) {
+  //   Iterable<Map<String, dynamic>> events;
+  //   // Note: applyLimit parameter is not used here as the limit comes from req.limit
+  //   final relayUrls = config.getRelays(relayGroup: req.on, useDefault: false);
+  //   final (sql, params) = req.toSQL(relayUrls: relayUrls);
+  //   final statement = db.prepare(sql);
+  //   try {
+  //     final result = statement.selectWith(StatementParameters.named(params));
 
-      events = result.decoded();
-    } finally {
-      statement.dispose();
-    }
+  //     events = result.decoded();
+  //   } finally {
+  //     statement.dispose();
+  //   }
 
-    return events
-        .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
-        .toList()
-        .cast();
-  }
+  //   return events
+  //       .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
+  //       .toList()
+  //       .cast();
+  // }
 
   @override
   Future<List<Event>> query(RequestFilter req, {bool applyLimit = true}) async {
@@ -204,33 +201,3 @@ extension on Iterable<Row> {
     ).toList();
   }
 }
-
-class PurplebaseStorageConfiguration extends StorageConfiguration {
-  final Duration idleTimeout;
-  final Duration streamingBufferWindow;
-
-  PurplebaseStorageConfiguration({
-    this.idleTimeout = const Duration(minutes: 5),
-    this.streamingBufferWindow = const Duration(seconds: 2),
-    required super.databasePath,
-    super.keepSignatures = false,
-    super.skipVerification = false,
-    required super.relayGroups,
-    required super.defaultRelayGroup,
-  });
-
-  @override
-  List<Object?> get props => [
-    idleTimeout,
-    streamingBufferWindow,
-    ...super.props,
-  ];
-}
-
-final purplebaseConfigurationProvider = Provider(
-  (_) => PurplebaseStorageConfiguration(
-    databasePath: '',
-    relayGroups: {},
-    defaultRelayGroup: '',
-  ),
-);
