@@ -37,16 +37,42 @@ void isolateEntryPoint(List args) {
     print('Error opening database: $e');
   }
 
+  final completers =
+      <
+        String,
+        (
+          Set<String>,
+          Set<String>,
+          List<Map<String, dynamic>>,
+          Completer<List<Map<String, dynamic>>>,
+        )
+      >{};
+
+  // TODO: Normalize relay URLs (parse with uri)
+
+  final eq = DeepCollectionEquality();
+
   closeFn = pool.addListener((args) {
-    if (args case (final events, final responseMetadata)) {
-      _save(db!, events, responseMetadata.relayUrls, config);
+    if (args case (final events, (final relayUrl, final subscriptionId))) {
+      _save(db!, events, {relayUrl}, config);
+      final record = completers[subscriptionId];
+      if (record != null && record.$1.contains(relayUrl)) {
+        record.$2.add(relayUrl);
+        // Remove id-only events
+        final fullEvents = events.where((e) => e['sig'] != null);
+        record.$3.addAll(fullEvents);
+        if (eq.equals(record.$1, record.$2)) {
+          record.$4.complete(record.$3);
+          completers.remove(subscriptionId);
+        }
+      }
 
       final ids = events.map((e) => e['id']).cast<String>().toSet();
-      mainSendPort.send((ids, responseMetadata));
+      mainSendPort.send(ids);
     }
   });
 
-  sub = receivePort.listen((message) {
+  sub = receivePort.listen((message) async {
     if (message case (
       final IsolateOperation operation,
       final SendPort replyPort,
@@ -109,10 +135,17 @@ void isolateEntryPoint(List args) {
             db.execute(setUpSql);
             response = IsolateResponse(success: true);
 
-          case SendEventIsolateOperation(:final req):
-            final relayUrls = config.getRelays(relayGroup: req.on);
+          case SendEventIsolateOperation(:final req, :final waitForResult):
+            final relayUrls = config.getRelays(relayGroup: req.relayGroup);
             pool.send(req, relayUrls: relayUrls);
-            response = IsolateResponse(success: true);
+            if (!waitForResult) {
+              response = IsolateResponse(success: true);
+            } else {
+              final completer = Completer<List<Map<String, dynamic>>>();
+              completers[req.subscriptionId] = (relayUrls, {}, [], completer);
+              final result = await completer.future;
+              response = IsolateResponse(success: true, result: result);
+            }
 
           case CloseIsolateOperation():
             // TODO: Check this closes correctly and is restartable
@@ -141,8 +174,6 @@ Set<String> _save(
   Set<String> relayUrls,
   StorageConfiguration config,
 ) {
-  final keepSig = config.keepSignatures;
-
   if (parameters.isEmpty) {
     return {};
   }
@@ -160,7 +191,7 @@ Set<String> _save(
 
   final sql = '''
     SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
-    INSERT OR REPLACE INTO events (id, content, created_at, pubkey, kind, tags, relays${keepSig ? ', sig' : ''}) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :relays${keepSig ? ', :sig' : ''});
+    INSERT OR REPLACE INTO events (id, content, created_at, pubkey, kind, tags, relays, sig) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :relays, :sig);
     UPDATE events SET relays = ? WHERE id = ? AND relays != ?;
   ''';
   final [existingPs, eventPs, relayUpdatePs] = db.prepareMultiple(sql);
@@ -186,10 +217,6 @@ Set<String> _save(
             },
           ':relays': sortedRelays,
         };
-
-        if (!keepSig) {
-          map.remove(':sig');
-        }
 
         eventPs.executeWith(StatementParameters.named(map));
         if (db.updatedRows > 0) {
@@ -333,7 +360,8 @@ final class SaveIsolateOperation extends IsolateOperation {
 
 final class SendEventIsolateOperation extends IsolateOperation {
   final RequestFilter req;
-  SendEventIsolateOperation({required this.req});
+  final bool waitForResult;
+  SendEventIsolateOperation({required this.req, this.waitForResult = false});
 }
 
 final class ClearIsolateOperation extends IsolateOperation {}

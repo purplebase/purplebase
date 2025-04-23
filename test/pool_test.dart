@@ -129,31 +129,17 @@ void main() {
       mockClient.sendEose(relay2Url, filter.subscriptionId);
 
       await tester.expect(
-        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+        isA<(List<Map<String, dynamic>>, (String, String))>()
             .having((s) => s.$1, 'models', hasLength(2))
-            .having(
-              (s) => s.$2,
-              'metadata',
-              ResponseMetadata(
-                subscriptionId: filter.subscriptionId,
-                relayUrls: {'wss://relay.com'},
-              ),
-            ),
+            .having((s) => s.$2.$1, 'relay', 'wss://relay.com'),
       );
 
       await tester.expect(
-        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+        isA<(List<Map<String, dynamic>>, (String, String))>()
             .having((s) => s.$1, 'models', [
               {'id': '1234'},
             ])
-            .having(
-              (s) => s.$2,
-              'metadata',
-              ResponseMetadata(
-                subscriptionId: filter.subscriptionId,
-                relayUrls: {'wss://relay2.com'},
-              ),
-            ),
+            .having((s) => s.$2.$1, 'relay', 'wss://relay2.com'),
       );
     });
 
@@ -195,7 +181,7 @@ void main() {
       mockClient.sendEose(relayUrl, filter.subscriptionId);
 
       await tester.expect(
-        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+        isA<(List<Map<String, dynamic>>, (String, String))>()
             .having((s) => s.$1, 'models', hasLength(2))
             .having(
               (s) => s.$1.any((e) => e['id'] == 'pre-eose1'),
@@ -254,7 +240,7 @@ void main() {
       mockClient.sendEvent(relayUrl, filter.subscriptionId, streamEvent2);
 
       await tester.expect(
-        isA<(List<Map<String, dynamic>>, ResponseMetadata)>()
+        isA<(List<Map<String, dynamic>>, (String, String))>()
             .having(
               (s) => s.$1.any((e) => e['id'] == 'stream1'),
               'any stream1',
@@ -343,12 +329,8 @@ void main() {
 
       // Verify state has filter1's event
       await tester.expect(
-        isA<(List<Map>, ResponseMetadata)>()
-            .having(
-              (s) => s.$2.subscriptionId,
-              'metadata',
-              filter1.subscriptionId,
-            )
+        isA<(List<Map>, (String, String))>()
+            .having((s) => s.$2.$1, 'relay', 'wss://relay2.com')
             .having(
               (s) => s.$1.any((e) => e['id'] == 'event1'),
               'models',
@@ -375,12 +357,8 @@ void main() {
 
       // Verify state now has filter2's event
       await tester.expect(
-        isA<(List<Map>, ResponseMetadata)>()
-            .having(
-              (s) => s.$2.subscriptionId,
-              'metadata',
-              filter2.subscriptionId,
-            )
+        isA<(List<Map>, (String, String))>()
+            .having((s) => s.$2.$1, 'relay', 'wss://relay2.com')
             .having(
               (s) => s.$1.any((e) => e['id'] == 'event2'),
               'models',

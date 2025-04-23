@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 
+import 'package:collection/collection.dart';
 import 'package:models/models.dart';
+import 'package:path/path.dart' as path;
 import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/request.dart';
 import 'package:riverpod/riverpod.dart';
@@ -36,15 +39,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     if (_initialized) return;
 
-    // final dirPath = path.join(Directory.current.path, config.databasePath);
-    // db = sqlite3.open(dirPath);
+    final dirPath = path.join(Directory.current.path, config.databasePath);
+    db = sqlite3.open(dirPath);
 
-    // // Configure sqlite: 1 GB memory mapped
-    // db.execute('''
-    //   PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
-    //   PRAGMA page_size = 4096;
-    //   PRAGMA cache_size = -20000;
-    //   ''');
+    // Configure sqlite: 1 GB memory mapped
+    db.execute('''
+      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+      PRAGMA page_size = 4096;
+      PRAGMA cache_size = -20000;
+      ''');
 
     // Initialize isolate
     if (_isolate != null) return _initCompleter.future;
@@ -60,7 +63,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         _sendPort = message;
         _initCompleter.complete();
       } else {
-        state = (message as (Set<String>, ResponseMetadata));
+        state = message as Set<String>;
       }
     });
 
@@ -72,7 +75,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   /// (framework calls _save internally in isolate)
   @override
   Future<void> save(
-    Set<Event> events, {
+    Set<Model<dynamic>> events, {
     String? relayGroup,
     bool publish = true,
   }) async {
@@ -92,10 +95,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       throw IsolateException(response.error);
     }
 
-    // Empty response metadata as these events do not come from a relay
-    final responseMetadata = ResponseMetadata(relayUrls: {});
-    final record = response.result as Set<String>;
-    state = (record, responseMetadata);
+    state = response.result as Set<String>;
   }
 
   @override
@@ -107,51 +107,92 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
   }
 
-  // @override
-  // List<Event> querySync(RequestFilter req, {bool applyLimit = true}) {
-  //   Iterable<Map<String, dynamic>> events;
-  //   // Note: applyLimit parameter is not used here as the limit comes from req.limit
-  //   final relayUrls = config.getRelays(relayGroup: req.on, useDefault: false);
-  //   final (sql, params) = req.toSQL(relayUrls: relayUrls);
-  //   final statement = db.prepare(sql);
-  //   try {
-  //     final result = statement.selectWith(StatementParameters.named(params));
-
-  //     events = result.decoded();
-  //   } finally {
-  //     statement.dispose();
-  //   }
-
-  //   return events
-  //       .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
-  //       .toList()
-  //       .cast();
-  // }
-
   @override
-  Future<List<Event>> query(RequestFilter req, {bool applyLimit = true}) async {
-    final relayUrls = config.getRelays(relayGroup: req.on, useDefault: false);
-    final (sql, params) = req.toSQL(relayUrls: relayUrls);
-
-    final response = await _sendMessage(
-      QueryIsolateOperation(sql: sql, params: params),
+  List<E> querySync<E extends Model<dynamic>>(
+    RequestFilter<E> req, {
+    bool applyLimit = true,
+    Set<String>? onIds,
+  }) {
+    Iterable<Map<String, dynamic>> events;
+    // Note: applyLimit parameter is not used here as the limit comes from req.limit
+    final relayUrls = config.getRelays(
+      relayGroup: req.relayGroup,
+      useDefault: false,
     );
+    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
+    final statement = db.prepare(sql);
+    try {
+      final result = statement.selectWith(StatementParameters.named(params));
 
-    final events = (response.result as Iterable<Row>).decoded();
+      events = result.decoded();
+    } finally {
+      statement.dispose();
+    }
 
     return events
-        .map((e) => Event.getConstructorForKind(e['kind'])!.call(e, ref))
+        .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
         .toList()
         .cast();
   }
 
   @override
-  Future<void> send(RequestFilter req) async {
-    final response = await _sendMessage(SendEventIsolateOperation(req: req));
+  Future<List<E>> query<E extends Model<dynamic>>(
+    RequestFilter<E> req, {
+    bool applyLimit = true,
+    Set<String>? onIds,
+  }) async {
+    // TODO: if req.storageOnly = false then must query relays and wait for response
+
+    // If by any chance req is in cache, return that
+    final cachedEvents =
+        requestCache.values.firstWhereOrNull((m) => m.containsKey(req))?[req];
+    if (cachedEvents != null) {
+      return cachedEvents.cast();
+    }
+
+    // TODO: Should query for replaceable too
+    // final replaceableIds = req.ids.where(kReplaceableRegexp.hasMatch);
+    // final regularIds = {...req.ids}..removeAll(replaceableIds);
+
+    // TODO: Test this relay requesting logic
+    final relayUrls = config.getRelays(
+      relayGroup: req.relayGroup,
+      useDefault: false,
+    );
+    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
+
+    final savedEvents = await _sendMessage(
+      QueryIsolateOperation(sql: sql, params: params),
+    ).then(
+      (r) => (r.result as Iterable<Row>).decoded().map((e) {
+        return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
+      }),
+    );
+    // TODO: Explain why queryLimit=null
+    final fetchedEvents = await fetch<E>(req.copyWith(queryLimit: null));
+
+    return [...savedEvents, ...fetchedEvents].cast();
+  }
+
+  @override
+  Future<Set<E>> fetch<E extends Model<dynamic>>(RequestFilter<E> req) async {
+    if (!req.remote) {
+      return {};
+    }
+
+    final response = await _sendMessage(
+      SendEventIsolateOperation(req: req, waitForResult: true),
+    );
 
     if (!response.success) {
       throw IsolateException(response.error);
     }
+
+    final events = response.result as List<Map<String, dynamic>>;
+    return events
+        .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
+        .cast<E>()
+        .toSet();
   }
 
   @override

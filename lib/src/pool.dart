@@ -5,7 +5,7 @@ import 'package:riverpod/riverpod.dart';
 import 'package:web_socket_client/web_socket_client.dart';
 
 class WebSocketPool
-    extends StateNotifier<(List<Map<String, dynamic>>, ResponseMetadata)?> {
+    extends StateNotifier<(List<Map<String, dynamic>>, (String, String))?> {
   final Ref ref;
   final WebSocketClient _webSocketClient;
   final StorageConfiguration config;
@@ -20,17 +20,17 @@ class WebSocketPool
   // Map of relay URLs to their idle timers
   final Map<String, Timer> _idleTimers = {};
 
-  /// Map to track batched events before EOSE per subscription and relay (uses [ResponseMetadata])
-  final Map<ResponseMetadata, List<Map<String, dynamic>>> _preEoseBatches = {};
+  /// Map to track batched events before EOSE per subscription and relay
+  final Map<(String, String), List<Map<String, dynamic>>> _preEoseBatches = {};
 
   // Buffer for post-EOSE streaming events
-  final Map<ResponseMetadata, List<Map<String, dynamic>>> _streamingBuffer = {};
+  final Map<(String, String), List<Map<String, dynamic>>> _streamingBuffer = {};
 
   // Timers for flushing the streaming buffer
-  final Map<ResponseMetadata, Timer> _streamingBufferTimers = {};
+  final Map<(String, String), Timer> _streamingBufferTimers = {};
 
   // Subscription tracking which relays have sent EOSE
-  final List<ResponseMetadata> _eoseReceivedFrom = [];
+  final List<(String, String)> _eoseReceivedFrom = [];
 
   final List<String> _seenEventIds = [];
 
@@ -51,7 +51,7 @@ class WebSocketPool
 
   // Initialize the message listener
   void _initMessageListener() {
-    // print('socket listening');
+    print('socket listening');
     _messagesSubscription ??= _webSocketClient.messages.listen(_handleMessage);
   }
 
@@ -71,10 +71,7 @@ class WebSocketPool
 
       await _ensureConnected(url);
 
-      final r = ResponseMetadata(
-        subscriptionId: req.subscriptionId,
-        relayUrls: {url},
-      );
+      final r = (req.subscriptionId, url);
       _preEoseBatches[r] = [];
       _streamingBuffer[r] = [];
 
@@ -173,7 +170,7 @@ class WebSocketPool
 
       // If no more connected relays, we can close the client
       if (_connectedRelays.isEmpty) {
-        // print('socket closing');
+        print('socket closing');
         _webSocketClient.close();
       }
 
@@ -226,10 +223,7 @@ class WebSocketPool
 
       final eventId = event['id'].toString();
 
-      final r = ResponseMetadata(
-        subscriptionId: subscriptionId,
-        relayUrls: {relayUrl},
-      );
+      final r = (subscriptionId, relayUrl);
 
       // Update the latest timestamp for this (filter, relay) combination if newer
       _updateLatestTimestamp(subscriptionId, relayUrl, event);
@@ -249,8 +243,8 @@ class WebSocketPool
         // Start the streaming timer if not already running
         _streamingBufferTimers[r] ??= Timer(config.streamingBufferWindow, () {
           final events = _streamingBuffer[r]!;
-          // print('setting state (streaming flush): $events');
-          state = ([...events], r);
+          print('setting state (streaming flush): $events');
+          state = ([...events], (relayUrl, subscriptionId));
           _streamingBuffer[r]!.clear();
           _streamingBufferTimers.remove(r);
         });
@@ -308,23 +302,20 @@ class WebSocketPool
   }
 
   // Handle EOSE messages
-  void _handleEoseMessage(List<dynamic> parsed, String relayUrl) {
+  void _handleEoseMessage(List parsed, String relayUrl) {
     if (parsed case [
       _,
-      final subscriptionId,
+      final String subscriptionId,
     ] when _subscriptionExists(subscriptionId)) {
       // Mark that we've received EOSE for this subscription from this relay
-      final r = ResponseMetadata(
-        subscriptionId: subscriptionId,
-        relayUrls: {relayUrl},
-      );
+      final r = (subscriptionId, relayUrl);
       _eoseReceivedFrom.add(r);
 
       // Emit pre-EOSE batch for this relay
       if (_preEoseBatches[r] != null && _preEoseBatches[r]!.isNotEmpty) {
         final events = _preEoseBatches[r]!;
-        // print('sending state (pre eose): $events - $r');
-        state = ([...events], r);
+        print('sending state (pre eose): $events - $r');
+        state = ([...events], (relayUrl, subscriptionId));
         _preEoseBatches[r]!.clear();
       }
     }
@@ -336,16 +327,14 @@ class WebSocketPool
       final closeMsg = jsonEncode(['CLOSE', subscriptionId]);
 
       // Send CLOSE message
-      // print('socket sending close $closeMsg');
+      print('socket sending close $closeMsg');
       _webSocketClient.send(closeMsg);
 
       // Clean up subscription data
       _subscriptions.remove(subscriptionId);
-      _preEoseBatches.removeWhere((r, _) => r.subscriptionId == subscriptionId);
-      _streamingBuffer.removeWhere(
-        (r, _) => r.subscriptionId == subscriptionId,
-      );
-      _eoseReceivedFrom.removeWhere((r) => r.subscriptionId == subscriptionId);
+      _preEoseBatches.removeWhere((r, _) => r.$1 == subscriptionId);
+      _streamingBuffer.removeWhere((r, _) => r.$1 == subscriptionId);
+      _eoseReceivedFrom.removeWhere((r) => r.$1 == subscriptionId);
     }
   }
 

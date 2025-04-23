@@ -1,5 +1,6 @@
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
+import 'package:purplebase/src/isolate.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -8,7 +9,7 @@ import 'helpers.dart';
 Future<void> main() async {
   late ProviderContainer container;
   late StorageNotifier storage;
-  final signer = DummySigner();
+  late final DummySigner signer;
 
   setUpAll(() async {
     container = ProviderContainer(
@@ -26,6 +27,7 @@ Future<void> main() async {
     );
     await container.read(initializationProvider(config).future);
     storage = container.read(storageNotifierProvider.notifier);
+    signer = DummySigner(container.read(refProvider));
   });
 
   tearDown(() async {
@@ -39,7 +41,7 @@ Future<void> main() async {
 
   test('query by tag', () async {
     final pn1 = PartialNote('yo');
-    pn1.internal.addTagValue('bar', 'baz');
+    pn1.event.addTagValue('bar', 'baz');
     final n1 = await pn1.signWith(signer);
 
     final n2 = await PartialNote(
@@ -129,7 +131,7 @@ Future<void> main() async {
           },
         ),
       );
-      expect(r1.map((e) => e.internal.content), contains('note $i'));
+      expect(r1.map((e) => e.event.content), contains('note $i'));
     }
     // final m2 = DateTime.now().millisecondsSinceEpoch;
     // print(m2 - m1);
@@ -371,9 +373,10 @@ Future<void> main() async {
   test('send', () async {
     final n1 = await PartialNote('yo').signWith(signer);
     await storage.save({n1});
-    await storage.send(
-      RequestFilter(kinds: {1}, ids: {'b', 'a', n1.id}, storageOnly: true),
+    final events = await storage.fetch(
+      RequestFilter(kinds: {1}, ids: {'b', 'a', n1.id}),
     );
+    expect(events, hasLength(0));
   });
 
   test('query by relay', () async {
@@ -382,19 +385,13 @@ Future<void> main() async {
     await storage.save({n1});
     await storage.save({n2}, relayGroup: 'test');
 
-    final r1 = await storage.query(RequestFilter(on: 'test'));
+    final r1 = await storage.query(RequestFilter(relayGroup: 'test'));
     expect(r1.cast<Note>().map((n) => n.content), contains('yes relay'));
-  });
-
-  test('response metadata', () {
-    final r1 = ResponseMetadata(subscriptionId: 'a', relayUrls: {'wss://test'});
-    final r2 = ResponseMetadata(subscriptionId: 'a', relayUrls: {'wss://test'});
-    expect(r1, equals(r2));
   });
 
   group('request notifier', () {
     test('relay request should notify with events', () async {
-      final tester = container.testerFor(query(kinds: {1}));
+      final tester = container.testerFor(query<Note>());
       final n1 = await PartialNote('yo').signWith(signer);
       await storage.save({n1});
 
