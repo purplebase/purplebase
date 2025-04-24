@@ -181,7 +181,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
 
     final response = await _sendMessage(
-      SendEventIsolateOperation(req: req, waitForResult: true),
+      SendRequestIsolateOperation(req: req, waitForResult: true),
     );
 
     if (!response.success) {
@@ -197,7 +197,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<void> cancel(RequestFilter req) async {
-    // TODO: implement cancel
+    if (!req.remote) return;
+
+    final response = await _sendMessage(CancelIsolateOperation(req: req));
+
+    if (!response.success) {
+      throw IsolateException(response.error);
+    }
   }
 
   @override

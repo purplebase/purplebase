@@ -37,6 +37,8 @@ void isolateEntryPoint(List args) {
     print('Error opening database: $e');
   }
 
+  // TODO: Normalize relay URLs (parse with uri)
+  // TODO: Tidy up completer logic, add timeout
   final completers =
       <
         String,
@@ -48,13 +50,12 @@ void isolateEntryPoint(List args) {
         )
       >{};
 
-  // TODO: Normalize relay URLs (parse with uri)
-
   final eq = DeepCollectionEquality();
 
   closeFn = pool.addListener((args) {
     if (args case (final events, (final relayUrl, final subscriptionId))) {
       _save(db!, events, {relayUrl}, config);
+
       final record = completers[subscriptionId];
       if (record != null && record.$1.contains(relayUrl)) {
         record.$2.add(relayUrl);
@@ -101,41 +102,11 @@ void isolateEntryPoint(List args) {
             final ids = _save(db!, events, relayUrls, config);
 
             if (publish) {
-              // TODO: Implement publish to relays
-              //   final completer = Completer<void>();
-
-              //   pool!.send(jsonEncode(["EVENT", event.toMap()]));
-
-              //   _closeFns[event.event.id.toString()] = addListener((message) {
-              //     if (message.subscriptionId != null &&
-              //         event.event.id.toString() != message.subscriptionId) {
-              //       return;
-              //     }
-
-              //     if (message is PublishedEventRelayMessage) {
-              //       if (message.accepted) {
-              //         if (!completer.isCompleted) {
-              //           completer.complete();
-              //         }
-              //       } else {
-              //         if (!completer.isCompleted) {
-              //           final error = message.message ?? 'Not accepted';
-              //           completer.completeError(Exception(error));
-              //         }
-              //       }
-              //     }
-              //   });
-              //   return completer.future;
+              await pool.publish(events, relayUrls: relayUrls);
             }
             response = IsolateResponse(success: true, result: ids);
 
-          case ClearIsolateOperation():
-            // Drop all tables and set up again, deleting tables was problematic
-            db!.execute(tearDownSql);
-            db.execute(setUpSql);
-            response = IsolateResponse(success: true);
-
-          case SendEventIsolateOperation(:final req, :final waitForResult):
+          case SendRequestIsolateOperation(:final req, :final waitForResult):
             final relayUrls = config.getRelays(relayGroup: req.relayGroup);
             pool.send(req, relayUrls: relayUrls);
             if (!waitForResult) {
@@ -146,6 +117,16 @@ void isolateEntryPoint(List args) {
               final result = await completer.future;
               response = IsolateResponse(success: true, result: result);
             }
+
+          case CancelIsolateOperation(:final req):
+            pool.unsubscribe(req.subscriptionId);
+            response = IsolateResponse(success: true);
+
+          case ClearIsolateOperation():
+            // Drop all tables and set up again, deleting tables was problematic
+            db!.execute(tearDownSql);
+            db.execute(setUpSql);
+            response = IsolateResponse(success: true);
 
           case CloseIsolateOperation():
             // TODO: Check this closes correctly and is restartable
@@ -358,10 +339,15 @@ final class SaveIsolateOperation extends IsolateOperation {
   });
 }
 
-final class SendEventIsolateOperation extends IsolateOperation {
+final class SendRequestIsolateOperation extends IsolateOperation {
   final RequestFilter req;
   final bool waitForResult;
-  SendEventIsolateOperation({required this.req, this.waitForResult = false});
+  SendRequestIsolateOperation({required this.req, this.waitForResult = false});
+}
+
+final class CancelIsolateOperation extends IsolateOperation {
+  final RequestFilter req;
+  CancelIsolateOperation({required this.req});
 }
 
 final class ClearIsolateOperation extends IsolateOperation {}

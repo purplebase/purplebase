@@ -18,7 +18,7 @@ class MockWebSocketClient implements WebSocketClient {
   }
 
   @override
-  void send(String message) {
+  void send(String message, {Set<String>? relayUrls}) {
     // Record sent messages for verification in tests
     for (final url in _connectionStatus.keys) {
       if (_connectionStatus[url]!) {

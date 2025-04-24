@@ -76,12 +76,27 @@ class WebSocketPool
       _streamingBuffer[r] = [];
 
       // Create and send the REQ message with the optimized filter
-      final reqMsg = _createReqMessage(optimizedReq);
+      final reqMsg = jsonEncode([
+        'REQ',
+        optimizedReq.subscriptionId,
+        optimizedReq.toMap(),
+      ]);
       print('socket sending $reqMsg');
       _webSocketClient.send(reqMsg);
 
       // Reset the idle timer
       _resetIdleTimer(url);
+    }
+  }
+
+  // Publish an event to relays
+  // TODO: Should check if it was accepted or not
+  Future<void> publish(
+    List<Map<String, dynamic>> events, {
+    Set<String>? relayUrls,
+  }) async {
+    for (final event in events) {
+      _webSocketClient.send(jsonEncode(["EVENT", event]), relayUrls: relayUrls);
     }
   }
 
@@ -142,16 +157,11 @@ class WebSocketPool
     return filter;
   }
 
-  // Create a Nostr REQ message
-  String _createReqMessage(RequestFilter filter) {
-    return jsonEncode(['REQ', filter.subscriptionId, filter.toMap()]);
-  }
-
   // TODO: Its not ensure, it just connects and queues
   Future<void> _ensureConnected(String url) async {
     if (!_connectedRelays.contains(url)) {
       final uri = Uri.parse(url);
-      print('socket connecting $url');
+      // print('socket connecting $url');
       _webSocketClient.connect(uri);
       _connectedRelays.add(url);
     }
@@ -170,7 +180,7 @@ class WebSocketPool
 
       // If no more connected relays, we can close the client
       if (_connectedRelays.isEmpty) {
-        print('socket closing');
+        // print('socket closing');
         _webSocketClient.close();
       }
 
@@ -181,7 +191,7 @@ class WebSocketPool
   // Handle incoming messages with relay URL
   void _handleMessage(data) {
     if (data case (final String relayUrl, final message)) {
-      print('received from $relayUrl');
+      // print('received from $relayUrl');
       try {
         final parsed = jsonDecode(message) as List;
         if (parsed.isEmpty) return;
@@ -243,7 +253,7 @@ class WebSocketPool
         // Start the streaming timer if not already running
         _streamingBufferTimers[r] ??= Timer(config.streamingBufferWindow, () {
           final events = _streamingBuffer[r]!;
-          print('setting state (streaming flush): $events');
+          // print('setting state (streaming flush): $events');
           state = ([...events], (relayUrl, subscriptionId));
           _streamingBuffer[r]!.clear();
           _streamingBufferTimers.remove(r);
@@ -272,19 +282,7 @@ class WebSocketPool
     String relayUrl,
     Map<String, dynamic> event,
   ) {
-    // TODO: This in sqlite
-    // final req = RequestFilter();
-    // // For non-time-windowed requests, save timestamp
-    // if (req.since == null &&
-    //     req.until == null &&
-    //     map['created_at'] is int) {
-    //   final r = '${req.hash}:$relayUrl';
-    //   db.execute(
-    //     'INSERT OR REPLACE INTO requests (request, until) VALUES (?, ?)',
-    //     [r, map['created_at']],
-    //   );
-    //   print('q with $r ${map['created_at']}');
-    // }
+    // TODO: Implement properly
 
     // Check if the event has a created_at timestamp
     if (event.containsKey('created_at')) {
@@ -314,7 +312,7 @@ class WebSocketPool
       // Emit pre-EOSE batch for this relay
       if (_preEoseBatches[r] != null && _preEoseBatches[r]!.isNotEmpty) {
         final events = _preEoseBatches[r]!;
-        print('sending state (pre eose): $events - $r');
+        // print('sending state (pre eose): $events - $r');
         state = ([...events], (relayUrl, subscriptionId));
         _preEoseBatches[r]!.clear();
       }
@@ -401,9 +399,13 @@ class WebSocketClient {
     }
   }
 
-  void send(String message) {
+  void send(String message, {Set<String>? relayUrls}) {
     // Send to all connected sockets
     for (final MapEntry(key: uri, value: client) in _sockets.entries) {
+      if (relayUrls != null && !relayUrls.contains(uri.toString())) {
+        // If relayUrls specified but this relay not there, skip
+        continue;
+      }
       _queue[uri] ??= [];
       switch (client.connection.state) {
         case Connected() || Reconnected():
