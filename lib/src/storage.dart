@@ -163,11 +163,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final savedEvents = await _sendMessage(
       QueryIsolateOperation(sql: sql, params: params),
-    ).then(
-      (r) => (r.result as Iterable<Row>).decoded().map((e) {
+    ).then((r) {
+      return (r.result as Iterable<Row>).decoded().map((e) {
         return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
-      }),
-    );
+      });
+    });
     // TODO: Explain why queryLimit=null
     final fetchedEvents = await fetch<E>(req.copyWith(queryLimit: null));
 
@@ -175,9 +175,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<Set<E>> fetch<E extends Model<dynamic>>(RequestFilter<E> req) async {
-    if (!req.remote) {
-      return {};
+  Future<List<E>> fetch<E extends Model<dynamic>>(RequestFilter<E> req) async {
+    if (req.remote == false) {
+      return [];
     }
 
     final response = await _sendMessage(
@@ -192,7 +192,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     return events
         .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
         .cast<E>()
-        .toSet();
+        .toList();
   }
 
   @override

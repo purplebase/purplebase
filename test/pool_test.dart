@@ -1,6 +1,7 @@
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
+import 'package:purplebase/src/websocket_client.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 import 'dart:convert';
@@ -10,7 +11,7 @@ import 'mocks/websocket_server_mock.dart';
 void main() {
   late ProviderContainer container;
   late MockWebSocketClient mockClient;
-  late WebSocketPool webSocketPool;
+  late WebSocketPool pool;
 
   setUp(() {
     mockClient = MockWebSocketClient();
@@ -26,11 +27,18 @@ void main() {
       streamingBufferWindow: Duration.zero,
     );
 
-    webSocketPool = WebSocketPool(container.read(refProvider), config);
+    pool = WebSocketPool(container.read(refProvider), config);
   });
 
   tearDown(() {
     container.dispose();
+  });
+
+  group('integration', () {
+    test('publish', () async {
+      final comment = PartialComment(content: 'yo').dummySign();
+      await pool.publish([comment.toMap()], relayUrls: {'wss://relay1.com'});
+    });
   });
 
   group('Connection Management Tests', () {
@@ -45,7 +53,7 @@ void main() {
       );
 
       // Send the request to the relays
-      await webSocketPool.send(filter, relayUrls: relayUrls);
+      await pool.send(filter, relayUrls: relayUrls);
 
       // Verify a REQ message was sent containing our filter parameters
       for (final url in relayUrls) {
@@ -66,13 +74,13 @@ void main() {
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await webSocketPool.send(filter, relayUrls: {relayUrl});
+      await pool.send(filter, relayUrls: {relayUrl});
 
       // Clear sent messages to start fresh
       mockClient.getSentMessages(relayUrl).clear();
 
       // Unsubscribe from the subscription
-      webSocketPool.unsubscribe(filter.subscriptionId);
+      pool.unsubscribe(filter.subscriptionId);
 
       // Verify a CLOSE message was sent
       final messages = mockClient.getSentMessages(relayUrl);
@@ -87,14 +95,14 @@ void main() {
 
   group('Event Handling Tests', () {
     test('properly handles and deduplicates events', () async {
-      final tester = StateNotifierTester(webSocketPool);
+      final tester = StateNotifierTester(pool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final relay2Url = 'wss://relay2.com';
       final filter = RequestFilter(kinds: {1});
 
-      await webSocketPool.send(filter, relayUrls: {relayUrl, relay2Url});
+      await pool.send(filter, relayUrls: {relayUrl, relay2Url});
 
       // Create test events
       final event1 = {
@@ -144,13 +152,13 @@ void main() {
     });
 
     test('handles events pre-EOSE with buffering', () async {
-      final tester = StateNotifierTester(webSocketPool);
+      final tester = StateNotifierTester(pool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await webSocketPool.send(filter, relayUrls: {relayUrl});
+      await pool.send(filter, relayUrls: {relayUrl});
 
       // Create test events to be received before EOSE
       final event1 = {
@@ -197,13 +205,13 @@ void main() {
     });
 
     test('handles streaming events after EOSE with buffering', () async {
-      final tester = StateNotifierTester(webSocketPool);
+      final tester = StateNotifierTester(pool);
 
       // Create and send a filter to a relay
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await webSocketPool.send(filter, relayUrls: {relayUrl});
+      await pool.send(filter, relayUrls: {relayUrl});
 
       // Send EOSE first to transition to streaming mode
       mockClient.sendEose(relayUrl, filter.subscriptionId);
@@ -261,7 +269,7 @@ void main() {
       final relayUrl = 'wss://relay.com';
       final filter = RequestFilter(kinds: {1});
 
-      await webSocketPool.send(filter, relayUrls: {relayUrl});
+      await pool.send(filter, relayUrls: {relayUrl});
 
       // Create an event with a timestamp
       final event = {
@@ -285,7 +293,7 @@ void main() {
       mockClient.getSentMessages(relayUrl).clear();
 
       // Send another request with the same filter
-      await webSocketPool.send(filter, relayUrls: {relayUrl});
+      await pool.send(filter, relayUrls: {relayUrl});
 
       // Verify the optimized request includes the since parameter
       final messages = mockClient.getSentMessages(relayUrl);
@@ -303,7 +311,7 @@ void main() {
 
   group('Multiple Subscriptions Tests', () {
     test('handles multiple concurrent subscriptions', () async {
-      final tester = StateNotifierTester(webSocketPool);
+      final tester = StateNotifierTester(pool);
 
       // Create two different filters
       final relayUrl = 'wss://relay.com';
@@ -311,7 +319,7 @@ void main() {
       final filter2 = RequestFilter(kinds: {4}, limit: 10);
 
       // Send both filters
-      await webSocketPool.send(filter1, relayUrls: {relayUrl});
+      await pool.send(filter1, relayUrls: {relayUrl});
 
       // Create and send an event for filter1
       final event1 = {
@@ -330,7 +338,7 @@ void main() {
       // Verify state has filter1's event
       await tester.expect(
         isA<(List<Map>, (String, String))>()
-            .having((s) => s.$2.$1, 'relay', 'wss://relay2.com')
+            .having((s) => s.$2.$1, 'relay', 'wss://relay.com')
             .having(
               (s) => s.$1.any((e) => e['id'] == 'event1'),
               'models',
@@ -339,7 +347,7 @@ void main() {
       );
 
       // Now send filter2
-      await webSocketPool.send(filter2, relayUrls: {relayUrl});
+      await pool.send(filter2, relayUrls: {relayUrl});
 
       // Create and send an event for filter2
       final event2 = {
@@ -358,7 +366,7 @@ void main() {
       // Verify state now has filter2's event
       await tester.expect(
         isA<(List<Map>, (String, String))>()
-            .having((s) => s.$2.$1, 'relay', 'wss://relay2.com')
+            .having((s) => s.$2.$1, 'relay', 'wss://relay.com')
             .having(
               (s) => s.$1.any((e) => e['id'] == 'event2'),
               'models',

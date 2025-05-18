@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:purplebase/purplebase.dart';
+import 'package:purplebase/src/websocket_client.dart';
 
 class MockWebSocketClient implements WebSocketClient {
   final StreamController<(String relayUrl, String message)>
@@ -10,15 +10,15 @@ class MockWebSocketClient implements WebSocketClient {
   final Map<String, List<String>> _sentMessages = {};
 
   @override
-  Future<void> connect(Uri uri) async {
+  Future<bool> connect(Uri uri) async {
     final url = uri.toString();
     _connectionStatus[url] = true;
     _sentMessages[url] = [];
-    return Future.value();
+    return Future.value(true);
   }
 
   @override
-  void send(String message, {Set<String>? relayUrls}) {
+  Future<void> send(String message, {Set<String>? relayUrls}) async {
     // Record sent messages for verification in tests
     for (final url in _connectionStatus.keys) {
       if (_connectionStatus[url]!) {

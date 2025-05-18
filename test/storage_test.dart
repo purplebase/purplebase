@@ -190,7 +190,7 @@ Future<void> main() async {
     await storage.save({n1, n2, n3});
 
     // Query for default author
-    final r1 = await storage.query(RequestFilter(authors: {pubkey!}));
+    final r1 = await storage.query(RequestFilter(authors: {pubkey}));
     expect(r1, unorderedEquals([n1, n3]));
 
     // Query for custom author
@@ -321,7 +321,7 @@ Future<void> main() async {
       RequestFilter(
         ids: {n1.id, n2.id, n4.id}, // Include n1, n2, n4 by ID
         kinds: {1}, // Only standard notes
-        authors: {pubkey!}, // Only default author
+        authors: {pubkey}, // Only default author
         since: now.subtract(Duration(days: 6)), // Last 6 days
         until: now, // Until now
         tags: {

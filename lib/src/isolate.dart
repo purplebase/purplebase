@@ -38,7 +38,7 @@ void isolateEntryPoint(List args) {
   }
 
   // TODO: Normalize relay URLs (parse with uri)
-  // TODO: Tidy up completer logic, add timeout
+  // TODO: Tidy up completer logic (its broken with multiple relays in the group), add timeout
   final completers =
       <
         String,
@@ -62,6 +62,7 @@ void isolateEntryPoint(List args) {
         // Remove id-only events
         final fullEvents = events.where((e) => e['sig'] != null);
         record.$3.addAll(fullEvents);
+        // print('added ${fullEvents.length} to $record');
         if (eq.equals(record.$1, record.$2)) {
           record.$4.complete(record.$3);
           completers.remove(subscriptionId);
@@ -95,11 +96,13 @@ void isolateEntryPoint(List args) {
             :final relayGroup,
             :final publish,
           ):
+            // No relays yet, they will get updated after the response
+            final ids = _save(db!, events, {}, config);
+
             final relayUrls = config.getRelays(
               relayGroup: relayGroup,
-              useDefault: false,
+              useDefault: true,
             );
-            final ids = _save(db!, events, relayUrls, config);
 
             if (publish) {
               await pool.publish(events, relayUrls: relayUrls);
@@ -108,7 +111,7 @@ void isolateEntryPoint(List args) {
 
           case SendRequestIsolateOperation(:final req, :final waitForResult):
             final relayUrls = config.getRelays(relayGroup: req.relayGroup);
-            pool.send(req, relayUrls: relayUrls);
+            await pool.send(req, relayUrls: relayUrls);
             if (!waitForResult) {
               response = IsolateResponse(success: true);
             } else {
