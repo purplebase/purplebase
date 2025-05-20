@@ -36,8 +36,7 @@ void main() {
 
   group('integration', () {
     test('publish', () async {
-      final comment = PartialComment(content: 'yo').dummySign();
-      await pool.publish([comment.toMap()], relayUrls: {'wss://relay1.com'});
+      await pool.publish([randomEvent], relayUrls: {'wss://relay1.com'});
     });
   });
 
@@ -240,9 +239,7 @@ void main() {
       // Send events with a small delay between them
       mockClient.sendEvent(relayUrl, filter.subscriptionId, streamEvent1);
 
-      // TODO: Verify events aren't immediately in state (buffering)
-      // var state = container.read(webSocketPoolProvider.notifier).state;
-      // expect(state, isNull);
+      await Future.delayed(Duration.zero);
 
       // Send another event
       mockClient.sendEvent(relayUrl, filter.subscriptionId, streamEvent2);
@@ -381,3 +378,9 @@ void main() {
     });
   });
 }
+
+final randomEvent =
+    jsonDecode(
+          '''{"kind":1,"id":"4aaa496ba962afbbed5dc5c3bc3af47ce8670b7879fc99e4020e3782c8bed6a0","pubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","created_at":1747588984,"tags":[],"content":"hello from the nostr army knife","sig":"8a90df96af5096634eb6a061d02fed5c76e48a4cb8cc51481e68940e5efa7659a757d59b39b31a877b9a490f78d7d330cec865af9edabfcb597435b464f724b8"}''',
+        )
+        as Map<String, dynamic>;

@@ -82,9 +82,9 @@ class WebSocketClient {
           // );
           client.send(message);
         case _:
-          print(
-            '[${DateTime.now().toIso8601String()}] QUEUING req to $uri: $message...',
-          );
+          // print(
+          //   '[${DateTime.now().toIso8601String()}] QUEUING req to $uri: $message...',
+          // );
           if (!_queue[uri]!.contains(message)) {
             _queue[uri]!.add(message);
           }

@@ -37,40 +37,60 @@ void isolateEntryPoint(List args) {
     print('Error opening database: $e');
   }
 
-  // TODO: Normalize relay URLs (parse with uri)
-  // TODO: Tidy up completer logic (its broken with multiple relays in the group), add timeout
+  // TODO: Rethink completer logic, turn this mess into a class, Uri-normalize relays
   final completers =
       <
         String,
         (
-          Set<String>,
-          Set<String>,
-          List<Map<String, dynamic>>,
-          Completer<List<Map<String, dynamic>>>,
+          Set<String> relays,
+          Set<String> partialRelays,
+          List<Map<String, dynamic>> partialModels,
+          Completer<List<Map<String, dynamic>>> completer,
         )
       >{};
 
   final eq = DeepCollectionEquality();
 
   closeFn = pool.addListener((args) {
-    if (args case (final events, (final relayUrl, final subscriptionId))) {
+    if (args case (
+      final events,
+      [final relayUrl, final subscriptionId, ...final rest],
+    )) {
       _save(db!, events, {relayUrl}, config);
+      final isPublishResponse = rest.isNotEmpty;
 
       final record = completers[subscriptionId];
       if (record != null && record.$1.contains(relayUrl)) {
         record.$2.add(relayUrl);
-        // Remove id-only events
-        final fullEvents = events.where((e) => e['sig'] != null);
-        record.$3.addAll(fullEvents);
-        // print('added ${fullEvents.length} to $record');
+
+        if (isPublishResponse) {
+          final [accepted, message] = rest;
+          record.$3.add({
+            'id': subscriptionId,
+            'accepted': bool.parse(accepted),
+            'message': message,
+          });
+        } else {
+          // normal response
+          // Remove id-only events
+          final fullEvents = events.where((e) => e['sig'] != null);
+          record.$3.addAll(fullEvents);
+          // print('added ${fullEvents.length} to $record');
+        }
+
         if (eq.equals(record.$1, record.$2)) {
           record.$4.complete(record.$3);
           completers.remove(subscriptionId);
         }
       }
 
-      final ids = events.map((e) => e['id']).cast<String>().toSet();
-      mainSendPort.send(ids);
+      if (isPublishResponse) {
+        // Publish does not update anything - for now
+        mainSendPort.send(<String>{});
+      } else {
+        final ids = events.map((e) => e['id']).cast<String>().toSet();
+        mainSendPort.send(ids);
+      }
     }
   });
 
@@ -91,23 +111,30 @@ void isolateEntryPoint(List args) {
             );
             response = IsolateResponse(success: true, result: result.toList());
 
-          case SaveIsolateOperation(
-            :final events,
-            :final relayGroup,
-            :final publish,
-          ):
-            // No relays yet, they will get updated after the response
+          case SaveIsolateOperation(:final events):
             final ids = _save(db!, events, {}, config);
+            response = IsolateResponse(success: true, result: ids);
 
+          case PublishIsolateOperation(:final events, :final relayGroup):
             final relayUrls = config.getRelays(
               relayGroup: relayGroup,
               useDefault: true,
             );
 
-            if (publish) {
-              await pool.publish(events, relayUrls: relayUrls);
+            List<Map<String, dynamic>> result;
+            final futures = <Future<List<Map<String, dynamic>>>>[];
+
+            await pool.publish(events, relayUrls: relayUrls);
+            final completer = Completer<List<Map<String, dynamic>>>();
+            for (final event in events) {
+              completers[event['id']] = (relayUrls, {}, [], completer);
+              futures.add(completer.future);
             }
-            response = IsolateResponse(success: true, result: ids);
+            // TODO: With every success must update relay list
+            final partialResult = await Future.wait(futures);
+            result = partialResult.map((r) => r.first).toList();
+
+            response = IsolateResponse(success: true, result: result);
 
           case SendRequestIsolateOperation(:final req, :final waitForResult):
             final relayUrls = config.getRelays(relayGroup: req.relayGroup);
@@ -332,14 +359,15 @@ final class QueryIsolateOperation extends IsolateOperation {
 
 final class SaveIsolateOperation extends IsolateOperation {
   final List<Map<String, dynamic>> events;
-  final String? relayGroup;
-  final bool publish;
 
-  SaveIsolateOperation({
-    required this.events,
-    this.relayGroup,
-    this.publish = true,
-  });
+  SaveIsolateOperation({required this.events});
+}
+
+final class PublishIsolateOperation extends IsolateOperation {
+  final List<Map<String, dynamic>> events;
+  final String? relayGroup;
+
+  PublishIsolateOperation({required this.events, this.relayGroup});
 }
 
 final class SendRequestIsolateOperation extends IsolateOperation {

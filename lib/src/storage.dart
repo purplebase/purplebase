@@ -74,28 +74,45 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   /// Client-facing save method
   /// (framework calls _save internally in isolate)
   @override
-  Future<void> save(
-    Set<Model<dynamic>> events, {
-    String? relayGroup,
-    bool publish = true,
-  }) async {
+  Future<void> save(Set<Model<dynamic>> events) async {
     if (events.isEmpty) return;
 
     final maps = events.map((e) => e.toMap()).toList();
 
-    final response = await _sendMessage(
-      SaveIsolateOperation(
-        events: maps,
-        relayGroup: relayGroup,
-        publish: publish,
-      ),
-    );
+    final response = await _sendMessage(SaveIsolateOperation(events: maps));
 
     if (!response.success) {
       throw IsolateException(response.error);
     }
 
     state = response.result as Set<String>;
+  }
+
+  /// Publish to [relayGroup]
+  @override
+  Future<Set<PublishedStatus>> publish(
+    Set<Model<dynamic>> events, {
+    String? relayGroup,
+  }) async {
+    if (events.isEmpty) return {};
+
+    final maps = events.map((e) => e.toMap()).toList();
+
+    final response = await _sendMessage(
+      PublishIsolateOperation(events: maps, relayGroup: relayGroup),
+    );
+
+    if (!response.success) {
+      throw IsolateException(response.error);
+    }
+
+    return (response.result as List<Map<String, dynamic>>).map((r) {
+      return PublishedStatus(
+        eventId: r['id'],
+        accepted: r['accepted'],
+        message: r['message'],
+      );
+    }).toSet();
   }
 
   @override

@@ -5,7 +5,7 @@ import 'package:purplebase/src/websocket_client.dart';
 import 'package:riverpod/riverpod.dart';
 
 class WebSocketPool
-    extends StateNotifier<(List<Map<String, dynamic>>, (String, String))?> {
+    extends StateNotifier<(List<Map<String, dynamic>>, List<String>)?> {
   final Ref ref;
   final WebSocketClient _webSocketClient;
   final StorageConfiguration config;
@@ -107,7 +107,7 @@ class WebSocketPool
   RequestFilter _optimizeRequestFilter(RequestFilter filter, String relayUrl) {
     // Previous code
 
-    // TODO: This in sqlite
+    // TODO: Implement properly
     // First caching layer: ids
     // if (req.ids.isNotEmpty) {
     //   final (idsSql, idsParams) = RequestFilter(
@@ -207,10 +207,9 @@ class WebSocketPool
             _handleEoseMessage(parsed, relayUrl);
             break;
           case 'NOTICE':
-            // Handle notices if needed
             break;
           case 'OK':
-            // Handle OK messages if needed
+            _handleOkMessage(parsed, relayUrl);
             break;
         }
 
@@ -255,7 +254,7 @@ class WebSocketPool
         _streamingBufferTimers[r] ??= Timer(config.streamingBufferWindow, () {
           final events = _streamingBuffer[r]!;
           // print('setting state (streaming flush): $events');
-          state = ([...events], (relayUrl, subscriptionId));
+          state = ([...events], [relayUrl, subscriptionId]);
           _streamingBuffer[r]!.clear();
           _streamingBufferTimers.remove(r);
         });
@@ -274,6 +273,17 @@ class WebSocketPool
 
       // Mark this event as seen
       _seenEventIds.add(eventId);
+    }
+  }
+
+  void _handleOkMessage(List<dynamic> parsed, String relayUrl) {
+    if (parsed case [
+      _,
+      final String eventId,
+      final bool accepted,
+      final String message,
+    ]) {
+      state = ([], [relayUrl, eventId, accepted.toString(), message]);
     }
   }
 
@@ -314,7 +324,7 @@ class WebSocketPool
       if (_preEoseBatches[r] != null) {
         final events = _preEoseBatches[r]!;
         // print('sending state (pre eose): $events - $r');
-        state = ([...events], (relayUrl, subscriptionId));
+        state = ([...events], [relayUrl, subscriptionId]);
         _preEoseBatches[r]!.clear();
       }
     }

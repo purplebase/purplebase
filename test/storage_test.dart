@@ -383,7 +383,8 @@ Future<void> main() async {
     final n1 = await PartialNote('no relay').signWith(signer);
     final n2 = await PartialNote('yes relay').signWith(signer);
     await storage.save({n1});
-    await storage.save({n2}, relayGroup: 'test');
+    await storage.save({n2});
+    await storage.publish({n2}, relayGroup: 'test');
 
     final r1 = await storage.query(RequestFilter(relayGroup: 'test'));
     expect(r1.cast<Note>().map((n) => n.content), contains('yes relay'));
