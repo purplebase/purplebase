@@ -276,10 +276,12 @@ packages:
   models:
     dependency: "direct main"
     description:
-      path: "../models"
-      relative: true
-    source: path
-    version: "0.1.1"
+      path: "."
+      ref: main
+      resolved-ref: af749b474b115055d4999d654c83e33e4d41ea76
+      url: "https://github.com/purplebase/models"
+    source: git
+    version: "0.1.2"
   node_preamble:
     dependency: transitive
     description:

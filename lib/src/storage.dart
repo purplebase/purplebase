@@ -193,6 +193,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<List<E>> fetch<E extends Model<dynamic>>(RequestFilter<E> req) async {
+    print('hitting fetch $req');
     if (req.remote == false) {
       return [];
     }
@@ -206,6 +207,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
 
     final events = response.result as List<Map<String, dynamic>>;
+    print('returning ${events.length} from fetch');
     return events
         .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
         .cast<E>()

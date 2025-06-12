@@ -51,6 +51,7 @@ extension RequestFilterExt on RequestFilter {
     }
 
     // Handle Tags (using FTS)
+    // TODO: Tags need exact matches, so remove FTS
     if (tags.isNotEmpty) {
       // Join groups with space (implicit AND in standard FTS query syntax)
       final ftsQuery = [

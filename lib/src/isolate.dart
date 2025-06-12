@@ -6,7 +6,7 @@ import 'dart:math';
 import 'package:bip340/bip340.dart' as bip340;
 import 'package:collection/collection.dart';
 import 'package:models/models.dart';
-import 'package:purplebase/purplebase.dart';
+import 'package:purplebase/src/websocket_pool.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
@@ -23,9 +23,7 @@ void isolateEntryPoint(List args) {
   void Function()? closeFn;
   StreamSubscription? sub;
 
-  // Initialize Riverpod in isolate
-  final container = ProviderContainer();
-  final pool = WebSocketPool(container.read(refProvider), config);
+  final pool = WebSocketPool();
 
   Database? db;
   try {
@@ -37,60 +35,26 @@ void isolateEntryPoint(List args) {
     print('Error opening database: $e');
   }
 
-  // TODO: Rethink completer logic, turn this mess into a class, Uri-normalize relays
-  final completers =
-      <
-        String,
-        (
-          Set<String> relays,
-          Set<String> partialRelays,
-          List<Map<String, dynamic>> partialModels,
-          Completer<List<Map<String, dynamic>>> completer,
-        )
-      >{};
+  closeFn = pool.addListener((response) {
+    if (response != null) {
+      // TODO: All this could be better
+      final grouped = response.whereType<EventRelayResponse>().groupListsBy(
+        (r) => r.relayUrls,
+      );
 
-  final eq = DeepCollectionEquality();
-
-  closeFn = pool.addListener((args) {
-    if (args case (
-      final events,
-      [final relayUrl, final subscriptionId, ...final rest],
-    )) {
-      _save(db!, events, {relayUrl}, config);
-      final isPublishResponse = rest.isNotEmpty;
-
-      final record = completers[subscriptionId];
-      if (record != null && record.$1.contains(relayUrl)) {
-        record.$2.add(relayUrl);
-
-        if (isPublishResponse) {
-          final [accepted, message] = rest;
-          record.$3.add({
-            'id': subscriptionId,
-            'accepted': bool.parse(accepted),
-            'message': message,
-          });
-        } else {
-          // normal response
-          // Remove id-only events
-          final fullEvents = events.where((e) => e['sig'] != null);
-          record.$3.addAll(fullEvents);
-          // print('added ${fullEvents.length} to $record');
-        }
-
-        if (eq.equals(record.$1, record.$2)) {
-          record.$4.complete(record.$3);
-          completers.remove(subscriptionId);
-        }
+      final ids = <String>{};
+      for (final MapEntry(key: relayUrls, :value) in grouped.entries) {
+        final events = value.map((e) => e.event).toList();
+        print('saving ${events.length}');
+        ids.addAll(_save(db!, events, relayUrls, config));
       }
-
-      if (isPublishResponse) {
-        // Publish does not update anything - for now
-        mainSendPort.send(<String>{});
-      } else {
-        final ids = events.map((e) => e['id']).cast<String>().toSet();
-        mainSendPort.send(ids);
-      }
+      // final ids =
+      //     grouped.values
+      //         .expand((e) => e)
+      //         .map((e) => e.event['id'])
+      //         .cast<String>()
+      //         .toSet();
+      mainSendPort.send(ids);
     }
   });
 
@@ -125,11 +89,8 @@ void isolateEntryPoint(List args) {
             final futures = <Future<List<Map<String, dynamic>>>>[];
 
             await pool.publish(events, relayUrls: relayUrls);
-            final completer = Completer<List<Map<String, dynamic>>>();
-            for (final event in events) {
-              completers[event['id']] = (relayUrls, {}, [], completer);
-              futures.add(completer.future);
-            }
+
+            // TODO: WTF is this?
             // TODO: With every success must update relay list
             final partialResult = await Future.wait(futures);
             result = partialResult.map((r) => r.first).toList();
@@ -138,18 +99,18 @@ void isolateEntryPoint(List args) {
 
           case SendRequestIsolateOperation(:final req, :final waitForResult):
             final relayUrls = config.getRelays(relayGroup: req.relayGroup);
-            await pool.send(req, relayUrls: relayUrls);
             if (!waitForResult) {
+              await pool.send(req, relayUrls: relayUrls);
               response = IsolateResponse(success: true);
             } else {
-              final completer = Completer<List<Map<String, dynamic>>>();
-              completers[req.subscriptionId] = (relayUrls, {}, [], completer);
-              final result = await completer.future;
+              final result = await pool.query(req, relayUrls: relayUrls);
+              _save(db!, result, relayUrls, config);
+              // mainSendPort.send(ids);
               response = IsolateResponse(success: true, result: result);
             }
 
           case CancelIsolateOperation(:final req):
-            pool.unsubscribe(req.subscriptionId);
+            pool.unsubscribe(req);
             response = IsolateResponse(success: true);
 
           case ClearIsolateOperation():
