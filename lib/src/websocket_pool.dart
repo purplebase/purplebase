@@ -27,21 +27,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     _subscriptions[req.subscriptionId] = subscription;
 
     // Start timeout timer for ENTIRE process (6 seconds from now)
-    subscription.eoseTimer = Timer(Duration(seconds: 6), () async {
-      final sub = _subscriptions[req.subscriptionId];
-      if (sub != null && sub.phase == SubscriptionPhase.eose) {
-        // Timeout reached, emit whatever we have
-        sub.phase = SubscriptionPhase.streaming;
-
-        // Complete query completer if this is a query() call
-        if (sub.queryCompleter != null && !sub.queryCompleter!.isCompleted) {
-          sub.queryCompleter!.complete(List.from(sub.bufferedEvents));
-        } else {
-          // Regular subscription - emit buffered events
-          await _emitBufferedEvents(req.subscriptionId);
-        }
-      }
-    });
+    subscription.eoseTimer = Timer(
+      Duration(seconds: 6),
+      () => _flushEventBuffer(req.subscriptionId),
+    );
 
     // Connect to relays asynchronously and send requests as they connect
     final message = jsonEncode(['REQ', req.subscriptionId, ...req.toMaps()]);
@@ -375,18 +364,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
         subscription.phase == SubscriptionPhase.eose) {
       // All target relays sent EOSE, cancel timeout timer
       subscription.eoseTimer?.cancel();
-      subscription.phase = SubscriptionPhase.streaming;
-
-      // Complete query completer if this is a query() call
-      if (subscription.queryCompleter != null &&
-          !subscription.queryCompleter!.isCompleted) {
-        subscription.queryCompleter!.complete(
-          List.from(subscription.bufferedEvents),
-        );
-      } else {
-        // Regular subscription - emit buffered events
-        await _emitBufferedEvents(subscriptionId);
-      }
+      _flushEventBuffer(subscriptionId);
     }
   }
 
@@ -412,11 +390,23 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   }
 
   // Used to emit EOSE and streaming-buffered events
-  Future<void> _emitBufferedEvents(String subscriptionId) async {
+  Future<void> _flushEventBuffer(String subscriptionId) async {
     if (!mounted) return;
 
     final subscription = _subscriptions[subscriptionId];
     if (subscription == null || subscription.bufferedEvents.isEmpty) return;
+
+    if (subscription.phase == SubscriptionPhase.eose) {
+      subscription.phase = SubscriptionPhase.streaming;
+
+      // Complete query completer if this is a query() call
+      if (subscription.queryCompleter != null &&
+          !subscription.queryCompleter!.isCompleted) {
+        subscription.queryCompleter!.complete(
+          List.from(subscription.bufferedEvents),
+        );
+      }
+    }
 
     state = EventRelayResponse(
       req: subscription.req,
@@ -435,11 +425,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     if (subscription == null) return;
 
     subscription.streamingBuffer?.cancel();
-    subscription.streamingBuffer = Timer(_streamingBufferTimeout, () async {
-      if (mounted) {
-        await _emitBufferedEvents(subscriptionId);
-      }
-    });
+    subscription.streamingBuffer = Timer(
+      _streamingBufferTimeout,
+      () => _flushEventBuffer(subscriptionId),
+    );
   }
 
   // TODO: Let this be handled by the underlying library, remove the concept of dead relays
