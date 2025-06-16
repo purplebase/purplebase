@@ -8,6 +8,7 @@ import 'package:models/models.dart';
 import 'package:path/path.dart' as path;
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
+import 'package:purplebase/src/websocket_pool.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
@@ -97,12 +98,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   /// Publish
   @override
-  Future<PublishRelayResponse> publish(
+  Future<PublishResponse> publish(
     Set<Model<dynamic>> events, {
     Source? source,
   }) async {
     if (events.isEmpty && source == LocalSource()) {
-      return PublishRelayResponse();
+      return PublishResponse();
     }
 
     final maps = events.map((e) => e.toMap()).toList();
@@ -118,7 +119,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       throw IsolateException(response.error);
     }
 
-    return response.result as PublishRelayResponse;
+    return (response.result as PublishRelayResponse).wrapped;
   }
 
   @override
