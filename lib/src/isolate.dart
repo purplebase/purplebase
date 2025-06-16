@@ -7,7 +7,6 @@ import 'package:bip340/bip340.dart' as bip340;
 import 'package:collection/collection.dart';
 import 'package:models/models.dart';
 import 'package:purplebase/src/websocket_pool.dart';
-import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
 
@@ -35,104 +34,91 @@ void isolateEntryPoint(List args) {
     print('Error opening database: $e');
   }
 
+  // Listen for messages from websocket pool
   closeFn = pool.addListener((response) {
-    if (response != null) {
-      // TODO: All this could be better
-      final grouped = response.whereType<EventRelayResponse>().groupListsBy(
-        (r) => r.relayUrls,
-      );
-
-      final ids = <String>{};
-      for (final MapEntry(key: relayUrls, :value) in grouped.entries) {
-        final events = value.map((e) => e.event).toList();
-        print('saving ${events.length}');
-        ids.addAll(_save(db!, events, relayUrls, config));
-      }
-      // final ids =
-      //     grouped.values
-      //         .expand((e) => e)
-      //         .map((e) => e.event['id'])
-      //         .cast<String>()
-      //         .toSet();
+    if (response case EventRelayResponse(:final events, :final relaysForIds)) {
+      final ids = _save(db!, events, relaysForIds, config);
       mainSendPort.send(ids);
     }
   });
 
+  // Listen for messages from main isolate (UI)
   sub = receivePort.listen((message) async {
     if (message case (
       final IsolateOperation operation,
       final SendPort replyPort,
     )) {
       IsolateResponse response;
-      PreparedStatement? statement;
 
-      try {
-        switch (operation) {
-          case QueryIsolateOperation(:final sql, :final params):
-            statement = db!.prepare(sql);
-            final result = statement.selectWith(
-              StatementParameters.named(params),
-            );
-            response = IsolateResponse(success: true, result: result.toList());
+      switch (operation) {
+        // LOCAL STORAGE
 
-          case SaveIsolateOperation(:final events):
-            final ids = _save(db!, events, {}, config);
-            response = IsolateResponse(success: true, result: ids);
+        case LocalQueryIsolateOperation(:final queries):
+          final sql = queries.map((q) => q.$1).join(';\n');
 
-          case PublishIsolateOperation(:final events, :final relayGroup):
-            final relayUrls = config.getRelays(
-              relayGroup: relayGroup,
-              useDefault: true,
-            );
+          final result = [];
+          final statements = db!.prepareMultiple(sql);
 
-            List<Map<String, dynamic>> result;
-            final futures = <Future<List<Map<String, dynamic>>>>[];
-
-            await pool.publish(events, relayUrls: relayUrls);
-
-            // TODO: WTF is this?
-            // TODO: With every success must update relay list
-            final partialResult = await Future.wait(futures);
-            result = partialResult.map((r) => r.first).toList();
-
-            response = IsolateResponse(success: true, result: result);
-
-          case SendRequestIsolateOperation(:final req, :final waitForResult):
-            final relayUrls = config.getRelays(relayGroup: req.relayGroup);
-            if (!waitForResult) {
-              await pool.send(req, relayUrls: relayUrls);
-              response = IsolateResponse(success: true);
-            } else {
-              final result = await pool.query(req, relayUrls: relayUrls);
-              _save(db!, result, relayUrls, config);
-              // mainSendPort.send(ids);
-              response = IsolateResponse(success: true, result: result);
+          try {
+            for (final statement in statements) {
+              final i = statements.indexOf(statement);
+              final params = queries[i].$2;
+              result.addAll(
+                statement.selectWith(StatementParameters.named(params)),
+              );
             }
+          } catch (e) {
+            response = IsolateResponse(success: false, error: e.toString());
+          } finally {
+            for (final statement in statements) {
+              statement.dispose();
+            }
+          }
 
-          case CancelIsolateOperation(:final req):
-            pool.unsubscribe(req);
-            response = IsolateResponse(success: true);
+          response = IsolateResponse(success: true, result: result.toList());
 
-          case ClearIsolateOperation():
-            // Drop all tables and set up again, deleting tables was problematic
+        case LocalSaveIsolateOperation(:final events):
+          final ids = _save(db!, events, {}, config);
+          response = IsolateResponse(success: true, result: ids);
+
+        case LocalClearIsolateOperation():
+          // Drop all tables and set up again, deleting tables was problematic
+
+          try {
             db!.execute(tearDownSql);
             db.execute(setUpSql);
-            response = IsolateResponse(success: true);
+          } catch (e) {
+            response = IsolateResponse(success: false, error: e.toString());
+            return;
+          }
 
-          case CloseIsolateOperation():
-            // TODO: Check this closes correctly and is restartable
-            db?.dispose();
-            pool.dispose();
-            closeFn?.call();
-            response = IsolateResponse(success: true);
-            Future.microtask(() {
-              sub?.cancel();
-            });
-        }
-      } catch (e) {
-        response = IsolateResponse(success: false, error: e.toString());
-      } finally {
-        statement?.dispose();
+          response = IsolateResponse(success: true);
+
+        // REMOTE
+
+        case RemoteQueryIsolateOperation(:final req, :final source):
+          final relayUrls = config.getRelays(source: source);
+          final result = await pool.query(req, relayUrls: relayUrls);
+          // No saving here, events are saved in the callback as query also emits
+          response = IsolateResponse(success: true, result: result);
+
+        case RemotePublishIsolateOperation(:final events, :final source):
+          final relayUrls = config.getRelays(source: source, useDefault: true);
+          final result = await pool.publish(events, relayUrls: relayUrls);
+          response = IsolateResponse(success: true, result: result);
+
+        case RemoteCancelIsolateOperation(:final req):
+          pool.unsubscribe(req);
+          response = IsolateResponse(success: true);
+
+        // ISOLATE
+
+        case CloseIsolateOperation():
+          db?.dispose();
+          pool.dispose();
+          closeFn?.call();
+          response = IsolateResponse(success: true);
+          Future.microtask(() => sub?.cancel());
       }
 
       replyPort.send(response);
@@ -142,22 +128,19 @@ void isolateEntryPoint(List args) {
 
 Set<String> _save(
   Database db,
-  List<Map<String, dynamic>> parameters,
-  Set<String> relayUrls,
+  Set<Map<String, dynamic>> events,
+  Map<String, Set<String>> relaysForId,
   StorageConfiguration config,
 ) {
-  if (parameters.isEmpty) {
+  if (events.isEmpty) {
     return {};
   }
 
   // Filter events by verified
   final verifiedEvents =
-      parameters
+      events
           .where((m) => config.skipVerification ? true : _verifyEvent(m))
           .toList();
-
-  final sortedRelays =
-      relayUrls.isNotEmpty ? jsonEncode(relayUrls.sorted()) : null;
 
   final incomingIds = verifiedEvents.map((p) => p['id']).toList();
 
@@ -171,15 +154,18 @@ Set<String> _save(
   final ids = <String>{};
   try {
     db.execute('BEGIN');
-    // TODO: Test existing
     final existingIds =
         existingPs.select(incomingIds).map((e) => e['id']).toSet();
 
     for (final event in verifiedEvents) {
-      final isFullEvent = event.containsKey('pubkey');
       final alreadySaved = existingIds.contains(event['id']);
+      final sortedRelaysString = jsonEncode(
+        relaysForId.containsKey(event['id'])
+            ? relaysForId[event['id']]!.sorted()
+            : [],
+      );
 
-      if (isFullEvent && !alreadySaved) {
+      if (!alreadySaved) {
         final map = {
           for (final e in event.entries)
             // Prefix leading ':'
@@ -187,7 +173,7 @@ Set<String> _save(
               'tags' => jsonEncode(e.value),
               _ => e.value,
             },
-          ':relays': sortedRelays,
+          ':relays': sortedRelaysString,
         };
 
         eventPs.executeWith(StatementParameters.named(map));
@@ -195,10 +181,13 @@ Set<String> _save(
           ids.add(map[':id']);
         }
       } else {
-        // TODO: Test this case
-        // If it is not a full event or it was already saved, update relays
-        if (sortedRelays != null) {
-          relayUpdatePs.execute([sortedRelays, event['id'], sortedRelays]);
+        // If it was already saved, update relays
+        if (sortedRelaysString.isNotEmpty) {
+          relayUpdatePs.execute([
+            sortedRelaysString,
+            event['id'],
+            sortedRelaysString,
+          ]);
           if (db.updatedRows > 0) {
             // If rows were updated then value changed, so send ID to notifier
             ids.add(event['id']);
@@ -311,38 +300,37 @@ final tearDownSql = '''
 
 sealed class IsolateOperation {}
 
-final class QueryIsolateOperation extends IsolateOperation {
-  final String sql;
-  final Map<String, dynamic> params;
+final class LocalQueryIsolateOperation extends IsolateOperation {
+  // Each pair contains (SQL statement with n `?` placeholders, n params)
+  final List<(String, Map<String, dynamic>)> queries;
 
-  QueryIsolateOperation({required this.sql, required this.params});
+  LocalQueryIsolateOperation(this.queries);
 }
 
-final class SaveIsolateOperation extends IsolateOperation {
+final class LocalSaveIsolateOperation extends IsolateOperation {
+  final Set<Map<String, dynamic>> events;
+  LocalSaveIsolateOperation({required this.events});
+}
+
+final class RemotePublishIsolateOperation extends IsolateOperation {
   final List<Map<String, dynamic>> events;
+  final RemoteSource source;
 
-  SaveIsolateOperation({required this.events});
+  RemotePublishIsolateOperation({required this.events, required this.source});
 }
 
-final class PublishIsolateOperation extends IsolateOperation {
-  final List<Map<String, dynamic>> events;
-  final String? relayGroup;
-
-  PublishIsolateOperation({required this.events, this.relayGroup});
+final class RemoteQueryIsolateOperation extends IsolateOperation {
+  final Request req;
+  final RemoteSource? source;
+  RemoteQueryIsolateOperation({required this.req, this.source});
 }
 
-final class SendRequestIsolateOperation extends IsolateOperation {
-  final RequestFilter req;
-  final bool waitForResult;
-  SendRequestIsolateOperation({required this.req, this.waitForResult = false});
+final class RemoteCancelIsolateOperation extends IsolateOperation {
+  final Request req;
+  RemoteCancelIsolateOperation({required this.req});
 }
 
-final class CancelIsolateOperation extends IsolateOperation {
-  final RequestFilter req;
-  CancelIsolateOperation({required this.req});
-}
-
-final class ClearIsolateOperation extends IsolateOperation {}
+final class LocalClearIsolateOperation extends IsolateOperation {}
 
 final class CloseIsolateOperation extends IsolateOperation {}
 
@@ -362,5 +350,3 @@ class IsolateException implements Exception {
   @override
   String toString() => 'IsolateException: $message';
 }
-
-final refProvider = Provider((ref) => ref);

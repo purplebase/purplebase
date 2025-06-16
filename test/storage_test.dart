@@ -1,6 +1,5 @@
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/isolate.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -56,7 +55,7 @@ Future<void> main() async {
         tags: {
           '#t': {'nostr', 'test'},
         },
-      ),
+      ).toRequest(),
     );
     expect(r1, unorderedEquals([n2]));
 
@@ -65,7 +64,7 @@ Future<void> main() async {
         tags: {
           '#t': {'nostr'},
         },
-      ),
+      ).toRequest(),
     );
     expect(r1b, unorderedEquals([n2]));
 
@@ -74,12 +73,12 @@ Future<void> main() async {
         tags: {
           'bar': {'baz'},
         },
-      ),
+      ).toRequest(),
     );
     // Empty as multiple-character tags are not indexed
     expect(r2, isEmpty);
 
-    final r3 = await storage.query(RequestFilter(ids: {n1.id}));
+    final r3 = await storage.query(RequestFilter(ids: {n1.id}).toRequest());
     expect(r3, [n1]);
   });
 
@@ -93,22 +92,24 @@ Future<void> main() async {
     await storage.save({n1, n2, n3});
 
     // Query for a single ID
-    final r1 = await storage.query(RequestFilter(ids: {n1.id}));
+    final r1 = await storage.query(RequestFilter(ids: {n1.id}).toRequest());
     expect(r1, [n1]);
 
     // Query for multiple IDs
-    final r2 = await storage.query(RequestFilter(ids: {n1.id, n3.id}));
+    final r2 = await storage.query(
+      RequestFilter(ids: {n1.id, n3.id}).toRequest(),
+    );
     expect(r2, unorderedEquals([n1, n3]));
 
     // Query for non-existent ID
     final r3 = await storage.query(
-      RequestFilter(ids: {Utils.generateRandomHex64()}),
+      RequestFilter(ids: {Utils.generateRandomHex64()}).toRequest(),
     );
     expect(r3, isEmpty);
 
     // Query for mixed existing and non-existent IDs
     final r4 = await storage.query(
-      RequestFilter(ids: {n2.id, Utils.generateRandomHex64()}),
+      RequestFilter(ids: {n2.id, Utils.generateRandomHex64()}).toRequest(),
     );
     expect(r4, [n2]);
   });
@@ -132,7 +133,7 @@ Future<void> main() async {
           tags: {
             '#t': {'test $i'},
           },
-        ),
+        ).toRequest(),
       );
       expect(r1.map((e) => e.event.content), contains('note $i'));
     }
@@ -155,19 +156,19 @@ Future<void> main() async {
     await storage.save({note, dm});
 
     // Query for kind 1 (standard note)
-    final r1 = await storage.query(RequestFilter(kinds: {1}));
+    final r1 = await storage.query(RequestFilter(kinds: {1}).toRequest());
     expect(r1, [note]);
 
     // Query for kind 4 (direct message)
-    final r2 = await storage.query(RequestFilter(kinds: {4}));
+    final r2 = await storage.query(RequestFilter(kinds: {4}).toRequest());
     expect(r2, [dm]);
 
     // Query for multiple kinds
-    final r3 = await storage.query(RequestFilter(kinds: {1, 4}));
+    final r3 = await storage.query(RequestFilter(kinds: {1, 4}).toRequest());
     expect(r3, unorderedEquals([note, dm]));
 
     // Query for non-existent kind
-    final r4 = await storage.query(RequestFilter(kinds: {999}));
+    final r4 = await storage.query(RequestFilter(kinds: {999}).toRequest());
     expect(r4, isEmpty);
   });
 
@@ -191,22 +192,26 @@ Future<void> main() async {
     await storage.save({n1, n2, n3});
 
     // Query for default author
-    final r1 = await storage.query(RequestFilter(authors: {pubkey}));
+    final r1 = await storage.query(
+      RequestFilter(authors: {pubkey}).toRequest(),
+    );
     expect(r1, unorderedEquals([n1, n3]));
 
     // Query for custom author
-    final r2 = await storage.query(RequestFilter(authors: {customPubkey}));
+    final r2 = await storage.query(
+      RequestFilter(authors: {customPubkey}).toRequest(),
+    );
     expect(r2, [n2]);
 
     // Query for multiple authors
     final r3 = await storage.query(
-      RequestFilter(authors: {pubkey, customPubkey}),
+      RequestFilter(authors: {pubkey, customPubkey}).toRequest(),
     );
     expect(r3, unorderedEquals([n1, n2, n3]));
 
     // Query for non-existent author
     final r4 = await storage.query(
-      RequestFilter(authors: {Utils.generateRandomHex64()}),
+      RequestFilter(authors: {Utils.generateRandomHex64()}).toRequest(),
     );
     expect(r4, isEmpty);
   });
@@ -235,29 +240,32 @@ Future<void> main() async {
     await storage.save({n1, n2, n3});
 
     final r1 = await storage.query(
-      RequestFilter(since: now.subtract(Duration(days: 3))),
+      RequestFilter(since: now.subtract(Duration(days: 3))).toRequest(),
     );
     expect(r1, [n2, n3]);
 
     // Query notes until yesterday (should include n1 and n3)
-    final r2 = await storage.query(RequestFilter(until: yesterday));
+    final r2 = await storage.query(RequestFilter(until: yesterday).toRequest());
     expect(r2, unorderedEquals([n1, n3]));
 
     // Query notes within a time range (should include only n3)
     final r3 = await storage.query(
-      RequestFilter(since: lastWeek.add(Duration(days: 1)), until: yesterday),
+      RequestFilter(
+        since: lastWeek.add(Duration(days: 1)),
+        until: yesterday,
+      ).toRequest(),
     );
     expect(r3, [n3]);
 
     // Query with a future since date (should be empty)
     final r4 = await storage.query(
-      RequestFilter(since: now.add(Duration(days: 1))),
+      RequestFilter(since: now.add(Duration(days: 1))).toRequest(),
     );
     expect(r4, isEmpty);
 
     // Query with a past until date (should be empty)
     final r5 = await storage.query(
-      RequestFilter(until: lastWeek.subtract(Duration(days: 1))),
+      RequestFilter(until: lastWeek.subtract(Duration(days: 1))).toRequest(),
     );
     expect(r5, isEmpty);
   });
@@ -328,7 +336,7 @@ Future<void> main() async {
         tags: {
           '#t': {'announcement'}, // Only notes with 'announcement' tag
         },
-      ),
+      ).toRequest(),
     );
 
     // Expected: Only n1 and n4 (they match all criteria)
@@ -345,7 +353,7 @@ Future<void> main() async {
         tags: {
           '#t': {'question'}, // Only notes with 'question' tag
         },
-      ),
+      ).toRequest(),
     );
 
     // Expected: Only n2 (matches all criteria)
@@ -364,7 +372,7 @@ Future<void> main() async {
         tags: {
           '#t': {'announcement'},
         },
-      ),
+      ).toRequest(),
     );
 
     // Expected: n1 and n4 (they match all criteria)
@@ -374,11 +382,12 @@ Future<void> main() async {
   test('send', () async {
     final n1 = await PartialNote('yo').signWith(signer);
     await storage.save({n1});
-    final events = await storage.fetch(
+    final events = await storage.query(
       RequestFilter(
         kinds: {1},
         ids: {Utils.generateRandomHex64(), Utils.generateRandomHex64(), n1.id},
-      ),
+      ).toRequest(),
+      source: RemoteSource(includeLocal: false),
     );
     expect(events, hasLength(0));
   });
@@ -388,9 +397,12 @@ Future<void> main() async {
     final n2 = await PartialNote('yes relay').signWith(signer);
     await storage.save({n1});
     await storage.save({n2});
-    await storage.publish({n2}, relayGroup: 'test');
+    await storage.publish({n2}, source: RemoteSource(group: 'test'));
 
-    final r1 = await storage.query(RequestFilter(relayGroup: 'test'));
+    final r1 = await storage.query(
+      RequestFilter().toRequest(),
+      source: RemoteSource(group: 'test'),
+    );
     expect(r1.cast<Note>().map((n) => n.content), contains('yes relay'));
   }, skip: true);
 
@@ -406,3 +418,5 @@ Future<void> main() async {
     });
   });
 }
+
+final refProvider = Provider((ref) => ref);

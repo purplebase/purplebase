@@ -2,85 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:meta/meta.dart';
 import 'package:models/models.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:web_socket_client/web_socket_client.dart';
 
-enum SubscriptionPhase {
-  initial, // Waiting for EOSE
-  streaming, // After EOSE received
-}
-
-class SubscriptionState {
-  final RequestFilter filter;
-  final Set<String> targetRelays;
-  final Set<String> connectedRelays;
-  final Set<String> eoseReceived;
-  final List<Map<String, dynamic>> bufferedEvents;
-  SubscriptionPhase phase;
-  Timer? streamingBuffer;
-  Timer? eoseTimeoutTimer; // Add timeout timer for EOSE waiting
-  DateTime? lastEventTime;
-  Completer<List<Map<String, dynamic>>>? queryCompleter; // For query() method
-
-  SubscriptionState({required this.filter, required this.targetRelays})
-    : connectedRelays = <String>{},
-      eoseReceived = <String>{},
-      bufferedEvents = <Map<String, dynamic>>[],
-      phase = SubscriptionPhase.initial;
-
-  bool get allEoseReceived =>
-      targetRelays.isEmpty || eoseReceived.containsAll(targetRelays);
-}
-
-class RelayState {
-  WebSocket? socket;
-  DateTime? lastActivity;
-  DateTime? firstFailureTime;
-  int reconnectAttempts;
-  Timer? reconnectTimer;
-  Timer? idleTimer;
-  bool isDead;
-  StreamSubscription? connectionSubscription;
-  StreamSubscription? messageSubscription;
-
-  RelayState() : reconnectAttempts = 0, isDead = false;
-
-  /// Use the underlying socket's actual connection state
-  bool get isConnected {
-    if (socket == null || isDead) return false;
-    final connectionState = socket!.connection.state;
-    return connectionState is Connected || connectionState is Reconnected;
-  }
-
-  bool get isConnecting {
-    if (socket == null || isDead) return false;
-    final connectionState = socket!.connection.state;
-    return connectionState is Connecting || connectionState is Reconnecting;
-  }
-
-  bool get isDisconnected {
-    if (socket == null || isDead) return true;
-    final connectionState = socket!.connection.state;
-    return connectionState is Disconnected || connectionState is Disconnecting;
-  }
-
-  /// Check if socket is in a state where we should attempt reconnection
-  bool get shouldReconnect {
-    if (socket == null || isDead) return !isDead;
-    final connectionState = socket!.connection.state;
-    return connectionState is Disconnected && !isDead;
-  }
-}
-
-class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
+class WebSocketPool extends StateNotifier<RelayResponse?> {
   final Map<String, RelayState> _relays = {};
   final Map<String, SubscriptionState> _subscriptions = {};
-  final Map<String, Set<String>> _seenEventRelays =
-      {}; // Track which relays sent each event
   final Duration _idleTimeout;
   final Duration _streamingBufferTimeout;
-  bool _disposed = false;
 
   WebSocketPool({Duration? idleTimeout, Duration? streamingBufferTimeout})
     : _idleTimeout = idleTimeout ?? const Duration(minutes: 5),
@@ -88,122 +19,17 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
           streamingBufferTimeout ?? const Duration(seconds: 2),
       super(null);
 
-  /// Asynchronously closes all connections and cleans up resources
-  Future<void> disposeAsync() async {
-    if (_disposed) return;
-    _disposed = true;
-
-    // Cancel all subscriptions and timers first
-    for (final subscription in _subscriptions.values) {
-      subscription.streamingBuffer?.cancel();
-      subscription.eoseTimeoutTimer?.cancel();
-      // Complete any pending query completers to prevent hanging
-      if (subscription.queryCompleter != null &&
-          !subscription.queryCompleter!.isCompleted) {
-        subscription.queryCompleter!.complete([]);
-      }
-    }
-
-    // Clean up all relay connections immediately
-    for (final relay in _relays.values) {
-      // Cancel all stream subscriptions first
-      relay.connectionSubscription?.cancel();
-      relay.messageSubscription?.cancel();
-
-      // Cancel all timers
-      relay.reconnectTimer?.cancel();
-      relay.idleTimer?.cancel();
-
-      // Close and nullify socket immediately
-      if (relay.socket != null) {
-        try {
-          relay.socket!.close();
-        } catch (e) {
-          // Ignore close errors during disposal
-        }
-        relay.socket = null; // Nullify reference immediately
-      }
-    }
-
-    // Clear all state immediately
-    _relays.clear();
-    _subscriptions.clear();
-    _seenEventRelays.clear();
-
-    // Give a brief moment for final cleanup
-    await Future.delayed(Duration(milliseconds: 50));
-  }
-
-  @override
-  void dispose() {
-    if (_disposed) return;
-    _disposed = true;
-
-    // Cancel all subscriptions and timers first
-    for (final subscription in _subscriptions.values) {
-      subscription.streamingBuffer?.cancel();
-      subscription.eoseTimeoutTimer?.cancel();
-      // Complete any pending query completers to prevent hanging
-      if (subscription.queryCompleter != null &&
-          !subscription.queryCompleter!.isCompleted) {
-        subscription.queryCompleter!.complete([]);
-      }
-    }
-
-    // Synchronous cleanup for compatibility
-    for (final relay in _relays.values) {
-      relay.connectionSubscription?.cancel();
-      relay.messageSubscription?.cancel();
-      relay.reconnectTimer?.cancel();
-      relay.idleTimer?.cancel();
-      try {
-        relay.socket?.close();
-      } catch (e) {
-        // Ignore close errors during disposal
-      }
-      relay.socket = null; // Nullify reference immediately
-    }
-
-    // Clear all state
-    _relays.clear();
-    _subscriptions.clear();
-    _seenEventRelays.clear();
-
-    // Call parent dispose
-    super.dispose();
-  }
-
-  /// Normalizes relay URLs by removing trailing slashes and ensuring consistent format
-  Set<String> _normalizeUrls(Set<String> urls) {
-    return urls.map((url) {
-      final normalized =
-          url.endsWith('/') && url.length > 1
-              ? url.substring(0, url.length - 1)
-              : url;
-      return normalized;
-    }).toSet();
-  }
-
-  Future<void> send(
-    RequestFilter req, {
-    Set<String> relayUrls = const {},
-  }) async {
+  Future<void> send(Request req, {Set<String> relayUrls = const {}}) async {
     if (relayUrls.isEmpty) return;
 
-    // Normalize URLs - remove trailing slashes and ensure consistent format
-    final normalizedUrls = _normalizeUrls(relayUrls);
-
     // Create subscription state
-    final subscription = SubscriptionState(
-      filter: req,
-      targetRelays: normalizedUrls,
-    );
+    final subscription = SubscriptionState(req: req, targetRelays: relayUrls);
     _subscriptions[req.subscriptionId] = subscription;
 
     // Start timeout timer for ENTIRE process (6 seconds from now)
-    subscription.eoseTimeoutTimer = Timer(Duration(seconds: 6), () async {
+    subscription.eoseTimer = Timer(Duration(seconds: 6), () async {
       final sub = _subscriptions[req.subscriptionId];
-      if (sub != null && sub.phase == SubscriptionPhase.initial) {
+      if (sub != null && sub.phase == SubscriptionPhase.eose) {
         // Timeout reached, emit whatever we have
         sub.phase = SubscriptionPhase.streaming;
 
@@ -218,10 +44,10 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     });
 
     // Connect to relays asynchronously and send requests as they connect
-    final message = jsonEncode(['REQ', req.subscriptionId, req.toMap()]);
+    final message = jsonEncode(['REQ', req.subscriptionId, ...req.toMaps()]);
 
     // Don't await - let connections happen in parallel
-    for (final url in normalizedUrls) {
+    for (final url in relayUrls) {
       _ensureConnection(url)
           .then((_) {
             // Send request as soon as this relay connects
@@ -242,89 +68,8 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     }
   }
 
-  Future<void> publish(
-    List<Map<String, dynamic>> events, {
-    Set<String> relayUrls = const {},
-  }) async {
-    if (relayUrls.isEmpty || events.isEmpty) return;
-
-    // Normalize URLs - remove trailing slashes and ensure consistent format
-    final normalizedUrls = _normalizeUrls(relayUrls);
-
-    // Ensure connections to all relays
-    for (final url in normalizedUrls) {
-      await _ensureConnection(url);
-    }
-
-    // Send EVENT messages to all connected relays
-    for (final event in events) {
-      final message = jsonEncode(['EVENT', event]);
-      for (final url in normalizedUrls) {
-        final relay = _relays[url];
-        if (relay?.isConnected == true) {
-          relay!.socket!.send(message);
-          relay.lastActivity = DateTime.now();
-          _resetIdleTimer(url);
-        }
-      }
-    }
-  }
-
-  void unsubscribe(RequestFilter req) {
-    final subscriptionId = req.subscriptionId;
-    final subscription = _subscriptions[subscriptionId];
-    if (subscription == null) return;
-
-    // Send CLOSE message to all target relays
-    final message = jsonEncode(['CLOSE', subscriptionId]);
-    for (final url in subscription.targetRelays) {
-      final relay = _relays[url];
-      if (relay?.isConnected == true) {
-        relay!.socket!.send(message);
-        relay.lastActivity = DateTime.now();
-        _resetIdleTimer(url);
-      }
-    }
-
-    // Clean up subscription
-    subscription.streamingBuffer?.cancel();
-    subscription.eoseTimeoutTimer?.cancel();
-    _subscriptions.remove(subscriptionId);
-
-    // Check if any relay has no more active subscriptions and close if idle
-    _cleanupIdleRelays(subscription.targetRelays);
-  }
-
-  /// Close relay connections that have no active subscriptions
-  void _cleanupIdleRelays(Set<String> relayUrls) {
-    for (final url in relayUrls) {
-      final hasActiveSubscriptions = _subscriptions.values.any(
-        (sub) => sub.targetRelays.contains(url),
-      );
-
-      if (!hasActiveSubscriptions) {
-        final relay = _relays[url];
-        if (relay != null) {
-          // Cancel all timers to prevent reconnection
-          relay.reconnectTimer?.cancel();
-          relay.idleTimer?.cancel();
-
-          // Close the socket cleanly - this will trigger disconnection
-          if (relay.socket != null) {
-            try {
-              relay.socket!.close();
-            } catch (e) {
-              // Ignore close errors
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // TODO: Should return RelayResponse with metadata
   Future<List<Map<String, dynamic>>> query(
-    RequestFilter req, {
+    Request req, {
     Set<String> relayUrls = const {},
     Duration timeout = const Duration(seconds: 10),
   }) async {
@@ -357,6 +102,123 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     }
   }
 
+  Future<PublishRelayResponse> publish(
+    List<Map<String, dynamic>> events, {
+    Set<String> relayUrls = const {},
+  }) async {
+    if (relayUrls.isEmpty || events.isEmpty) return PublishRelayResponse();
+
+    // Ensure connections to all relays
+    for (final url in relayUrls) {
+      await _ensureConnection(url);
+    }
+
+    // Send EVENT messages to all connected relays
+    for (final event in events) {
+      final message = jsonEncode(['EVENT', event]);
+      for (final url in relayUrls) {
+        final relay = _relays[url];
+        if (relay?.isConnected == true) {
+          relay!.socket!.send(message);
+          relay.lastActivity = DateTime.now();
+          _resetIdleTimer(url);
+        }
+      }
+    }
+
+    return PublishRelayResponse();
+  }
+
+  void unsubscribe(Request req) {
+    final subscriptionId = req.subscriptionId;
+    final subscription = _subscriptions[subscriptionId];
+    if (subscription == null) return;
+
+    // Send CLOSE message to all target relays
+    final message = jsonEncode(['CLOSE', subscriptionId]);
+    for (final url in subscription.targetRelays) {
+      final relay = _relays[url];
+      if (relay?.isConnected == true) {
+        relay!.socket!.send(message);
+        relay.lastActivity = DateTime.now();
+        _resetIdleTimer(url);
+      }
+    }
+
+    // Clean up subscription
+    subscription.streamingBuffer?.cancel();
+    subscription.eoseTimer?.cancel();
+    _subscriptions.remove(subscriptionId);
+
+    // Check if any relay has no more active subscriptions and close if idle
+    _cleanupIdleRelays(subscription.targetRelays);
+  }
+
+  @override
+  void dispose() {
+    if (!mounted) return;
+
+    // Cancel all subscriptions and timers first
+    for (final subscription in _subscriptions.values) {
+      subscription.streamingBuffer?.cancel();
+      subscription.eoseTimer?.cancel();
+      // Complete any pending query completers to prevent hanging
+      if (subscription.queryCompleter != null &&
+          !subscription.queryCompleter!.isCompleted) {
+        subscription.queryCompleter!.complete([]);
+      }
+    }
+
+    for (final relay in _relays.values) {
+      relay.connectionSubscription?.cancel();
+      relay.messageSubscription?.cancel();
+      relay.reconnectTimer?.cancel();
+      relay.idleTimer?.cancel();
+      try {
+        relay.socket?.close();
+      } catch (e) {
+        // Ignore close errors during disposal
+      }
+      relay.socket = null; // Nullify reference immediately
+    }
+
+    // Clear all state
+    _relays.clear();
+    _subscriptions.clear();
+
+    // Call parent dispose
+    super.dispose();
+  }
+
+  // Keep private methods below this comment
+
+  /// Close relay connections that have no active subscriptions
+  void _cleanupIdleRelays(Set<String> relayUrls) {
+    for (final url in relayUrls) {
+      final hasActiveSubscriptions = _subscriptions.values.any(
+        (sub) => sub.targetRelays.contains(url),
+      );
+
+      if (!hasActiveSubscriptions) {
+        final relay = _relays[url];
+        if (relay != null) {
+          // Cancel all timers to prevent reconnection
+          relay.reconnectTimer?.cancel();
+          relay.idleTimer?.cancel();
+
+          // Close the socket cleanly - this will trigger disconnection
+          if (relay.socket != null) {
+            try {
+              relay.socket!.close();
+            } catch (e) {
+              // Ignore close errors
+            }
+          }
+        }
+      }
+    }
+  }
+
   Future<void> _ensureConnection(String url) async {
     final relay = _relays.putIfAbsent(url, () => RelayState());
 
@@ -368,7 +230,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
   }
 
   Future<void> _connect(String url) async {
-    if (_disposed) return; // Don't connect if disposed
+    if (!mounted) return; // Don't connect if disposed
 
     final relay = _relays[url]!;
 
@@ -403,7 +265,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
       await connectionFuture.timeout(Duration(seconds: 30));
 
       // Verify we're still not disposed before proceeding
-      if (_disposed) {
+      if (!mounted) {
         socket.close();
         return;
       }
@@ -415,7 +277,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
       await _resendSubscriptions(url);
     } catch (e) {
       // Only handle failure if not disposed
-      if (!_disposed) {
+      if (mounted) {
         await _handleConnectionFailure(url);
       }
     }
@@ -479,7 +341,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     if (subscription == null) return;
 
     // Always track which relay sent this event
-    _seenEventRelays.putIfAbsent(eventId, () => <String>{}).add(url);
+    subscription.relaysForId.putIfAbsent(eventId, () => <String>{}).add(url);
 
     // Check if this event is already buffered for this subscription
     final alreadyBuffered = subscription.bufferedEvents.any(
@@ -490,13 +352,12 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
       return; // Event already in buffer for this subscription
     }
 
-    if (subscription.phase == SubscriptionPhase.initial) {
+    if (subscription.phase == SubscriptionPhase.eose) {
       // Buffer event until EOSE
       subscription.bufferedEvents.add(event);
     } else {
       // Streaming phase - buffer with timeout
       subscription.bufferedEvents.add(event);
-      subscription.lastEventTime = DateTime.now();
       _scheduleStreamingFlush(subscriptionId);
     }
   }
@@ -511,9 +372,9 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     subscription.eoseReceived.add(url);
 
     if (subscription.allEoseReceived &&
-        subscription.phase == SubscriptionPhase.initial) {
+        subscription.phase == SubscriptionPhase.eose) {
       // All target relays sent EOSE, cancel timeout timer
-      subscription.eoseTimeoutTimer?.cancel();
+      subscription.eoseTimer?.cancel();
       subscription.phase = SubscriptionPhase.streaming;
 
       // Complete query completer if this is a query() call
@@ -532,87 +393,58 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
   void _handleOk(String url, List<dynamic> data) {
     if (data.length < 4) return;
 
-    final eventId = data[1] as String;
-    final accepted = data[2] as bool;
-    final message = data[3] as String;
+    // TODO: Implement buffering until receiving responses, similar to EOSE
 
-    final response = PublishRelayResponse(
-      id: eventId,
-      relayUrl: url,
-      accepted: accepted,
-      message: message,
-    );
+    // final response = PublishRelayResponse(
+    //   eventId: eventId,
+    //   relayUrl: url,
+    //   accepted: accepted,
+    //   message: message,
+    // );
 
-    _addResponse(response);
+    // _addResponse(response);
   }
 
   void _handleNotice(String url, List<dynamic> data) {
-    if (data.length < 2) return;
-
+    if (!mounted || data.length < 2) return;
     final message = data[1] as String;
-
-    final response = NoticeRelayResponse(message: message, relayUrl: url);
-
-    _addResponse(response);
+    state = NoticeRelayResponse(message: message, relayUrl: url);
   }
 
+  // Used to emit EOSE and streaming-buffered events
   Future<void> _emitBufferedEvents(String subscriptionId) async {
-    if (_disposed) return;
+    if (!mounted) return;
 
     final subscription = _subscriptions[subscriptionId];
     if (subscription == null || subscription.bufferedEvents.isEmpty) return;
 
-    final responses = <RelayResponse>[];
-    final eventsToProcess = List.from(subscription.bufferedEvents);
-
-    for (final event in eventsToProcess) {
-      if (await isEventValid(event)) {
-        final eventId = event['id'] as String?;
-        final relayUrls =
-            eventId != null
-                ? (_seenEventRelays[eventId] ?? <String>{})
-                : <String>{};
-
-        final response = EventRelayResponse(
-          event: event,
-          req: subscription.filter,
-          relayUrls: relayUrls, // Use actual relays that sent this event
-        );
-        responses.add(response);
-      }
-    }
-
-    if (responses.isNotEmpty && !_disposed) {
-      final currentState = state ?? <RelayResponse>[];
-      state = [...currentState, ...responses];
-    }
+    state = EventRelayResponse(
+      req: subscription.req,
+      events: subscription.bufferedEvents,
+      relaysForIds: subscription.relaysForId,
+    );
 
     subscription.bufferedEvents.clear();
+    subscription.relaysForId.clear();
   }
 
   void _scheduleStreamingFlush(String subscriptionId) {
-    if (_disposed) return;
+    if (!mounted) return;
 
     final subscription = _subscriptions[subscriptionId];
     if (subscription == null) return;
 
     subscription.streamingBuffer?.cancel();
     subscription.streamingBuffer = Timer(_streamingBufferTimeout, () async {
-      if (!_disposed) {
+      if (mounted) {
         await _emitBufferedEvents(subscriptionId);
       }
     });
   }
 
-  void _addResponse(RelayResponse response) {
-    if (_disposed) return;
-
-    final currentState = state ?? <RelayResponse>[];
-    state = [...currentState, response];
-  }
-
+  // TODO: Let this be handled by the underlying library, remove the concept of dead relays
   Future<void> _handleConnectionFailure(String url) async {
-    if (_disposed) return; // Don't attempt reconnection if disposed
+    if (!mounted) return; // Don't attempt reconnection if disposed
 
     final relay = _relays[url]!;
 
@@ -638,7 +470,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     }
 
     // Schedule reconnection only if not disposed and not dead
-    if (!_disposed && !relay.isDead) {
+    if (mounted && !relay.isDead) {
       final delay = Duration(
         milliseconds: min(
           100 * pow(2, relay.reconnectAttempts).toInt(),
@@ -647,7 +479,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
       );
 
       relay.reconnectTimer = Timer(delay, () {
-        if (!_disposed && !relay.isDead) {
+        if (mounted && !relay.isDead) {
           _connect(url);
         }
       });
@@ -655,7 +487,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
   }
 
   void _handleDisconnection(String url) {
-    if (_disposed) return; // Don't handle disconnections if disposed
+    if (!mounted) return; // Don't handle disconnections if disposed
 
     final relay = _relays[url];
     if (relay == null) return;
@@ -666,7 +498,7 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     relay.messageSubscription?.cancel();
 
     // Only attempt reconnection if the socket indicates we should
-    if (!_disposed && relay.shouldReconnect) {
+    if (mounted && relay.shouldReconnect) {
       _handleConnectionFailure(url);
     }
   }
@@ -686,24 +518,27 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
   Future<void> _resendSubscriptions(String url) async {
     for (final subscription in _subscriptions.values) {
       if (subscription.targetRelays.contains(url)) {
-        final filter = subscription.filter;
+        final req = subscription.req;
 
         // Adjust filter based on subscription phase
         if (subscription.phase == SubscriptionPhase.streaming) {
           // Re-issue with current timestamp as 'since'
-          final adjustedFilter = filter.copyWith(since: DateTime.now());
+          final adjustedReq =
+              req.filters
+                  .map((f) => f.copyWith(since: DateTime.now()))
+                  .toRequest();
           final message = jsonEncode([
             'REQ',
-            filter.subscriptionId,
-            adjustedFilter.toMap(),
+            req.subscriptionId,
+            ...adjustedReq.toMaps(),
           ]);
           _relays[url]?.socket?.send(message);
         } else {
           // Re-send original filter
           final message = jsonEncode([
             'REQ',
-            filter.subscriptionId,
-            filter.toMap(),
+            req.subscriptionId,
+            ...req.toMaps(),
           ]);
           _relays[url]?.socket?.send(message);
         }
@@ -711,50 +546,108 @@ class WebSocketPool extends StateNotifier<List<RelayResponse>?> {
     }
   }
 
-  Future<bool> isEventValid(Map<String, dynamic> event) async {
-    // Dummy implementation - always returns true
-    // This will be completed later
-    return true;
-  }
-
-  // Getters for testing
-  Map<String, Set<String>> get seenEventRelays => _seenEventRelays;
+  @protected
+  @visibleForTesting
   Map<String, RelayState> get relays => _relays;
+
+  @protected
+  @visibleForTesting
   Map<String, SubscriptionState> get subscriptions => _subscriptions;
 }
 
+// Websocket pool state classes
+
+class SubscriptionState {
+  final Request req;
+  final Set<String> targetRelays;
+  final Set<String> connectedRelays;
+  final Set<String> eoseReceived;
+  final Set<Map<String, dynamic>> bufferedEvents;
+  final Map<String, Set<String>> relaysForId =
+      {}; // Track which relays sent each event
+
+  SubscriptionPhase phase;
+  Timer? eoseTimer;
+  Timer? streamingBuffer;
+  Completer<List<Map<String, dynamic>>>? queryCompleter; // For query() method
+
+  SubscriptionState({required this.req, required this.targetRelays})
+    : connectedRelays = <String>{},
+      eoseReceived = <String>{},
+      bufferedEvents = <Map<String, dynamic>>{},
+      phase = SubscriptionPhase.eose;
+
+  bool get allEoseReceived =>
+      targetRelays.isEmpty || eoseReceived.containsAll(targetRelays);
+}
+
+class RelayState {
+  WebSocket? socket;
+  DateTime? lastActivity;
+  DateTime? firstFailureTime;
+  int reconnectAttempts;
+  Timer? reconnectTimer;
+  Timer? idleTimer;
+  bool isDead;
+  StreamSubscription? connectionSubscription;
+  StreamSubscription? messageSubscription;
+
+  RelayState() : reconnectAttempts = 0, isDead = false;
+
+  /// Use the underlying socket's actual connection state
+  bool get isConnected {
+    if (socket == null || isDead) return false;
+    final connectionState = socket!.connection.state;
+    return connectionState is Connected || connectionState is Reconnected;
+  }
+
+  bool get isConnecting {
+    if (socket == null || isDead) return false;
+    final connectionState = socket!.connection.state;
+    return connectionState is Connecting || connectionState is Reconnecting;
+  }
+
+  bool get isDisconnected {
+    if (socket == null || isDead) return true;
+    final connectionState = socket!.connection.state;
+    return connectionState is Disconnected || connectionState is Disconnecting;
+  }
+
+  /// Check if socket is in a state where we should attempt reconnection
+  bool get shouldReconnect {
+    if (socket == null || isDead) return !isDead;
+    final connectionState = socket!.connection.state;
+    return connectionState is Disconnected && !isDead;
+  }
+
+  // TODO: Optimize request filter based on latest seen timestamp
+  // TODO: Make all timers/timeouts configurable
+}
+
+// Response classes
+
 sealed class RelayResponse {}
 
-// For 'EVENT'/'EOSE' responses
-class EventRelayResponse extends RelayResponse {
-  final Map<String, dynamic> event;
-  final RequestFilter req; // which request filter the event is related to
-  final Set<String> relayUrls; // which relays returned it
+enum SubscriptionPhase { eose, streaming }
+
+final class EventRelayResponse extends RelayResponse {
+  final SubscriptionPhase phase;
+
+  // Originating request
+  final Request req;
+
+  final Set<Map<String, dynamic>> events;
+  final Map<String, Set<String>> relaysForIds;
 
   EventRelayResponse({
-    required this.event,
+    this.phase = SubscriptionPhase.eose,
     required this.req,
-    required this.relayUrls,
+    required this.events,
+    required this.relaysForIds,
   });
 }
 
-// Specific for 'OK' response
-class PublishRelayResponse extends RelayResponse {
-  final String id; // event ID
-  final String relayUrl;
-  final bool accepted;
-  final String message;
-
-  PublishRelayResponse({
-    required this.id,
-    required this.relayUrl,
-    required this.accepted,
-    required this.message,
-  });
-}
-
-// For 'NOTICE' response
-class NoticeRelayResponse extends RelayResponse {
+final class NoticeRelayResponse extends RelayResponse {
   final String message;
   final String relayUrl;
 

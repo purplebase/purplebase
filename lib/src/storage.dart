@@ -6,8 +6,8 @@ import 'dart:isolate';
 import 'package:collection/collection.dart';
 import 'package:models/models.dart';
 import 'package:path/path.dart' as path;
+import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
-import 'package:purplebase/src/request.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
@@ -25,7 +25,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   late final Database db;
   var _initialized = false;
-  var applyLimit = true;
 
   Isolate? _isolate;
   SendPort? _sendPort;
@@ -63,7 +62,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         _sendPort = message;
         _initCompleter.complete();
       } else {
-        state = message as Set<String>;
+        state = InternalStorageData(message as Set<String>);
       }
     });
 
@@ -71,53 +70,60 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _initialized = true;
   }
 
-  /// Client-facing save method
+  /// Public save method
   /// (framework calls _save internally in isolate)
   @override
-  Future<void> save(Set<Model<dynamic>> events) async {
-    if (events.isEmpty) return;
+  Future<bool> save(Set<Model<dynamic>> events) async {
+    if (events.isEmpty) return true;
 
-    final maps = events.map((e) => e.toMap()).toList();
+    final maps = events.map((e) => e.toMap()).toSet();
 
-    final response = await _sendMessage(SaveIsolateOperation(events: maps));
+    final response = await _sendMessage(
+      LocalSaveIsolateOperation(events: maps),
+    );
 
     if (!response.success) {
-      throw IsolateException(response.error);
+      state = StorageError(
+        state.models,
+        exception: IsolateException(response.error),
+      );
+      return false;
     }
 
-    state = response.result as Set<String>;
+    state = InternalStorageData(response.result as Set<String>);
+
+    return true;
   }
 
-  /// Publish to [relayGroup]
+  /// Publish
   @override
-  Future<Set<PublishedStatus>> publish(
+  Future<PublishRelayResponse> publish(
     Set<Model<dynamic>> events, {
-    String? relayGroup,
+    Source? source,
   }) async {
-    if (events.isEmpty) return {};
+    if (events.isEmpty && source == LocalSource()) {
+      return PublishRelayResponse();
+    }
 
     final maps = events.map((e) => e.toMap()).toList();
 
     final response = await _sendMessage(
-      PublishIsolateOperation(events: maps, relayGroup: relayGroup),
+      RemotePublishIsolateOperation(
+        events: maps,
+        source: source as RemoteSource? ?? RemoteSource(),
+      ),
     );
 
     if (!response.success) {
       throw IsolateException(response.error);
     }
 
-    return (response.result as List<Map<String, dynamic>>).map((r) {
-      return PublishedStatus(
-        eventId: r['id'],
-        accepted: r['accepted'],
-        message: r['message'],
-      );
-    }).toSet();
+    return response.result as PublishRelayResponse;
   }
 
   @override
-  Future<void> clear([RequestFilter? req]) async {
-    final response = await _sendMessage(ClearIsolateOperation());
+  Future<void> clear([Request? req]) async {
+    final response = await _sendMessage(LocalClearIsolateOperation());
 
     if (!response.success) {
       throw IsolateException(response.error);
@@ -126,24 +132,30 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   List<E> querySync<E extends Model<dynamic>>(
-    RequestFilter<E> req, {
-    bool applyLimit = true,
+    Request<E> req, {
+    Source? source,
     Set<String>? onIds,
   }) {
-    Iterable<Map<String, dynamic>> events;
-    // Note: applyLimit parameter is not used here as the limit comes from req.limit
-    final relayUrls = config.getRelays(
-      relayGroup: req.relayGroup,
-      useDefault: false,
-    );
-    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
-    final statement = db.prepare(sql);
-    try {
-      final result = statement.selectWith(StatementParameters.named(params));
+    final events = <Map<String, dynamic>>[];
+    final relayUrls = config.getRelays(source: source, useDefault: false);
 
-      events = result.decoded();
+    final tuples =
+        req.filters
+            .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
+            .toList();
+    final statements = db.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
+    try {
+      for (final statement in statements) {
+        final i = statements.indexOf(statement);
+        final result = statement.selectWith(
+          StatementParameters.named(tuples[i].$2),
+        );
+        events.addAll(result.decoded());
+      }
     } finally {
-      statement.dispose();
+      for (final statement in statements) {
+        statement.dispose();
+      }
     }
 
     return events
@@ -154,12 +166,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<List<E>> query<E extends Model<dynamic>>(
-    RequestFilter<E> req, {
-    bool applyLimit = true,
+    Request<E> req, {
+    Source? source,
     Set<String>? onIds,
   }) async {
-    // TODO: if req.storageOnly = false then must query relays and wait for response
-
     // If by any chance req is in cache, return that
     final cachedEvents =
         requestCache.values.firstWhereOrNull((m) => m.containsKey(req))?[req];
@@ -171,54 +181,43 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     // final replaceableIds = req.ids.where(kReplaceableRegexp.hasMatch);
     // final regularIds = {...req.ids}..removeAll(replaceableIds);
 
-    // TODO: Test this relay requesting logic
-    final relayUrls = config.getRelays(
-      relayGroup: req.relayGroup,
-      useDefault: false,
-    );
-    final (sql, params) = req.toSQL(relayUrls: relayUrls, onIds: onIds);
+    final relayUrls = config.getRelays(source: source, useDefault: false);
+
+    final queries =
+        req.filters
+            .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
+            .toList();
 
     final savedEvents = await _sendMessage(
-      QueryIsolateOperation(sql: sql, params: params),
+      LocalQueryIsolateOperation(queries),
     ).then((r) {
       return (r.result as Iterable<Row>).decoded().map((e) {
         return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
       });
     });
-    // TODO: Explain why queryLimit=null
-    final fetchedEvents = await fetch<E>(req.copyWith(queryLimit: null));
+
+    final fetchedEvents = <Map<String, dynamic>>{};
+
+    if (source is RemoteSource) {
+      final response = await _sendMessage(
+        RemoteQueryIsolateOperation(req: req),
+      );
+
+      if (!response.success) {
+        throw IsolateException(response.error);
+      }
+
+      fetchedEvents.addAll(response.result as List<Map<String, dynamic>>);
+    }
 
     return [...savedEvents, ...fetchedEvents].cast();
   }
 
   @override
-  Future<List<E>> fetch<E extends Model<dynamic>>(RequestFilter<E> req) async {
-    print('hitting fetch $req');
-    if (req.remote == false) {
-      return [];
-    }
+  Future<void> cancel(Request req, {Source? source}) async {
+    if (source is LocalSource) return;
 
-    final response = await _sendMessage(
-      SendRequestIsolateOperation(req: req, waitForResult: true),
-    );
-
-    if (!response.success) {
-      throw IsolateException(response.error);
-    }
-
-    final events = response.result as List<Map<String, dynamic>>;
-    print('returning ${events.length} from fetch');
-    return events
-        .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
-        .cast<E>()
-        .toList();
-  }
-
-  @override
-  Future<void> cancel(RequestFilter req) async {
-    if (!req.remote) return;
-
-    final response = await _sendMessage(CancelIsolateOperation(req: req));
+    final response = await _sendMessage(RemoteCancelIsolateOperation(req: req));
 
     if (!response.success) {
       throw IsolateException(response.error);
