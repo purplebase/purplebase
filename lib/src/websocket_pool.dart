@@ -675,6 +675,7 @@ class RelayState {
 
   // TODO: Optimize request filter based on latest seen timestamp
   // TODO: Make all timers/timeouts configurable
+  // TODO: Re-introduce checking for keepSig (config.keepSignatures)
 }
 
 // Response classes

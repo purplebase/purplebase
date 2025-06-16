@@ -50,8 +50,7 @@ extension RequestFilterExt on RequestFilter {
       whereClauses.add('pubkey IN (${authorParams.join(', ')})');
     }
 
-    // Handle Tags (using FTS)
-    // TODO: Tags need exact matches, so remove FTS
+    // Handle Tags
     if (tags.isNotEmpty) {
       // Join groups with space (implicit AND in standard FTS query syntax)
       final ftsQuery = [
@@ -59,14 +58,15 @@ extension RequestFilterExt on RequestFilter {
           for (final v in e.value)
             '"${e.key.startsWith('#') ? e.key.substring(1) : e.key}:$v"',
       ].join(' AND ');
+
       final tagsParamName = nextParamName('tags');
       whereClauses.add(
-        'id IN (SELECT id FROM events_fts WHERE tags MATCH $tagsParamName)',
+        'id IN (SELECT event_id FROM event_tags WHERE value = $tagsParamName)',
       );
       params[tagsParamName] = ftsQuery;
     }
 
-    // Handle Relays (using FTS)
+    // Handle Relays
     if (relayUrls != null && relayUrls.isNotEmpty) {
       // Join groups with space (implicit AND in standard FTS query syntax)
       final ftsQuery = [for (final url in relayUrls) '"$url"'].join(' AND ');
@@ -78,10 +78,15 @@ extension RequestFilterExt on RequestFilter {
     }
 
     // Handle Search (using FTS on content)
+    // TODO: Use JOINs instead
+    // SELECT e.*
+    // FROM events e
+    // JOIN events_fts fts ON e.id = fts.rowid
+    // WHERE fts.text MATCH ?
     if (search != null && search!.isNotEmpty) {
       final searchParamName = nextParamName('search');
       whereClauses.add(
-        'id IN (SELECT id FROM events_fts WHERE tags MATCH $searchParamName)',
+        'id IN (SELECT rowid FROM events_fts WHERE text MATCH $searchParamName)',
       );
       params[searchParamName] = search!;
     }

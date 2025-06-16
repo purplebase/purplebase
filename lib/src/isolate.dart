@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:math';
 import 'package:bip340/bip340.dart' as bip340;
 import 'package:collection/collection.dart';
 import 'package:models/models.dart';
@@ -126,6 +125,20 @@ void isolateEntryPoint(List args) {
   });
 }
 
+final fastZlib = ZLibCodec(
+  level: ZLibOption.minMemLevel,
+  strategy: ZLibOption.strategyRle, // often yields a few more %
+);
+
+String _getIdForDatabase(Map<String, dynamic> event) {
+  final tags = event['tags'] as Iterable;
+  return switch (event['kind']) {
+    0 || 3 || >= 10000 && < 20000 || >= 30000 && < 40000 =>
+      '${event['kind']}:${event['pubkey']}:${(tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)?.firstOrNull ?? ''}',
+    _ => event['id'],
+  };
+}
+
 Set<String> _save(
   Database db,
   Set<Map<String, dynamic>> events,
@@ -136,62 +149,86 @@ Set<String> _save(
     return {};
   }
 
-  // Filter events by verified
-  final verifiedEvents =
+  // Event massaging
+  events =
       events
-          .where((m) => config.skipVerification ? true : _verifyEvent(m))
-          .toList();
+          // Filter events by verified
+          .where((e) {
+            return config.skipVerification ? true : _verifyEvent(e);
+          })
+          // Prepare (rename to prepend `:` for prepared statement)
+          .map((e) {
+            // Get actual ID including replaceable
+            e['id'] = _getIdForDatabase(e);
 
-  final incomingIds = verifiedEvents.map((p) => p['id']).toList();
+            // Compress fields
+            final blobMap = [e['content'], e['tags'], e['sig']];
+            e['blob'] = fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
+
+            return {
+              for (final entry in e.entries) ':${entry.key}': entry.value,
+            };
+          })
+          .toSet();
+
+  final incomingIds = events.map((p) => p['id']).toList();
 
   final sql = '''
     SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
-    INSERT OR REPLACE INTO events (id, content, created_at, pubkey, kind, tags, relays, sig) VALUES (:id, :content, :created_at, :pubkey, :kind, :tags, :relays, :sig);
-    UPDATE events SET relays = ? WHERE id = ? AND relays != ?;
+    INSERT OR REPLACE INTO events (id, pubkey, kind, created_at, blob) VALUES (:id, :pubkey, :kind, :created_at, :blob);
+    INSERT INTO event_tags (event_id, value, is_relay) VALUES (:event_id, :value, :is_relay);
   ''';
-  final [existingPs, eventPs, relayUpdatePs] = db.prepareMultiple(sql);
+  final [existingPs, eventPs, tagsPs] = db.prepareMultiple(sql);
 
   final ids = <String>{};
   try {
-    db.execute('BEGIN');
     final existingIds =
         existingPs.select(incomingIds).map((e) => e['id']).toSet();
 
-    for (final event in verifiedEvents) {
+    // TODO: Triple check all this
+    db.execute('BEGIN');
+    for (final event in events) {
       final alreadySaved = existingIds.contains(event['id']);
-      final sortedRelaysString = jsonEncode(
-        relaysForId.containsKey(event['id'])
-            ? relaysForId[event['id']]!.sorted()
-            : [],
-      );
+      final relayUrls = relaysForId[event['id']] ?? {};
 
       if (!alreadySaved) {
-        final map = {
-          for (final e in event.entries)
-            // Prefix leading ':'
-            ':${e.key}': switch (e.key) {
-              'tags' => jsonEncode(e.value),
-              _ => e.value,
-            },
-          ':relays': sortedRelaysString,
-        };
-
-        eventPs.executeWith(StatementParameters.named(map));
+        eventPs.executeWith(StatementParameters.named(event));
         if (db.updatedRows > 0) {
-          ids.add(map[':id']);
+          ids.add(event[':id']);
+        }
+
+        for (final tag in event['tags'] as Iterable) {
+          tagsPs.executeWith(
+            StatementParameters.named({
+              ':event_id': event[':id'],
+              ':value': '$tag',
+              ':is_relay': false,
+            }),
+          );
+        }
+
+        for (final relayUrl in relayUrls) {
+          tagsPs.executeWith(
+            StatementParameters.named({
+              ':event_id': event[':id'],
+              ':value': relayUrl,
+              ':is_relay': true,
+            }),
+          );
         }
       } else {
-        // If it was already saved, update relays
-        if (sortedRelaysString.isNotEmpty) {
-          relayUpdatePs.execute([
-            sortedRelaysString,
-            event['id'],
-            sortedRelaysString,
-          ]);
-          if (db.updatedRows > 0) {
-            // If rows were updated then value changed, so send ID to notifier
-            ids.add(event['id']);
-          }
+        for (final relayUrl in relayUrls) {
+          tagsPs.executeWith(
+            StatementParameters.named({
+              ':event_id': event[':id'],
+              ':value': relayUrl,
+              ':is_relay': true,
+            }),
+          );
+        }
+        if (db.updatedRows > 0) {
+          // If rows were updated then value changed, so notifier gets the ID
+          ids.add(event['id']);
         }
       }
     }
@@ -202,7 +239,6 @@ Set<String> _save(
   } finally {
     existingPs.dispose();
     eventPs.dispose();
-    relayUpdatePs.dispose();
   }
 
   return ids;
@@ -231,69 +267,46 @@ final setUpSql = '''
   PRAGMA cache_size = -20000;
 
   CREATE TABLE IF NOT EXISTS events(
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     pubkey TEXT NOT NULL,
     kind INTEGER NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    content TEXT NOT NULL,
-    tags TEXT NOT NULL,
-    relays TEXT,
-    sig TEXT
-  );
+    blob BLOB NOT NULL
+  ) WITHOUT ROWID;
 
   CREATE INDEX IF NOT EXISTS pubkey_idx ON events(pubkey);
   CREATE INDEX IF NOT EXISTS kind_idx ON events(kind);
   CREATE INDEX IF NOT EXISTS created_at_idx ON events(created_at);
 
-  -- FTS5 virtual table for tags and search
-  CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-    id UNINDEXED,
-    tags,
-    relays,
+  CREATE TABLE event_tags (
+    event_id  TEXT    NOT NULL,
+    value     TEXT    NOT NULL,
+    is_relay  INTEGER NOT NULL                -- 0 = no, 1 = yes
+              CHECK (is_relay IN (0,1)) 
+              DEFAULT 0,
+
+    PRIMARY KEY (event_id, value),            -- composite PK
+    FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+  ) WITHOUT ROWID;
+
+  CREATE VIRTUAL TABLE events_fts USING fts5(
+    text,
     content='events',
-    content_rowid='rowid'
+    content_rowid='id',
+    tokenize='unicode61 remove_diacritics 1',
+    columnsize=0,
+    detail=none,
+    contentless_delete=1
   );
 
-  CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
-    INSERT INTO events_fts (rowid, tags, relays)
-      VALUES (
-        NEW.rowid,
-        (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
-          FROM json_each(NEW.tags)
-          WHERE LENGTH(value ->> '\$[0]') = 1),
-        (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
-      );
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
-    UPDATE events_fts 
-    SET 
-      tags = (SELECT GROUP_CONCAT(json_extract(value, '\$[0]') || ':' || json_extract(value, '\$[1]'), ' ')
-              FROM json_each(NEW.tags)
-              WHERE LENGTH(value ->> '\$[0]') = 1),
-      relays = (SELECT GROUP_CONCAT(value, ' ') FROM json_each(NEW.relays))
-    WHERE rowid = NEW.rowid;
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
-    DELETE FROM events_fts WHERE rowid = OLD.rowid;
-  END;
-
-  CREATE TABLE IF NOT EXISTS requests(
-    request TEXT,
-    until INTEGER
-  );
-
-  CREATE INDEX IF NOT EXISTS request_idx ON requests(request);
+  CREATE INDEX IF NOT EXISTS value_idx ON event_tags(value);
     ''';
 
+// TODO: Add triggers, necessary for updates (replaceables) and deletions
+
 final tearDownSql = '''
-  DROP TRIGGER IF EXISTS events_ad;
-  DROP TRIGGER IF EXISTS events_au;
-  DROP TRIGGER IF EXISTS events_ai;
-  DROP TABLE IF EXISTS events_fts;
   DROP TABLE IF EXISTS events;
-  DROP TABLE IF EXISTS requests;
+  DROP TABLE IF EXISTS event_tags;
 ''';
 
 //
