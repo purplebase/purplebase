@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:models/models.dart';
 
 extension RequestFilterExt on RequestFilter {
@@ -52,33 +54,32 @@ extension RequestFilterExt on RequestFilter {
 
     // Handle Tags
     if (tags.isNotEmpty) {
-      // Join groups with space (implicit AND in standard FTS query syntax)
-      final ftsQuery = [
-        for (final e in tags.entries)
-          for (final v in e.value)
-            '"${e.key.startsWith('#') ? e.key.substring(1) : e.key}:$v"',
-      ].join(' AND ');
-
-      final tagsParamName = nextParamName('tags');
+      final tagsParams = <String>[];
+      for (final e in tags.entries) {
+        for (final tagValue in e.value) {
+          final paramName = nextParamName('tag');
+          tagsParams.add(paramName);
+          params[paramName] =
+              '${e.key.startsWith('#') ? e.key.substring(1) : e.key}:$tagValue';
+        }
+      }
       whereClauses.add(
-        'id IN (SELECT event_id FROM event_tags WHERE value = $tagsParamName)',
+        'id IN (SELECT event_id FROM event_tags WHERE value IN (${tagsParams.join(', ')}))',
       );
-      params[tagsParamName] = ftsQuery;
     }
 
     // Handle Relays
     if (relayUrls != null && relayUrls.isNotEmpty) {
       // Join groups with space (implicit AND in standard FTS query syntax)
-      final ftsQuery = [for (final url in relayUrls) '"$url"'].join(' AND ');
-      final tagsParamName = nextParamName('relays');
-      whereClauses.add(
-        'id IN (SELECT id FROM events_fts WHERE relays MATCH $tagsParamName)',
-      );
-      params[tagsParamName] = ftsQuery;
+      // final ftsQuery = [for (final url in relayUrls) '"$url"'].join(' AND ');
+      // final tagsParamName = nextParamName('relays');
+      // whereClauses.add(
+      //   'id IN (SELECT id FROM events_fts WHERE relays MATCH $tagsParamName)',
+      // );
+      // params[tagsParamName] = ftsQuery;
     }
 
     // Handle Search (using FTS on content)
-    // TODO: Use JOINs instead
     // SELECT e.*
     // FROM events e
     // JOIN events_fts fts ON e.id = fts.rowid

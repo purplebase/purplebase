@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -8,6 +7,7 @@ import 'package:models/models.dart';
 import 'package:path/path.dart' as path;
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
+import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/websocket_pool.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -192,7 +192,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final savedEvents = await _sendMessage(
       LocalQueryIsolateOperation(queries),
     ).then((r) {
-      return (r.result as Iterable<Row>).decoded().map((e) {
+      return (r.result as Iterable).map((e) {
         return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
       });
     });
@@ -248,22 +248,5 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _sendPort!.send((operation, receivePort.sendPort));
 
     return await receivePort.first as IsolateResponse;
-  }
-}
-
-extension on Iterable<Row> {
-  List<Map<String, dynamic>> decoded() {
-    return map(
-      (row) => {
-        'id': row['id'],
-        'pubkey': row['pubkey'],
-        'kind': row['kind'],
-        'created_at': row['created_at'],
-        'content': row['content'],
-        'sig': row['sig'],
-        'tags': jsonDecode(row['tags']),
-        'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
-      },
-    ).toList();
   }
 }

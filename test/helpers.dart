@@ -6,6 +6,8 @@ import 'package:path/path.dart' as path;
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
+final refProvider = Provider((ref) => ref);
+
 class StateNotifierTester {
   final StateNotifier notifier;
 

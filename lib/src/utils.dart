@@ -1,22 +1,65 @@
-// Fast hash
+import 'dart:convert';
+import 'dart:io';
+import 'package:collection/collection.dart';
+import 'package:sqlite3/sqlite3.dart';
 
-int fastHash(List<int> data, [int seed = 0]) {
-  // Initialize hash with the seed XOR the length of data.
-  int hash = seed ^ data.length;
+final fastZlib = ZLibCodec(
+  level: ZLibOption.minMemLevel,
+  strategy: ZLibOption.strategyRle, // often yields a few more %
+);
 
-  // Process each byte in the input data.
-  for (var byte in data) {
-    // This is a simple hash mixing step:
-    // Multiply by 33 (via a left-shift of 5 added to the hash) and XOR with the current byte.
-    hash = ((hash << 5) + hash) ^ byte;
+extension Z on Iterable<Map<String, dynamic>> {
+  (Set<Map<String, dynamic>> events, Map<String, List<List<String>>> tagsForId)
+  encoded() {
+    final tagsForId = <String, List<List<String>>>{};
+
+    return (
+      map((e) {
+        // Get actual ID including replaceable
+        e['id'] = _getIdForDatabase(e);
+
+        // Save tags in a temporary map
+        final tags = tagsForId[e['id']] = e.remove('tags');
+
+        // Compress fields
+        final blobMap = [e.remove('content'), tags, e.remove('sig')];
+        e['blob'] = fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
+
+        // Rename to prepend `:` for prepared statement
+        return {for (final entry in e.entries) ':${entry.key}': entry.value};
+      }).toSet(),
+      tagsForId,
+    );
   }
 
-  // Return the hash as an unsigned 32-bit integer.
-  return hash & 0xFFFFFFFF;
+  String _getIdForDatabase(Map<String, dynamic> event) {
+    final tags = event['tags'] as Iterable;
+    return switch (event['kind']) {
+      0 || 3 || >= 10000 && < 20000 || >= 30000 && < 40000 =>
+        '${event['kind']}:${event['pubkey']}:${(tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)?.firstOrNull ?? ''}',
+      _ => event['id'],
+    };
+  }
 }
 
-int fastHashString(String input, [int seed = 0]) {
-  // Convert the string to its code units (UTF-16 values) and hash.
-  final bytes = input.codeUnits;
-  return fastHash(bytes, seed);
+extension RowIterableExt on Iterable<Row> {
+  List<Map<String, dynamic>> decoded() {
+    return map((row) {
+      // fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
+      final decodedBlob = fastZlib.decode(row['blob']);
+      final [content, tags, sig] = jsonDecode(utf8.decode(decodedBlob));
+
+      return {
+        'id': row['id'],
+        'pubkey': row['pubkey'],
+        'kind': row['kind'],
+        'created_at': row['created_at'],
+        'content': content,
+        'sig': sig,
+        'tags': tags,
+        // TODO: Restore relays or make class?
+        // 'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
+      };
+    }).toList();
+  }
 }

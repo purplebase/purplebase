@@ -1,10 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:bip340/bip340.dart' as bip340;
-import 'package:collection/collection.dart';
 import 'package:models/models.dart';
+import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/websocket_pool.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
@@ -55,7 +54,7 @@ void isolateEntryPoint(List args) {
         case LocalQueryIsolateOperation(:final queries):
           final sql = queries.map((q) => q.$1).join(';\n');
 
-          final result = [];
+          final result = <Row>[];
           final statements = db!.prepareMultiple(sql);
 
           try {
@@ -74,7 +73,7 @@ void isolateEntryPoint(List args) {
             }
           }
 
-          response = IsolateResponse(success: true, result: result.toList());
+          response = IsolateResponse(success: true, result: result.decoded());
 
         case LocalSaveIsolateOperation(:final events):
           final ids = _save(db!, events, {}, config);
@@ -125,20 +124,6 @@ void isolateEntryPoint(List args) {
   });
 }
 
-final fastZlib = ZLibCodec(
-  level: ZLibOption.minMemLevel,
-  strategy: ZLibOption.strategyRle, // often yields a few more %
-);
-
-String _getIdForDatabase(Map<String, dynamic> event) {
-  final tags = event['tags'] as Iterable;
-  return switch (event['kind']) {
-    0 || 3 || >= 10000 && < 20000 || >= 30000 && < 40000 =>
-      '${event['kind']}:${event['pubkey']}:${(tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)?.firstOrNull ?? ''}',
-    _ => event['id'],
-  };
-}
-
 Set<String> _save(
   Database db,
   Set<Map<String, dynamic>> events,
@@ -150,26 +135,12 @@ Set<String> _save(
   }
 
   // Event massaging
-  events =
+  final (encodedEvents, tagsForId) =
       events
-          // Filter events by verified
-          .where((e) {
-            return config.skipVerification ? true : _verifyEvent(e);
-          })
-          // Prepare (rename to prepend `:` for prepared statement)
-          .map((e) {
-            // Get actual ID including replaceable
-            e['id'] = _getIdForDatabase(e);
-
-            // Compress fields
-            final blobMap = [e['content'], e['tags'], e['sig']];
-            e['blob'] = fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
-
-            return {
-              for (final entry in e.entries) ':${entry.key}': entry.value,
-            };
-          })
-          .toSet();
+      // Filter events by verified
+      .where((e) {
+        return config.skipVerification ? true : _verifyEvent(e);
+      }).encoded();
 
   final incomingIds = events.map((p) => p['id']).toList();
 
@@ -185,11 +156,11 @@ Set<String> _save(
     final existingIds =
         existingPs.select(incomingIds).map((e) => e['id']).toSet();
 
-    // TODO: Triple check all this
     db.execute('BEGIN');
-    for (final event in events) {
+    for (final event in encodedEvents) {
       final alreadySaved = existingIds.contains(event['id']);
       final relayUrls = relaysForId[event['id']] ?? {};
+      print('already saved $alreadySaved');
 
       if (!alreadySaved) {
         eventPs.executeWith(StatementParameters.named(event));
@@ -197,11 +168,13 @@ Set<String> _save(
           ids.add(event[':id']);
         }
 
-        for (final tag in event['tags'] as Iterable) {
+        print(tagsForId);
+        for (final tag in tagsForId[event[':id']]!) {
+          if (tag.length < 2) continue;
           tagsPs.executeWith(
             StatementParameters.named({
               ':event_id': event[':id'],
-              ':value': '$tag',
+              ':value': '${tag[0]}:${tag[1]}',
               ':is_relay': false,
             }),
           );
@@ -244,6 +217,7 @@ Set<String> _save(
   return ids;
 }
 
+// TODO: Faster validation via ffi?
 bool _verifyEvent(Map<String, dynamic> map) {
   bool verified = false;
   if (map['sig'] != null && map['sig'] != '') {
@@ -259,6 +233,7 @@ bool _verifyEvent(Map<String, dynamic> map) {
 
 //
 
+// TODO: Fulltext search should be optional via config
 final setUpSql = '''
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
@@ -295,8 +270,7 @@ final setUpSql = '''
     content_rowid='id',
     tokenize='unicode61 remove_diacritics 1',
     columnsize=0,
-    detail=none,
-    contentless_delete=1
+    detail=none
   );
 
   CREATE INDEX IF NOT EXISTS value_idx ON event_tags(value);
@@ -307,6 +281,7 @@ final setUpSql = '''
 final tearDownSql = '''
   DROP TABLE IF EXISTS events;
   DROP TABLE IF EXISTS event_tags;
+  DROP TABLE IF EXISTS events_fts;
 ''';
 
 //
