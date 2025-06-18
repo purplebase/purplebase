@@ -139,7 +139,12 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
           })
           .catchError((error) {
             // Connection failed for this relay, continue with others
-            // The timeout will handle this case
+            // Mark this relay as unreachable for all events
+            for (final eventId in publishState.pendingEventIds) {
+              publishState.failedRelays
+                  .putIfAbsent(eventId, () => <String>{})
+                  .add(url);
+            }
           });
     }
 
@@ -309,8 +314,8 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       // Re-send active subscriptions to this relay
       await _resendSubscriptions(url);
     } catch (e) {
-      // Connection failed - let the underlying WebSocket library handle reconnection
-      // No need for manual reconnection logic
+      // Connection failed - rethrow so that the publish method can handle it
+      rethrow;
     }
   }
 
@@ -423,7 +428,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final message = data.length > 3 ? data[3] as String? : null;
 
     // Find publish states that are waiting for this event
-    for (final publishState in _publishStates.values) {
+    for (final publishState in [..._publishStates.values]) {
       if (publishState.pendingEventIds.contains(eventId)) {
         // Check if this relay was supposed to receive this event
         final relaysForEvent = publishState.sentToRelays[eventId];
@@ -494,13 +499,48 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // Complete the publish operation
     if (publishState.completer != null &&
         !publishState.completer!.isCompleted) {
-      // Mark unreachable relays for events that didn't get responses
-      for (final eventId in publishState.pendingEventIds) {
-        final sentTo = publishState.sentToRelays[eventId] ?? <String>{};
-        final respondedFrom =
-            publishState.pendingResponses[eventId] ?? <String>{};
-        final unreachable = sentTo.difference(respondedFrom);
-        publishState.response.wrapped.unreachableRelayUrls.addAll(unreachable);
+      // If we have events, track per-event unreachable relays
+      if (publishState.pendingEventIds.isNotEmpty) {
+        // Mark unreachable relays for events that didn't get responses
+        for (final eventId in publishState.pendingEventIds) {
+          final sentTo = publishState.sentToRelays[eventId] ?? <String>{};
+          final respondedFrom =
+              publishState.pendingResponses[eventId] ?? <String>{};
+          final failedConnections =
+              publishState.failedRelays[eventId] ?? <String>{};
+          final unreachable = sentTo.difference(respondedFrom);
+
+          // Add relays that failed to connect and relays that didn't respond
+          publishState.response.wrapped.unreachableRelayUrls.addAll(
+            unreachable,
+          );
+          publishState.response.wrapped.unreachableRelayUrls.addAll(
+            failedConnections,
+          );
+
+          // Also add relays we targeted but never successfully sent to
+          final neverSentTo = publishState.targetRelays
+              .difference(sentTo)
+              .difference(failedConnections);
+          publishState.response.wrapped.unreachableRelayUrls.addAll(
+            neverSentTo,
+          );
+        }
+      } else {
+        // No events to track, just mark all target relays as unreachable if we never sent anything
+        final allSentToRelays =
+            publishState.sentToRelays.values.expand((urls) => urls).toSet();
+        final allFailedRelays =
+            publishState.failedRelays.values.expand((urls) => urls).toSet();
+        final neverConnected = publishState.targetRelays
+            .difference(allSentToRelays)
+            .difference(allFailedRelays);
+        publishState.response.wrapped.unreachableRelayUrls.addAll(
+          neverConnected,
+        );
+        publishState.response.wrapped.unreachableRelayUrls.addAll(
+          allFailedRelays,
+        );
       }
 
       publishState.completer!.complete(publishState.response);
@@ -628,6 +668,8 @@ class PublishState {
   final Map<String, Set<String>> sentToRelays = {}; // eventId -> relay URLs
   final Map<String, Set<String>> pendingResponses =
       {}; // eventId -> relay URLs that responded
+  final Map<String, Set<String>> failedRelays =
+      {}; // eventId -> relay URLs that failed to connect
   final PublishRelayResponse response = PublishRelayResponse();
 
   Timer? timeoutTimer;

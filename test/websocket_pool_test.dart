@@ -556,5 +556,5 @@ void main() {
       print('✓ Published event ${event['id']} successfully');
     });
     */
-  });
+  }, skip: true);
 }

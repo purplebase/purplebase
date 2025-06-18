@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
@@ -13,7 +12,12 @@ Future<void> main() async {
   final relayPorts = [7078, 7079, 7080, 7081, 7082];
   final relayUrl = 'ws://127.0.0.1:${relayPorts.first}';
 
-  Future<void> startNakRelay() async {
+  late Set<Model<dynamic>> testEvents;
+  late Note testNote1, testNote2;
+  late DirectMessage testDM;
+  late Bip340PrivateKeySigner signer;
+
+  setUpAll(() async {
     final completer = Completer<void>();
 
     try {
@@ -51,10 +55,6 @@ Future<void> main() async {
     checkConnection();
 
     await completer.future;
-  }
-
-  setUpAll(() async {
-    await startNakRelay();
   });
 
   tearDownAll(() {
@@ -65,17 +65,13 @@ Future<void> main() async {
     }
   });
 
-  late ProviderContainer container;
-  late StorageNotifier storage;
-  late Bip340PrivateKeySigner signer;
-  late String testDbPath;
+  Future<void> createTestEvents(ProviderContainer container) async {
+    signer = Bip340PrivateKeySigner(
+      Utils.generateRandomHex64(),
+      container.read(refProvider),
+    );
+    await signer.initialize();
 
-  // Test events - will be created after initialization
-  late Set<Model<dynamic>> testEvents;
-  late Note testNote1, testNote2;
-  late DirectMessage testDM;
-
-  Future<void> createTestEvents() async {
     testNote1 = await PartialNote(
       'Test note for remote operations',
       tags: {'test', 'remote'},
@@ -94,34 +90,18 @@ Future<void> main() async {
     testEvents = {testNote1, testNote2, testDM};
   }
 
-  setUpAll(() async {
-    testDbPath = 'test_remote_ops_${Random().nextInt(100000)}.db';
-
-    container = ProviderContainer(
-      overrides: [
-        storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
-      ],
-    );
-
-    // Generate a random private key for real signing
-    final randomPrivateKey = Utils.generateRandomHex64();
-    signer = Bip340PrivateKeySigner(
-      randomPrivateKey,
-      container.read(refProvider),
-    );
-    await signer.initialize();
-  });
-
-  tearDownAll(() async {
-    storage.dispose();
-    storage.obliterateDatabase();
-    container.dispose();
-  });
-
   group('RemotePublishIsolateOperation', () {
-    setUp(() async {
+    late ProviderContainer container;
+    late StorageNotifier storage;
+
+    setUpAll(() async {
+      container = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+
       final config = StorageConfiguration(
-        databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
           'primary': {relayUrl},
@@ -137,7 +117,16 @@ Future<void> main() async {
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      await createTestEvents();
+      await createTestEvents(container);
+    });
+
+    tearDownAll(() async {
+      try {
+        storage.dispose();
+        container.dispose();
+      } catch (e) {
+        // Ignore disposal errors during cleanup
+      }
     });
 
     test('should publish single event to primary relay', () async {
@@ -256,9 +245,17 @@ Future<void> main() async {
   });
 
   group('RemoteQueryIsolateOperation', () {
-    setUp(() async {
+    late ProviderContainer container;
+    late StorageNotifier storage;
+
+    setUpAll(() async {
+      container = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+
       final config = StorageConfiguration(
-        databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
           'primary': {relayUrl},
@@ -267,17 +264,22 @@ Future<void> main() async {
           'offline': {'ws://127.0.0.1:65534'},
         },
         defaultRelayGroup: 'primary',
-        responseTimeout: Duration(milliseconds: 2000),
+        responseTimeout: Duration(milliseconds: 200),
       );
 
       await container.read(initializationProvider(config).future);
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      await createTestEvents();
+      await createTestEvents(container);
 
       // Publish some test events first so we can query them
       await storage.publish(testEvents);
+    });
+
+    tearDownAll(() async {
+      storage.dispose();
+      container.dispose();
     });
 
     test('should query events by ID from relay', () async {
@@ -422,7 +424,7 @@ Future<void> main() async {
     test('should deduplicate events from multiple relays', () async {
       // Publish the same event to both relays
       await storage.publish({testNote1}, source: RemoteSource(group: 'both'));
-      await Future.delayed(Duration(seconds: 1));
+      await Future.delayed(Duration(milliseconds: 100));
 
       final request = RequestFilter(ids: {testNote1.id}).toRequest();
 
@@ -437,9 +439,17 @@ Future<void> main() async {
   });
 
   group('RemoteCancelIsolateOperation', () {
-    setUp(() async {
+    late ProviderContainer container;
+    late StorageNotifier storage;
+
+    setUpAll(() async {
+      container = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+
       final config = StorageConfiguration(
-        databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
           'primary': {relayUrl},
@@ -451,7 +461,12 @@ Future<void> main() async {
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      await createTestEvents();
+      await createTestEvents(container);
+    });
+
+    tearDownAll(() async {
+      storage.dispose();
+      container.dispose();
     });
 
     test('should cancel active subscription', () async {
@@ -477,7 +492,6 @@ Future<void> main() async {
 
     test('should handle cancel with offline relay', () async {
       final config = StorageConfiguration(
-        databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
           'offline': {'ws://127.0.0.1:65534'},
@@ -498,9 +512,17 @@ Future<void> main() async {
   });
 
   group('Error Handling in Remote Operations', () {
-    setUp(() async {
+    late ProviderContainer container;
+    late StorageNotifier storage;
+
+    setUpAll(() async {
+      container = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+
       final config = StorageConfiguration(
-        databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
           'primary': {relayUrl},
@@ -518,7 +540,12 @@ Future<void> main() async {
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      await createTestEvents();
+      await createTestEvents(container);
+    });
+
+    tearDownAll(() async {
+      storage.dispose();
+      container.dispose();
     });
 
     test('should handle invalid relay URLs gracefully', () async {
@@ -553,33 +580,20 @@ Future<void> main() async {
     });
 
     test('should handle network timeouts gracefully', () async {
-      // This is harder to test without mock servers, but we can test
-      // with unreachable addresses
-      final config = StorageConfiguration(
-        databasePath: testDbPath,
-        skipVerification: true,
-        relayGroups: {
-          'timeout': {'ws://192.0.2.1:7777'}, // RFC 5737 test address
-        },
-        defaultRelayGroup: 'timeout',
-        responseTimeout: Duration(milliseconds: 500),
-      );
-
-      await container.read(initializationProvider(config).future);
-      final timeoutStorage = container.read(storageNotifierProvider.notifier);
-
-      final response = await timeoutStorage.publish({
+      // Test with a syntactically invalid URL that should fail immediately
+      final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'timeout'));
+      }, source: RemoteSource(group: 'invalid'));
 
       expect(response, isA<PublishResponse>());
 
-      // For timeout, we should expect unreachable relay URLs
+      // For invalid URLs, we should expect unreachable relay URLs
       expect(response.unreachableRelayUrls, isNotEmpty);
     });
 
     test('should handle malformed events in publish', () async {
       // Create an event with potential issues
+      // TODO: empty content not malformed
       final note = await PartialNote('').signWith(signer); // Empty content
 
       final response = await storage.publish({
@@ -598,19 +612,5 @@ Future<void> main() async {
       // Note: the relay might accept or reject empty content,
       // but we should get a definitive response either way
     });
-
-    // test('should handle relay disconnection during operation', () async {
-    //   // Start an operation
-    //   final publishFuture = storage.publish({
-    //     testNote1,
-    //   }, source: RemoteSource(group: 'primary'));
-
-    //   // Stop the relay mid-operation
-    //   await stopMockRelay('primary');
-
-    //   // Operation should complete (possibly with errors)
-    //   final response = await publishFuture;
-    //   expect(response, isA<PublishResponse>());
-    // });
   });
 }

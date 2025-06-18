@@ -24,7 +24,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   PurplebaseStorageNotifier._internal(this.ref);
 
-  late final Database db;
+  Database? db;
   var _initialized = false;
 
   Isolate? _isolate;
@@ -39,11 +39,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     if (_initialized) return;
 
-    final dirPath = path.join(Directory.current.path, config.databasePath);
-    db = sqlite3.open(dirPath);
+    if (config.databasePath != null) {
+      final dirPath = path.join(Directory.current.path, config.databasePath!);
+      db = sqlite3.open(dirPath);
+    } else {
+      db = sqlite3.openInMemory();
+    }
 
     // Configure sqlite: 1 GB memory mapped
-    db.execute('''
+    db!.execute('''
       PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
       PRAGMA page_size = 4096;
       PRAGMA cache_size = -20000;
@@ -146,7 +150,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         req.filters
             .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
             .toList();
-    final statements = db.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
+    final statements = db!.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
     try {
       for (final statement in statements) {
         final i = statements.indexOf(statement);
@@ -174,6 +178,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Set<String>? onIds,
   }) async {
     // If by any chance req is in cache, return that
+    // TODO: No streaming phase for these, then?
     final cachedEvents =
         requestCache.values.firstWhereOrNull((m) => m.containsKey(req))?[req];
     if (cachedEvents != null) {
@@ -186,23 +191,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final relayUrls = config.getRelays(source: source, useDefault: false);
 
-    final events = <Map<String, dynamic>>[];
-
-    if (source case LocalSource() || RemoteSource(includeLocal: true)) {
-      final queries =
-          req.filters
-              .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
-              .toList();
-      final response = await _sendMessage(LocalQueryIsolateOperation(queries));
-      if (!response.success) {
-        throw IsolateException(response.error);
-      }
-      events.addAll((response.result as Iterable).cast());
-    }
-
-    // TODO: Should have a timeout for isolate as well
-
-    if (source case RemoteSource()) {
+    if (source case RemoteSource(:final includeLocal)) {
       final response = await _sendMessage(
         RemoteQueryIsolateOperation(req: req, source: source),
       );
@@ -210,15 +199,25 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       if (!response.success) {
         throw IsolateException(response.error);
       }
-      events.addAll((response.result as Iterable).cast());
+
+      if (includeLocal == false) {
+        final result = response.result as Iterable<Map<String, dynamic>>;
+        return result.toModels(ref);
+      }
     }
 
-    return events
-        .map((e) {
-          return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
-        })
-        .toList()
-        .cast();
+    final queries =
+        req.filters
+            .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
+            .toList();
+    final response = await _sendMessage(LocalQueryIsolateOperation(queries));
+    if (!response.success) {
+      // TODO: Should have a timeout for isolate as well
+      throw IsolateException(response.error);
+    }
+
+    final result = response.result as Iterable<Map<String, dynamic>>;
+    return result.toModels(ref);
   }
 
   @override
@@ -242,6 +241,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _isolate = null;
     _sendPort = null;
     _initialized = false;
+
+    // Dispose of the database and reset singleton for clean reinitialization
+    db?.dispose();
+    db = null;
+    _instance = null;
 
     if (mounted) {
       super.dispose();

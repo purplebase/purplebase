@@ -24,9 +24,12 @@ void isolateEntryPoint(List args) {
 
   Database? db;
   try {
-    final dirPath = path.join(Directory.current.path, config.databasePath);
-    // print('Opening database at $dirPath [database isolate]');
-    db = sqlite3.open(dirPath);
+    if (config.databasePath != null) {
+      final dirPath = path.join(Directory.current.path, config.databasePath);
+      db = sqlite3.open(dirPath);
+    } else {
+      db = sqlite3.openInMemory();
+    }
     db.execute(setUpSql);
   } catch (e) {
     print('Error opening database: $e');
@@ -147,7 +150,7 @@ Set<String> _save(
   final sql = '''
     SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
     INSERT OR REPLACE INTO events (id, pubkey, kind, created_at, blob) VALUES (:id, :pubkey, :kind, :created_at, :blob);
-    INSERT INTO event_tags (event_id, value, is_relay) VALUES (:event_id, :value, :is_relay);
+    INSERT OR REPLACE INTO event_tags (event_id, value, is_relay) VALUES (:event_id, :value, :is_relay);
   ''';
   final [existingPs, eventPs, tagsPs] = db.prepareMultiple(sql);
 
@@ -158,8 +161,10 @@ Set<String> _save(
 
     db.execute('BEGIN');
     for (final event in encodedEvents) {
-      final alreadySaved = existingIds.contains(event['id']);
-      final relayUrls = relaysForId[event['id']] ?? {};
+      // Remember encoded events properties start with a colon
+      // TODO: Careful here, :id can be a replaceable now!
+      final alreadySaved = existingIds.contains(event[':id']);
+      final relayUrls = relaysForId[event[':id']] ?? {};
       print('already saved $alreadySaved');
 
       if (!alreadySaved) {
@@ -201,14 +206,14 @@ Set<String> _save(
         }
         if (db.updatedRows > 0) {
           // If rows were updated then value changed, so notifier gets the ID
-          ids.add(event['id']);
+          ids.add(event[':id']);
         }
       }
     }
     db.execute('COMMIT');
   } catch (e) {
     db.execute('ROLLBACK');
-    print(e);
+    rethrow;
   } finally {
     existingPs.dispose();
     eventPs.dispose();
