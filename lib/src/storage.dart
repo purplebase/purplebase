@@ -134,11 +134,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   List<E> querySync<E extends Model<dynamic>>(
     Request<E> req, {
-    Source? source,
     Set<String>? onIds,
   }) {
     final events = <Map<String, dynamic>>[];
-    final relayUrls = config.getRelays(source: source, useDefault: false);
+    final relayUrls = config.getRelays(
+      source: LocalSource(),
+      useDefault: false,
+    );
 
     final tuples =
         req.filters
@@ -168,7 +170,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<List<E>> query<E extends Model<dynamic>>(
     Request<E> req, {
-    Source? source,
+    Source source = const LocalSource(),
     Set<String>? onIds,
   }) async {
     // If by any chance req is in cache, return that

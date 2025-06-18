@@ -309,8 +309,8 @@ final class RemotePublishIsolateOperation extends IsolateOperation {
 
 final class RemoteQueryIsolateOperation extends IsolateOperation {
   final Request req;
-  final RemoteSource? source;
-  RemoteQueryIsolateOperation({required this.req, this.source});
+  final RemoteSource source;
+  RemoteQueryIsolateOperation({required this.req, required this.source});
 }
 
 final class RemoteCancelIsolateOperation extends IsolateOperation {
