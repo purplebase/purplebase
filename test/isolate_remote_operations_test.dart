@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -13,49 +14,54 @@ Future<void> main() async {
   late int relayPort;
   late String relayUrl;
 
-  setUpAll(() async {
-    relayPort = 40000 + Random().nextInt(20000); // Random high port
-    relayUrl = 'ws://localhost:$relayPort';
+  Future<void> startNakRelay() async {
+    final completer = Completer<void>();
 
-    print('Starting nak relay on port $relayPort...');
     try {
-      final result = await Process.run('nak', ['--version']);
-      if (result.exitCode != 0) {
-        throw Exception(
-          '`nak --version` failed with exit code ${result.exitCode}',
-        );
-      }
+      nakProcess = await Process.start('nak', [
+        'serve',
+        '--port',
+        '$relayPort',
+      ], mode: ProcessStartMode.detached);
+      print('Started nak at port $relayPort with PID: ${nakProcess!.pid}');
     } catch (e) {
-      print(
-        'nak CLI not found or not working. Please install it to run these tests.',
-      );
-      print('You can install it with `cargo install nak`.');
-      print('See https://github.com/studiokaiji/nak for more info.');
-      print('Error: $e');
-      fail('nak CLI not available. Skipping remote operation tests.');
+      print('Failed to start nak process: $e');
+      rethrow;
     }
 
-    nakProcess = await Process.start('nak', ['serve', '--port', '$relayPort']);
-    nakProcess!.stdout.transform(utf8.decoder).listen((data) {
-      if (data.contains('listening on')) {
-        print('Nak relay started and listening.');
-      }
-    });
-    nakProcess!.stderr
-        .transform(utf8.decoder)
-        .listen((data) => print('nak_stderr: $data'));
+    // Poll websocket connection every 200ms
+    void checkConnection() {
+      Timer.periodic(Duration(milliseconds: 200), (timer) async {
+        try {
+          final socket = await WebSocket.connect(relayUrl);
+          await socket.close();
+          timer.cancel();
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        } catch (e) {
+          // Connection failed, keep trying
+          print('Connection attempt failed, retrying... $e');
+        }
+      });
+    }
 
-    // Wait for relay to be ready
-    await Future.delayed(const Duration(seconds: 2));
-    print('Nak relay should be running.');
+    checkConnection();
+
+    await completer.future;
+  }
+
+  setUpAll(() async {
+    relayPort = 7078; // Fixed port
+    relayUrl = 'ws://127.0.0.1:$relayPort';
+    await startNakRelay();
   });
 
   tearDownAll(() {
     if (nakProcess != null) {
-      print('Stopping nak relay...');
       nakProcess!.kill(ProcessSignal.sigint);
       nakProcess = null;
-      print('Nak relay stopped.');
+      print('Stopped nak relay');
     }
   });
 
@@ -115,8 +121,8 @@ Future<void> main() async {
         relayGroups: {
           'primary': {relayUrl},
           'secondary': {relayUrl},
-          'both': {relayUrl},
-          'offline': {'ws://localhost:99999'}, // Non-existent relay
+          'both': {relayUrl}, // For now, using single relay for simplicity
+          'offline': {'ws://127.0.0.1:99999'}, // Non-existent relay
         },
         defaultRelayGroup: 'primary',
       );
@@ -197,7 +203,7 @@ Future<void> main() async {
           'primary': {relayUrl},
           'secondary': {relayUrl},
           'both': {relayUrl},
-          'offline': {'ws://localhost:99999'},
+          'offline': {'ws://127.0.0.1:99999'},
         },
         defaultRelayGroup: 'primary',
       );
@@ -415,7 +421,7 @@ Future<void> main() async {
         databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
-          'offline': {'ws://localhost:99999'},
+          'offline': {'ws://127.0.0.1:99999'},
         },
         defaultRelayGroup: 'offline',
       );
@@ -440,7 +446,10 @@ Future<void> main() async {
         relayGroups: {
           'primary': {relayUrl},
           'invalid': {'invalid-url'},
-          'mixed': {relayUrl, 'ws://localhost:99999'},
+          'mixed': {
+            relayUrl,
+            'ws://127.0.0.1:99999',
+          }, // Working + offline relay
         },
         defaultRelayGroup: 'primary',
       );
