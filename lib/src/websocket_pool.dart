@@ -112,33 +112,42 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       () => _flushPublishBuffer(publishId),
     );
 
-    // Ensure connections to all relays
-    for (final url in relayUrls) {
-      await _ensureConnection(url);
-    }
-
-    // Send EVENT messages to all connected relays
+    // Prepare EVENT messages
+    final eventMessages = <String, String>{}; // eventId -> message
     for (final event in events) {
       final eventId = event['id'] as String?;
       if (eventId != null) {
         publishState.pendingEventIds.add(eventId);
+        eventMessages[eventId] = jsonEncode(['EVENT', event]);
       }
+    }
 
-      final message = jsonEncode(['EVENT', event]);
-      for (final url in relayUrls) {
-        final relay = _relays[url];
-        if (relay?.isConnected == true) {
-          relay!.socket!.send(message);
-          relay.lastActivity = DateTime.now();
-          _resetIdleTimer(url);
-          // Track that we sent this event to this relay
-          if (eventId != null) {
-            publishState.sentToRelays
-                .putIfAbsent(eventId, () => <String>{})
-                .add(url);
-          }
-        }
-      }
+    // Connect to relays asynchronously and send events as they connect
+    for (final url in relayUrls) {
+      _ensureConnection(url)
+          .then((_) {
+            // Send events as soon as this relay connects
+            final relay = _relays[url];
+            if (relay?.isConnected == true) {
+              for (final entry in eventMessages.entries) {
+                final eventId = entry.key;
+                final message = entry.value;
+
+                relay!.socket!.send(message);
+                relay.lastActivity = DateTime.now();
+                _resetIdleTimer(url);
+
+                // Track that we sent this event to this relay
+                publishState.sentToRelays
+                    .putIfAbsent(eventId, () => <String>{})
+                    .add(url);
+              }
+            }
+          })
+          .catchError((error) {
+            // Connection failed for this relay, continue with others
+            // The timeout will handle this case
+          });
     }
 
     // Wait for responses or timeout

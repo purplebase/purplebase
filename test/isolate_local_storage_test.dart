@@ -71,6 +71,18 @@ Future<void> main() async {
     );
   });
 
+  setUp(() async {
+    // Clear database and re-save test events before each test
+    // to ensure consistent state
+    await storage.clear();
+    final saveResult = await storage.save(testEvents);
+    expect(
+      saveResult,
+      isTrue,
+      reason: 'Failed to re-save test events in setUp',
+    );
+  });
+
   tearDownAll(() async {
     storage.dispose();
     storage.obliterateDatabase();
@@ -289,11 +301,11 @@ Future<void> main() async {
 
   group('LocalClearIsolateOperation', () {
     test('should clear all data from storage', () async {
-      // Verify we have data before clearing
+      // Verify we have our test data before clearing (should be exactly 4 events)
       final beforeClear = await storage.query(
         RequestFilter(authors: {signer.pubkey}).toRequest(),
       );
-      expect(beforeClear, isNotEmpty);
+      expect(beforeClear, hasLength(4));
 
       // Clear the storage
       await storage.clear();

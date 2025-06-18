@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:models/models.dart';
@@ -11,8 +10,8 @@ import 'helpers.dart';
 
 Future<void> main() async {
   Process? nakProcess;
-  late int relayPort;
-  late String relayUrl;
+  final relayPorts = [7078, 7079, 7080, 7081, 7082];
+  final relayUrl = 'ws://127.0.0.1:${relayPorts.first}';
 
   Future<void> startNakRelay() async {
     final completer = Completer<void>();
@@ -21,9 +20,11 @@ Future<void> main() async {
       nakProcess = await Process.start('nak', [
         'serve',
         '--port',
-        '$relayPort',
+        '${relayPorts.first}',
       ], mode: ProcessStartMode.detached);
-      print('Started nak at port $relayPort with PID: ${nakProcess!.pid}');
+      // print(
+      //   'Started nak at port ${relayPorts.first} with PID: ${nakProcess!.pid}',
+      // );
     } catch (e) {
       print('Failed to start nak process: $e');
       rethrow;
@@ -52,8 +53,6 @@ Future<void> main() async {
   }
 
   setUpAll(() async {
-    relayPort = 7078; // Fixed port
-    relayUrl = 'ws://127.0.0.1:$relayPort';
     await startNakRelay();
   });
 
@@ -61,7 +60,7 @@ Future<void> main() async {
     if (nakProcess != null) {
       nakProcess!.kill(ProcessSignal.sigint);
       nakProcess = null;
-      print('Stopped nak relay');
+      // print('Stopped nak relay');
     }
   });
 
@@ -122,7 +121,7 @@ Future<void> main() async {
           'primary': {relayUrl},
           'secondary': {relayUrl},
           'both': {relayUrl}, // For now, using single relay for simplicity
-          'offline': {'ws://127.0.0.1:99999'}, // Non-existent relay
+          'offline': {'ws://127.0.0.1:65534'}, // Non-existent relay
         },
         defaultRelayGroup: 'primary',
       );
@@ -203,7 +202,7 @@ Future<void> main() async {
           'primary': {relayUrl},
           'secondary': {relayUrl},
           'both': {relayUrl},
-          'offline': {'ws://127.0.0.1:99999'},
+          'offline': {'ws://127.0.0.1:65534'},
         },
         defaultRelayGroup: 'primary',
       );
@@ -421,7 +420,7 @@ Future<void> main() async {
         databasePath: testDbPath,
         skipVerification: true,
         relayGroups: {
-          'offline': {'ws://127.0.0.1:99999'},
+          'offline': {'ws://127.0.0.1:65534'},
         },
         defaultRelayGroup: 'offline',
       );
@@ -448,7 +447,7 @@ Future<void> main() async {
           'invalid': {'invalid-url'},
           'mixed': {
             relayUrl,
-            'ws://127.0.0.1:99999',
+            'ws://127.0.0.1:65534',
           }, // Working + offline relay
         },
         defaultRelayGroup: 'primary',
