@@ -10,14 +10,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   final Map<String, RelayState> _relays = {};
   final Map<String, SubscriptionState> _subscriptions = {};
   final Map<String, PublishState> _publishStates = {};
-  final Duration _idleTimeout;
-  final Duration _streamingBufferTimeout;
+  final StorageConfiguration config;
 
-  WebSocketPool({Duration? idleTimeout, Duration? streamingBufferTimeout})
-    : _idleTimeout = idleTimeout ?? const Duration(minutes: 5),
-      _streamingBufferTimeout =
-          streamingBufferTimeout ?? const Duration(seconds: 2),
-      super(null);
+  WebSocketPool(this.config) : super(null);
 
   Future<void> send(Request req, {Set<String> relayUrls = const {}}) async {
     if (relayUrls.isEmpty) return;
@@ -26,9 +21,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final subscription = SubscriptionState(req: req, targetRelays: relayUrls);
     _subscriptions[req.subscriptionId] = subscription;
 
-    // Start timeout timer for ENTIRE process (6 seconds from now)
+    // Start timeout timer for ENTIRE process (responseTimeout from config)
     subscription.eoseTimer = Timer(
-      Duration(seconds: 6),
+      config.responseTimeout,
       () => _flushEventBuffer(req.subscriptionId),
     );
 
@@ -60,7 +55,6 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   Future<List<Map<String, dynamic>>> query(
     Request req, {
     Set<String> relayUrls = const {},
-    Duration timeout = const Duration(seconds: 10),
   }) async {
     // Send the request first
     await send(req, relayUrls: relayUrls);
@@ -73,20 +67,17 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final completer = Completer<List<Map<String, dynamic>>>();
     subscription.queryCompleter = completer;
 
-    Timer? timeoutTimer;
-    if (timeout > Duration.zero) {
-      timeoutTimer = Timer(timeout, () {
-        if (!completer.isCompleted) {
-          completer.complete(List.from(subscription.bufferedEvents));
-        }
-      });
-    }
+    final timeoutTimer = Timer(config.responseTimeout, () {
+      if (!completer.isCompleted) {
+        completer.complete(List.from(subscription.bufferedEvents));
+      }
+    });
 
     try {
       final events = await completer.future;
       return events;
     } finally {
-      timeoutTimer?.cancel();
+      timeoutTimer.cancel();
       unsubscribe(req);
     }
   }
@@ -106,9 +97,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     );
     _publishStates[publishId] = publishState;
 
-    // Set up timeout (6 seconds)
+    // Set up timeout (responseTimeout from config)
     publishState.timeoutTimer = Timer(
-      Duration(seconds: 6),
+      config.responseTimeout,
       () => _flushPublishBuffer(publishId),
     );
 
@@ -302,7 +293,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
         orElse: () => throw TimeoutException('Connection timeout'),
       );
 
-      await connectionFuture.timeout(Duration(seconds: 30));
+      await connectionFuture.timeout(config.responseTimeout);
 
       // Verify we're still not disposed before proceeding
       if (!mounted) {
@@ -389,12 +380,18 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       return; // Event already in buffer for this subscription
     }
 
+    // Remove signature if keepSignatures is false
+    final processedEvent = Map<String, dynamic>.from(event);
+    if (!config.keepSignatures) {
+      processedEvent.remove('sig');
+    }
+
     if (subscription.phase == SubscriptionPhase.eose) {
       // Buffer event until EOSE
-      subscription.bufferedEvents.add(event);
+      subscription.bufferedEvents.add(processedEvent);
     } else {
       // Streaming phase - buffer with timeout
-      subscription.bufferedEvents.add(event);
+      subscription.bufferedEvents.add(processedEvent);
       _scheduleStreamingFlush(subscriptionId);
     }
   }
@@ -519,7 +516,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     subscription.streamingBuffer?.cancel();
     subscription.streamingBuffer = Timer(
-      _streamingBufferTimeout,
+      config.streamingBufferWindow,
       () => _flushEventBuffer(subscriptionId),
     );
   }
@@ -544,7 +541,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     if (relay == null) return;
 
     relay.idleTimer?.cancel();
-    relay.idleTimer = Timer(_idleTimeout, () {
+    relay.idleTimer = Timer(config.idleTimeout, () {
       if (relay.socket != null) {
         relay.socket?.close();
       }
@@ -683,8 +680,6 @@ class RelayState {
   }
 
   // TODO: Optimize request filter based on latest seen timestamp
-  // TODO: Make all timers/timeouts configurable
-  // TODO: Re-introduce checking for keepSig (config.keepSignatures)
 }
 
 // Response classes

@@ -115,10 +115,16 @@ void main() {
     });
 
     setUp(() {
-      pool = WebSocketPool(
-        idleTimeout: Duration(seconds: 10),
-        streamingBufferTimeout: Duration(milliseconds: 500),
+      final config = StorageConfiguration(
+        databasePath: 'test.db',
+        skipVerification: true,
+        relayGroups: {
+          'test': {'wss://test.com'},
+        },
+        defaultRelayGroup: 'test',
+        responseTimeout: Duration(milliseconds: 500),
       );
+      pool = WebSocketPool(config);
     });
 
     tearDown(() async {

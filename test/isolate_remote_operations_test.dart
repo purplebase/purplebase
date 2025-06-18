@@ -124,6 +124,7 @@ Future<void> main() async {
           'offline': {'ws://127.0.0.1:65534'}, // Non-existent relay
         },
         defaultRelayGroup: 'primary',
+        responseTimeout: Duration(milliseconds: 200),
       );
 
       await container.read(initializationProvider(config).future);
@@ -159,6 +160,7 @@ Future<void> main() async {
     });
 
     test('should handle publish to offline relay gracefully', () async {
+      print(storage.config.responseTimeout);
       final response = await storage.publish({
         testNote1,
       }, source: RemoteSource(group: 'offline'));
@@ -205,6 +207,7 @@ Future<void> main() async {
           'offline': {'ws://127.0.0.1:65534'},
         },
         defaultRelayGroup: 'primary',
+        responseTimeout: Duration(milliseconds: 500),
       );
 
       await container.read(initializationProvider(config).future);
@@ -451,6 +454,7 @@ Future<void> main() async {
           }, // Working + offline relay
         },
         defaultRelayGroup: 'primary',
+        responseTimeout: Duration(milliseconds: 200),
       );
 
       await container.read(initializationProvider(config).future);
@@ -466,6 +470,7 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'invalid'));
 
       // Should not throw, just return a response
+      print(response.unreachableRelayUrls);
       expect(response, isA<PublishResponse>());
     });
 
@@ -487,6 +492,7 @@ Future<void> main() async {
           'timeout': {'ws://192.0.2.1:7777'}, // RFC 5737 test address
         },
         defaultRelayGroup: 'timeout',
+        responseTimeout: Duration(milliseconds: 500),
       );
 
       await container.read(initializationProvider(config).future);

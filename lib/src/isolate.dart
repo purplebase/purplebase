@@ -20,7 +20,7 @@ void isolateEntryPoint(List args) {
   void Function()? closeFn;
   StreamSubscription? sub;
 
-  final pool = WebSocketPool();
+  final pool = WebSocketPool(config);
 
   Database? db;
   try {
