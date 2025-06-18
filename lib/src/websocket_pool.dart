@@ -46,6 +46,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
             }
           })
           .catchError((error) {
+            print(error);
             // Connection failed for this relay, continue with others
             // The timeout will handle this case
           });
@@ -73,13 +74,14 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       }
     });
 
+    List<Map<String, dynamic>> events;
     try {
-      final events = await completer.future;
-      return events;
+      events = await completer.future;
     } finally {
       timeoutTimer.cancel();
       unsubscribe(req);
     }
+    return events;
   }
 
   Future<PublishRelayResponse> publish(

@@ -184,34 +184,39 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final relayUrls = config.getRelays(source: source, useDefault: false);
 
-    final queries =
-        req.filters
-            .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
-            .toList();
+    final events = <Map<String, dynamic>>[];
 
-    final savedEvents = await _sendMessage(
-      LocalQueryIsolateOperation(queries),
-    ).then((r) {
-      return (r.result as Iterable).map((e) {
-        return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
-      });
-    });
+    if (source case LocalSource() || RemoteSource(includeLocal: true)) {
+      final queries =
+          req.filters
+              .map((f) => f.toSQL(onIds: onIds, relayUrls: relayUrls))
+              .toList();
+      final response = await _sendMessage(LocalQueryIsolateOperation(queries));
+      if (!response.success) {
+        throw IsolateException(response.error);
+      }
+      events.addAll((response.result as Iterable).cast());
+    }
 
-    final fetchedEvents = <Map<String, dynamic>>{};
+    // TODO: Should have a timeout for isolate as well
 
-    if (source is RemoteSource) {
+    if (source case RemoteSource()) {
       final response = await _sendMessage(
-        RemoteQueryIsolateOperation(req: req),
+        RemoteQueryIsolateOperation(req: req, source: source),
       );
 
       if (!response.success) {
         throw IsolateException(response.error);
       }
-
-      fetchedEvents.addAll(response.result as List<Map<String, dynamic>>);
+      events.addAll((response.result as Iterable).cast());
     }
 
-    return [...savedEvents, ...fetchedEvents].cast();
+    return events
+        .map((e) {
+          return Model.getConstructorForKind(e['kind']!)!.call(e, ref);
+        })
+        .toList()
+        .cast();
   }
 
   @override

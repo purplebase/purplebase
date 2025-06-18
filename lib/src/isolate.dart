@@ -98,7 +98,7 @@ void isolateEntryPoint(List args) {
           final relayUrls = config.getRelays(source: source);
           final result = await pool.query(req, relayUrls: relayUrls);
           // No saving here, events are saved in the callback as query also emits
-          response = IsolateResponse(success: true, result: result);
+          response = IsolateResponse(success: true, result: result.decoded());
 
         case RemotePublishIsolateOperation(:final events, :final source):
           final relayUrls = config.getRelays(source: source, useDefault: true);
@@ -169,7 +169,7 @@ Set<String> _save(
         }
 
         print(tagsForId);
-        for (final tag in tagsForId[event[':id']]!) {
+        for (final List tag in tagsForId[event[':id']]!) {
           if (tag.length < 2) continue;
           tagsPs.executeWith(
             StatementParameters.named({

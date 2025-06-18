@@ -1,17 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:collection/collection.dart';
-import 'package:sqlite3/sqlite3.dart';
 
 final fastZlib = ZLibCodec(
   level: ZLibOption.minMemLevel,
   strategy: ZLibOption.strategyRle, // often yields a few more %
 );
 
-extension Z on Iterable<Map<String, dynamic>> {
-  (Set<Map<String, dynamic>> events, Map<String, List<List<String>>> tagsForId)
-  encoded() {
-    final tagsForId = <String, List<List<String>>>{};
+extension JSONIterableExt on Iterable<Map<String, dynamic>> {
+  (Set<Map<String, dynamic>> events, Map<String, List> tagsForId) encoded() {
+    final tagsForId = <String, List>{};
 
     return (
       map((e) {
@@ -32,17 +30,6 @@ extension Z on Iterable<Map<String, dynamic>> {
     );
   }
 
-  String _getIdForDatabase(Map<String, dynamic> event) {
-    final tags = event['tags'] as Iterable;
-    return switch (event['kind']) {
-      0 || 3 || >= 10000 && < 20000 || >= 30000 && < 40000 =>
-        '${event['kind']}:${event['pubkey']}:${(tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)?.firstOrNull ?? ''}',
-      _ => event['id'],
-    };
-  }
-}
-
-extension RowIterableExt on Iterable<Row> {
   List<Map<String, dynamic>> decoded() {
     return map((row) {
       // fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
@@ -61,5 +48,14 @@ extension RowIterableExt on Iterable<Row> {
         // 'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
       };
     }).toList();
+  }
+
+  String _getIdForDatabase(Map<String, dynamic> event) {
+    final tags = event['tags'] as Iterable;
+    return switch (event['kind']) {
+      0 || 3 || >= 10000 && < 20000 || >= 30000 && < 40000 =>
+        '${event['kind']}:${event['pubkey']}:${(tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)?.firstOrNull ?? ''}',
+      _ => event['id'],
+    };
   }
 }

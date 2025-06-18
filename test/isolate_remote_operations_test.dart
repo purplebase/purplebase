@@ -22,9 +22,10 @@ Future<void> main() async {
         '--port',
         '${relayPorts.first}',
       ], mode: ProcessStartMode.detached);
-      // print(
-      //   'Started nak at port ${relayPorts.first} with PID: ${nakProcess!.pid}',
-      // );
+      print(
+        'Started nak at port ${relayPorts.first} with PID: ${nakProcess!.pid}',
+      );
+      await Future.delayed(Duration(milliseconds: 1300));
     } catch (e) {
       print('Failed to start nak process: $e');
       rethrow;
@@ -66,7 +67,7 @@ Future<void> main() async {
 
   late ProviderContainer container;
   late StorageNotifier storage;
-  late DummySigner signer;
+  late Bip340PrivateKeySigner signer;
   late String testDbPath;
 
   // Test events - will be created after initialization
@@ -74,21 +75,21 @@ Future<void> main() async {
   late Note testNote1, testNote2;
   late DirectMessage testDM;
 
-  void createTestEvents() {
-    testNote1 = PartialNote(
+  Future<void> createTestEvents() async {
+    testNote1 = await PartialNote(
       'Test note for remote operations',
       tags: {'test', 'remote'},
-    ).dummySign(signer.pubkey);
+    ).signWith(signer);
 
-    testNote2 = PartialNote(
+    testNote2 = await PartialNote(
       'Second test note for batch operations',
       tags: {'test', 'batch'},
-    ).dummySign(signer.pubkey);
+    ).signWith(signer);
 
-    testDM = PartialDirectMessage(
+    testDM = await PartialDirectMessage(
       content: 'Test direct message',
       receiver: Utils.generateRandomHex64(),
-    ).dummySign(signer.pubkey);
+    ).signWith(signer);
 
     testEvents = {testNote1, testNote2, testDM};
   }
@@ -102,7 +103,12 @@ Future<void> main() async {
       ],
     );
 
-    signer = DummySigner(container.read(refProvider));
+    // Generate a random private key for real signing
+    final randomPrivateKey = Utils.generateRandomHex64();
+    signer = Bip340PrivateKeySigner(
+      randomPrivateKey,
+      container.read(refProvider),
+    );
     await signer.initialize();
   });
 
@@ -131,7 +137,7 @@ Future<void> main() async {
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      createTestEvents();
+      await createTestEvents();
     });
 
     test('should publish single event to primary relay', () async {
@@ -140,6 +146,15 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'primary'));
 
       expect(response, isA<PublishResponse>());
+
+      // Verify that the event was published and accepted
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+
+      // Check that the event was accepted by the relay
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => state.accepted), isTrue);
     });
 
     test('should publish multiple events to relay', () async {
@@ -149,6 +164,19 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'primary'));
 
       expect(response, isA<PublishResponse>());
+
+      // Verify that both events were published and accepted
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+      expect(response.results.containsKey(testNote2.id), isTrue);
+
+      // Check that both events were accepted by the relay
+      final note1States = response.results[testNote1.id]!;
+      final note2States = response.results[testNote2.id]!;
+      expect(note1States, isNotEmpty);
+      expect(note2States, isNotEmpty);
+      expect(note1States.every((state) => state.accepted), isTrue);
+      expect(note2States.every((state) => state.accepted), isTrue);
     });
 
     test('should publish to multiple relays', () async {
@@ -157,15 +185,26 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'both'));
 
       expect(response, isA<PublishResponse>());
+
+      // Verify that the event was published and accepted
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+
+      // Check that the event was accepted by the relay
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => state.accepted), isTrue);
     });
 
     test('should handle publish to offline relay gracefully', () async {
-      print(storage.config.responseTimeout);
       final response = await storage.publish({
         testNote1,
       }, source: RemoteSource(group: 'offline'));
 
       expect(response, isA<PublishResponse>());
+
+      // TODO: For offline relay, we should expect unreachable relay URLs
+      // expect(response.unreachableRelayUrls, isNotEmpty);
     });
 
     test('should handle empty event set', () async {
@@ -175,12 +214,24 @@ Future<void> main() async {
       );
 
       expect(response, isA<PublishResponse>());
+
+      // No events should be in results for empty set
+      expect(response.results, isEmpty);
     });
 
     test('should use default relay group when no source specified', () async {
       final response = await storage.publish({testNote1});
 
       expect(response, isA<PublishResponse>());
+
+      // Verify that the event was published and accepted
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+
+      // Check that the event was accepted by the relay
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => state.accepted), isTrue);
     });
 
     test('should handle large events', () async {
@@ -192,6 +243,15 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'primary'));
 
       expect(response, isA<PublishResponse>());
+
+      // Verify that the large event was published and accepted
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(largeNote.id), isTrue);
+
+      // Check that the event was accepted by the relay
+      final eventStates = response.results[largeNote.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => state.accepted), isTrue);
     });
   });
 
@@ -207,20 +267,17 @@ Future<void> main() async {
           'offline': {'ws://127.0.0.1:65534'},
         },
         defaultRelayGroup: 'primary',
-        responseTimeout: Duration(milliseconds: 500),
+        responseTimeout: Duration(milliseconds: 2000),
       );
 
       await container.read(initializationProvider(config).future);
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      createTestEvents();
+      await createTestEvents();
 
       // Publish some test events first so we can query them
-      await storage.publish(testEvents, source: RemoteSource(group: 'primary'));
-      await Future.delayed(
-        const Duration(seconds: 1),
-      ); // Give time for events to propagate
+      await storage.publish(testEvents);
     });
 
     test('should query events by ID from relay', () async {
@@ -394,7 +451,7 @@ Future<void> main() async {
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      createTestEvents();
+      await createTestEvents();
     });
 
     test('should cancel active subscription', () async {
@@ -461,7 +518,7 @@ Future<void> main() async {
       storage = container.read(storageNotifierProvider.notifier);
 
       // Create test events after initialization
-      createTestEvents();
+      await createTestEvents();
     });
 
     test('should handle invalid relay URLs gracefully', () async {
@@ -470,8 +527,11 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'invalid'));
 
       // Should not throw, just return a response
-      print(response.unreachableRelayUrls);
       expect(response, isA<PublishResponse>());
+
+      // For invalid URLs, we should expect unreachable relay URLs
+      expect(response.unreachableRelayUrls, isNotEmpty);
+      print('Unreachable relays: ${response.unreachableRelayUrls}');
     });
 
     test('should handle mixed valid/invalid relays', () async {
@@ -480,6 +540,16 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'mixed'));
 
       expect(response, isA<PublishResponse>());
+
+      // For mixed relays, we might have some results and some unreachable
+      // The working relay should accept the event, offline relay should be unreachable
+      if (response.results.isNotEmpty) {
+        expect(response.results.containsKey(testNote1.id), isTrue);
+        final eventStates = response.results[testNote1.id]!;
+        expect(eventStates.any((state) => state.accepted), isTrue);
+      }
+      // Should also have unreachable relays
+      expect(response.unreachableRelayUrls, isNotEmpty);
     });
 
     test('should handle network timeouts gracefully', () async {
@@ -503,6 +573,9 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'timeout'));
 
       expect(response, isA<PublishResponse>());
+
+      // For timeout, we should expect unreachable relay URLs
+      expect(response.unreachableRelayUrls, isNotEmpty);
     });
 
     test('should handle malformed events in publish', () async {
@@ -514,6 +587,16 @@ Future<void> main() async {
       }, source: RemoteSource(group: 'primary'));
 
       expect(response, isA<PublishResponse>());
+
+      // Even malformed events should get a response
+      // The relay may accept or reject, but we should get feedback
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(note.id), isTrue);
+
+      final eventStates = response.results[note.id]!;
+      expect(eventStates, isNotEmpty);
+      // Note: the relay might accept or reject empty content,
+      // but we should get a definitive response either way
     });
 
     // test('should handle relay disconnection during operation', () async {
