@@ -116,7 +116,6 @@ void main() {
 
     setUp(() {
       final config = StorageConfiguration(
-        databasePath: 'test.db',
         skipVerification: true,
         relayGroups: {
           'test': {'wss://test.com'},

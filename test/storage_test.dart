@@ -17,7 +17,6 @@ Future<void> main() async {
       ],
     );
     final config = StorageConfiguration(
-      databasePath: 'storage.db',
       skipVerification: true,
       relayGroups: {
         'test': {'wss://test.com'},
@@ -129,13 +128,13 @@ Future<void> main() async {
     // final m1 = DateTime.now().millisecondsSinceEpoch;
     for (final i in List.generate(amount, (i) => i)) {
       final r1 = await storage.query(
-        RequestFilter(
+        RequestFilter<Note>(
           tags: {
             '#t': {'test $i'},
           },
         ).toRequest(),
       );
-      expect(r1.map((e) => e.event.content), contains('note $i'));
+      expect(r1.first.content, contains('note $i'));
     }
     // final m2 = DateTime.now().millisecondsSinceEpoch;
     // print(m2 - m1);

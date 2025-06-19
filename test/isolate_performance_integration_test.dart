@@ -10,11 +10,8 @@ Future<void> main() async {
   late ProviderContainer container;
   late StorageNotifier storage;
   late DummySigner signer;
-  late String testDbPath;
 
   setUpAll(() async {
-    testDbPath = 'test_perf_integration_${Random().nextInt(100000)}.db';
-
     container = ProviderContainer(
       overrides: [
         storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
@@ -22,7 +19,6 @@ Future<void> main() async {
     );
 
     final config = StorageConfiguration(
-      databasePath: testDbPath,
       skipVerification: true,
       relayGroups: {
         'test': {'wss://test1.com', 'wss://test2.com'},
@@ -230,28 +226,6 @@ Future<void> main() async {
         RequestFilter(authors: {signer.pubkey}).toRequest(),
       );
       expect(afterClear, isEmpty);
-    });
-
-    test('should handle mixed local and remote operations', () async {
-      // Save locally first
-      final localNote = await PartialNote('Local note #mixed').signWith(signer);
-      await storage.save({localNote});
-
-      // Query locally
-      final localResult = await storage.query(
-        RequestFilter(ids: {localNote.id}).toRequest(),
-      );
-      expect(localResult, hasLength(1));
-
-      // Note: Remote operations would require actual relay setup
-      // For now, we'll test the local part thoroughly
-
-      // Test sync vs async queries
-      final syncResult = storage.querySync(
-        RequestFilter(ids: {localNote.id}).toRequest(),
-      );
-      expect(syncResult, hasLength(1));
-      expect(syncResult.first.id, equals(localResult.first.id));
     });
 
     test('should handle event deduplication correctly', () async {

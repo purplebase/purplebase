@@ -165,7 +165,6 @@ Set<String> _save(
       // TODO: Careful here, :id can be a replaceable now!
       final alreadySaved = existingIds.contains(event[':id']);
       final relayUrls = relaysForId[event[':id']] ?? {};
-      print('already saved $alreadySaved');
 
       if (!alreadySaved) {
         eventPs.executeWith(StatementParameters.named(event));
@@ -173,7 +172,6 @@ Set<String> _save(
           ids.add(event[':id']);
         }
 
-        print(tagsForId);
         for (final List tag in tagsForId[event[':id']]!) {
           if (tag.length < 2) continue;
           tagsPs.executeWith(

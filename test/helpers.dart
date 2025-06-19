@@ -64,6 +64,7 @@ extension ProviderContainerExt on ProviderContainer {
 
 extension StorageExt on StorageNotifier {
   void obliterateDatabase() {
+    if (config.databasePath == null) return;
     // Obliterate database
     Directory.current.listSync().forEach((entity) {
       if (entity is File &&

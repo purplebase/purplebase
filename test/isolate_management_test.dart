@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
@@ -10,11 +9,8 @@ Future<void> main() async {
   late ProviderContainer container;
   late StorageNotifier storage;
   late DummySigner signer;
-  late String testDbPath;
 
   setUp(() async {
-    testDbPath = 'test_isolate_mgmt_${Random().nextInt(100000)}.db';
-
     container = ProviderContainer(
       overrides: [
         storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
@@ -22,7 +18,6 @@ Future<void> main() async {
     );
 
     final config = StorageConfiguration(
-      databasePath: testDbPath,
       skipVerification: true,
       relayGroups: {
         'test': {'wss://test.com'},
