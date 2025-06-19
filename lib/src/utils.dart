@@ -8,7 +8,9 @@ final fastZlib = ZLibCodec(
 );
 
 extension JSONIterableExt on Iterable<Map<String, dynamic>> {
-  (Set<Map<String, dynamic>> events, Map<String, List> tagsForId) encoded() {
+  (Set<Map<String, dynamic>> events, Map<String, List> tagsForId) encoded({
+    bool keepSignatures = true,
+  }) {
     final tagsForId = <String, List>{};
 
     return (
@@ -20,7 +22,8 @@ extension JSONIterableExt on Iterable<Map<String, dynamic>> {
         final tags = tagsForId[e['id']] = e.remove('tags');
 
         // Compress fields
-        final blobMap = [e.remove('content'), tags, e.remove('sig')];
+        final sig = e.remove('sig');
+        final blobMap = [e.remove('content'), tags, if (keepSignatures) sig];
         e['blob'] = fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
 
         // Rename to prepend `:` for prepared statement
@@ -32,9 +35,11 @@ extension JSONIterableExt on Iterable<Map<String, dynamic>> {
 
   List<Map<String, dynamic>> decoded() {
     return map((row) {
-      // fastZlib.encode(utf8.encode(jsonEncode(blobMap)));
+      // Return it if no need to decode
+      if (!row.containsKey('blob')) return row;
+
       final decodedBlob = fastZlib.decode(row['blob']);
-      final [content, tags, sig] = jsonDecode(utf8.decode(decodedBlob));
+      final [content, tags, ...other] = jsonDecode(utf8.decode(decodedBlob));
 
       return {
         'id': row['id'],
@@ -42,7 +47,7 @@ extension JSONIterableExt on Iterable<Map<String, dynamic>> {
         'kind': row['kind'],
         'created_at': row['created_at'],
         'content': content,
-        'sig': sig,
+        if (other.isNotEmpty) 'sig': other.first.toString(),
         'tags': tags,
         // TODO: Restore relays or make class?
         // 'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,

@@ -270,18 +270,6 @@ Future<void> main() async {
       expect(result, hasLength(2));
     });
 
-    test(
-      'should handle sync queries',
-      () {
-        final result = storage.querySync(
-          RequestFilter(ids: {testNote1.id}).toRequest(),
-        );
-        expect(result, hasLength(1));
-        expect(result.first.id, equals(testNote1.id));
-      },
-      skip: true,
-    ); // Skipping for now as in-memory database in different isolates are different
-
     test('should handle malformed query gracefully', () async {
       // This tests the error handling in the isolate
       try {

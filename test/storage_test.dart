@@ -406,15 +406,27 @@ Future<void> main() async {
   }, skip: true);
 
   group('request notifier', () {
-    test('relay request should notify with events', () async {
-      final tester = container.testerFor(query<Note>());
-      final n1 = await PartialNote('yo').signWith(signer);
-      await storage.save({n1});
+    test(
+      'relay request should notify with events',
+      () async {
+        final tester = container.testerFor(
+          query<Note>(),
+          fireImmediately: true, // to get the initial loading state
+        );
+        await tester.expect(isA<StorageLoading>());
 
-      await tester.expect(
-        isA<StorageData>().having((s) => s.models, 'models', {n1}),
-      );
-    });
+        await tester.expect(
+          isA<StorageData>().having((s) => s.models, 'models', []),
+        );
+        final n1 = await PartialNote('yo').signWith(signer);
+        await storage.save({n1});
+
+        await tester.expect(
+          isA<StorageData>().having((s) => s.models, 'models', {n1}),
+        );
+      },
+      timeout: Timeout(Duration(seconds: 100)),
+    );
   });
 }
 

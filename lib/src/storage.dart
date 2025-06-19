@@ -140,6 +140,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Request<E> req, {
     Set<String>? onIds,
   }) {
+    // Check if the database has been disposed
+    if (db == null) {
+      throw IsolateException('Storage has been disposed');
+    }
+
     final events = <Map<String, dynamic>>[];
     final relayUrls = config.getRelays(
       source: LocalSource(),
@@ -177,8 +182,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Source source = const LocalSource(),
     Set<String>? onIds,
   }) async {
+    if (req.filters.isEmpty) return [];
     // If by any chance req is in cache, return that
     // TODO: No streaming phase for these, then?
+    // TODO: THIS WILL FAIL BECAUSE REQS HAVE EQUALITY ON SUB ID?
     final cachedEvents =
         requestCache.values.firstWhereOrNull((m) => m.containsKey(req))?[req];
     if (cachedEvents != null) {
@@ -189,7 +196,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     // final replaceableIds = req.ids.where(kReplaceableRegexp.hasMatch);
     // final regularIds = {...req.ids}..removeAll(replaceableIds);
 
-    final relayUrls = config.getRelays(source: source, useDefault: false);
+    final relayUrls = config.getRelays(source: source, useDefault: true);
 
     if (source case RemoteSource(:final includeLocal)) {
       final response = await _sendMessage(
@@ -253,11 +260,30 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   Future<IsolateResponse> _sendMessage(IsolateOperation operation) async {
-    await _initCompleter.future;
+    // Check if the isolate has been disposed
+    if (!_initialized || _sendPort == null) {
+      throw IsolateException('Storage has been disposed');
+    }
 
-    final receivePort = ReceivePort();
-    _sendPort!.send((operation, receivePort.sendPort));
+    try {
+      await _initCompleter.future;
 
-    return await receivePort.first as IsolateResponse;
+      // Double-check after waiting - dispose might have been called while waiting
+      if (!_initialized || _sendPort == null) {
+        throw IsolateException('Storage has been disposed');
+      }
+
+      final receivePort = ReceivePort();
+      _sendPort!.send((operation, receivePort.sendPort));
+
+      return await receivePort.first as IsolateResponse;
+    } catch (e) {
+      // If any null check error occurs, convert to IsolateException
+      if (e is TypeError &&
+          e.toString().contains('Null check operator used on a null value')) {
+        throw IsolateException('Storage has been disposed');
+      }
+      rethrow;
+    }
   }
 }

@@ -68,17 +68,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final completer = Completer<List<Map<String, dynamic>>>();
     subscription.queryCompleter = completer;
 
-    final timeoutTimer = Timer(config.responseTimeout, () {
-      if (!completer.isCompleted) {
-        completer.complete(List.from(subscription.bufferedEvents));
-      }
-    });
-
     List<Map<String, dynamic>> events;
     try {
       events = await completer.future;
     } finally {
-      timeoutTimer.cancel();
       unsubscribe(req);
     }
     return events;
@@ -389,9 +382,6 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     // Remove signature if keepSignatures is false
     final processedEvent = Map<String, dynamic>.from(event);
-    if (!config.keepSignatures) {
-      processedEvent.remove('sig');
-    }
 
     if (subscription.phase == SubscriptionPhase.eose) {
       // Buffer event until EOSE

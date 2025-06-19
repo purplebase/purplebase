@@ -138,12 +138,12 @@ Set<String> _save(
   }
 
   // Event massaging
-  final (encodedEvents, tagsForId) =
-      events
+  final (encodedEvents, tagsForId) = events
       // Filter events by verified
       .where((e) {
         return config.skipVerification ? true : _verifyEvent(e);
-      }).encoded();
+      })
+      .encoded(keepSignatures: config.keepSignatures);
 
   final incomingIds = events.map((p) => p['id']).toList();
 
@@ -152,6 +152,7 @@ Set<String> _save(
     INSERT OR REPLACE INTO events (id, pubkey, kind, created_at, blob) VALUES (:id, :pubkey, :kind, :created_at, :blob);
     INSERT OR REPLACE INTO event_tags (event_id, value, is_relay) VALUES (:event_id, :value, :is_relay);
   ''';
+  // TODO: And FTS?
   final [existingPs, eventPs, tagsPs] = db.prepareMultiple(sql);
 
   final ids = <String>{};
@@ -173,7 +174,8 @@ Set<String> _save(
         }
 
         for (final List tag in tagsForId[event[':id']]!) {
-          if (tag.length < 2) continue;
+          // TODO: Allow specific tags to be indexed
+          if (tag.length < 2 || tag[0].toString().length > 1) continue;
           tagsPs.executeWith(
             StatementParameters.named({
               ':event_id': event[':id'],
@@ -256,7 +258,7 @@ final setUpSql = '''
   CREATE INDEX IF NOT EXISTS kind_idx ON events(kind);
   CREATE INDEX IF NOT EXISTS created_at_idx ON events(created_at);
 
-  CREATE TABLE event_tags (
+  CREATE TABLE IF NOT EXISTS event_tags (
     event_id  TEXT    NOT NULL,
     value     TEXT    NOT NULL,
     is_relay  INTEGER NOT NULL                -- 0 = no, 1 = yes
@@ -267,7 +269,7 @@ final setUpSql = '''
     FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
   ) WITHOUT ROWID;
 
-  CREATE VIRTUAL TABLE events_fts USING fts5(
+  CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
     text,
     content='events',
     content_rowid='id',

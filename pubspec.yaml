@@ -17,7 +17,7 @@ dependencies:
   sqlite3: ^2.7.5
   collection: ^1.19.1
   path: ^1.9.1
-  meta: ^1.17.0
+  meta: ^1.16.0
 
 dev_dependencies:
   lints: ^2.1.0
