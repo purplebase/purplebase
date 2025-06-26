@@ -192,8 +192,7 @@ Future<void> main() async {
 
       expect(response, isA<PublishResponse>());
 
-      // TODO: For offline relay, we should expect unreachable relay URLs
-      // expect(response.unreachableRelayUrls, isNotEmpty);
+      expect(response.unreachableRelayUrls, isNotEmpty);
     });
 
     test('should handle empty event set', () async {

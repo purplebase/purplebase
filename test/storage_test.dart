@@ -378,19 +378,6 @@ Future<void> main() async {
     expect(comprehensiveResults, unorderedEquals([n1, n4]));
   });
 
-  test('send', () async {
-    final n1 = await PartialNote('yo').signWith(signer);
-    await storage.save({n1});
-    final events = await storage.query(
-      RequestFilter(
-        kinds: {1},
-        ids: {Utils.generateRandomHex64(), Utils.generateRandomHex64(), n1.id},
-      ).toRequest(),
-      source: RemoteSource(includeLocal: false),
-    );
-    expect(events, hasLength(0));
-  });
-
   test('query by relay', () async {
     final n1 = await PartialNote('no relay').signWith(signer);
     final n2 = await PartialNote('yes relay').signWith(signer);

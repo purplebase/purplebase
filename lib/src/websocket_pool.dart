@@ -55,10 +55,16 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
   Future<List<Map<String, dynamic>>> query(
     Request req, {
+    RemoteSource source = const RemoteSource(),
     Set<String> relayUrls = const {},
   }) async {
     // Send the request first
     await send(req, relayUrls: relayUrls);
+
+    // Return nothing if we only care about new models showing up via the notifier
+    if (!source.returnModels) {
+      return [];
+    }
 
     final subscription = _subscriptions[req.subscriptionId];
     if (subscription == null) {
@@ -72,7 +78,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     try {
       events = await completer.future;
     } finally {
-      unsubscribe(req);
+      if (source.stream == false) {
+        unsubscribe(req);
+      }
     }
     return events;
   }
@@ -456,12 +464,12 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     if (!mounted) return;
 
     final subscription = _subscriptions[subscriptionId];
-    if (subscription == null || subscription.bufferedEvents.isEmpty) return;
+    if (subscription == null) return;
 
     if (subscription.phase == SubscriptionPhase.eose) {
       subscription.phase = SubscriptionPhase.streaming;
 
-      // Complete query completer if this is a query() call
+      // Complete query completer if this is a query() call - even with empty results
       if (subscription.queryCompleter != null &&
           !subscription.queryCompleter!.isCompleted) {
         subscription.queryCompleter!.complete(
@@ -470,14 +478,17 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       }
     }
 
-    state = EventRelayResponse(
-      req: subscription.req,
-      events: subscription.bufferedEvents,
-      relaysForIds: subscription.relaysForId,
-    );
+    // Only emit state if there are buffered events
+    if (subscription.bufferedEvents.isNotEmpty) {
+      state = EventRelayResponse(
+        req: subscription.req,
+        events: subscription.bufferedEvents,
+        relaysForIds: subscription.relaysForId,
+      );
 
-    subscription.bufferedEvents.clear();
-    subscription.relaysForId.clear();
+      subscription.bufferedEvents.clear();
+      subscription.relaysForId.clear();
+    }
   }
 
   Future<void> _flushPublishBuffer(String publishId) async {
@@ -590,7 +601,8 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
           // Re-issue with current timestamp as 'since'
           final adjustedReq =
               req.filters
-                  .map((f) => f.copyWith(since: DateTime.now()))
+                  // TODO: DIsable for now
+                  // .map((f) => f.copyWith(since: DateTime.now()))
                   .toRequest();
           final message = jsonEncode([
             'REQ',
