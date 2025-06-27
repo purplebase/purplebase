@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
 
 import 'package:models/models.dart';
+import 'package:path/path.dart' as path;
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
+import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/websocket_pool.dart';
 import 'package:riverpod/riverpod.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 /// Singleton
 class PurplebaseStorageNotifier extends StorageNotifier {
@@ -21,6 +25,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   var _initialized = false;
 
+  Database? db;
   Isolate? _isolate;
   SendPort? _sendPort;
   final _initCompleter = Completer<void>();
@@ -32,6 +37,20 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     await super.initialize(config);
 
     if (_initialized) return;
+
+    if (config.databasePath != null) {
+      final dirPath = path.join(Directory.current.path, config.databasePath!);
+      db = sqlite3.open(dirPath);
+    } else {
+      db = sqlite3.openInMemory();
+    }
+
+    // Configure sqlite: 1 GB memory mapped
+    db!.execute('''
+      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+      PRAGMA page_size = 4096;
+      PRAGMA cache_size = -20000;
+      ''');
 
     // Initialize isolate
     if (_isolate != null) return _initCompleter.future;
@@ -125,150 +144,83 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  Future<List<E>> query<E extends Model<dynamic>>(
+  List<E> querySync<E extends Model<dynamic>>(
     Request<E> req, {
-    Source source = const LocalSource(),
-  }) async {
-    if (req.filters.isEmpty) return [];
+    Set<String>? onIds,
+  }) {
+    // Check if the database has been disposed
+    if (db == null) {
+      throw IsolateException('Storage has been disposed');
+    }
 
-    // Delegate to internalMultipleQuery and extract the single result
-    final results = await internalMultipleQuery([req], source: source);
-    return results[req]?.cast<E>() ?? [];
-  }
+    final events = <Map<String, dynamic>>[];
+    final relayUrls = config.getRelays(
+      source: LocalSource(),
+      useDefault: false,
+    );
 
-  @override
-  Future<Map<Request<Model<dynamic>>, List<Model<dynamic>>>>
-  internalMultipleQuery(
-    List<Request<Model<dynamic>>> requests, {
-    Source source = const RemoteSource(),
-  }) async {
-    if (requests.isEmpty) return {};
-
-    // print('enters internalMultipleQuery with ${requests.length} requests, source: ${source.runtimeType}');
-
-    // Group requests by equality to avoid duplicate processing
-    final uniqueRequests =
-        <Request<Model<dynamic>>, List<Request<Model<dynamic>>>>{};
-    for (final request in requests) {
-      final existing = uniqueRequests.keys.firstWhere(
-        (r) => r == request,
-        orElse: () => request,
-      );
-      if (existing == request) {
-        uniqueRequests[request] = [request];
-      } else {
-        uniqueRequests[existing]!.add(request);
+    final tuples =
+        req.filters.map((f) => f.toSQL(relayUrls: relayUrls)).toList();
+    final statements = db!.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
+    try {
+      for (final statement in statements) {
+        final i = statements.indexOf(statement);
+        final result = statement.selectWith(
+          StatementParameters.named(tuples[i].$2),
+        );
+        events.addAll(result.decoded());
+      }
+    } finally {
+      for (final statement in statements) {
+        statement.dispose();
       }
     }
 
-    final result = <Request<Model<dynamic>>, List<Model<dynamic>>>{};
+    return events
+        .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
+        .toList()
+        .cast();
+  }
 
-    // Step 1: Process local queries separately for each unique request
-    final localResults = <Request<Model<dynamic>>, List<Model<dynamic>>>{};
-    final requestsNeedingRemote = <Request<Model<dynamic>>>[];
-    final requestsForBackground = <Request<Model<dynamic>>>[];
+  @override
+  Future<List<E>> query<E extends Model<dynamic>>(
+    Request<E> req, {
+    Source source = const LocalSource(),
+    Set<String>? onIds,
+  }) async {
+    if (req.filters.isEmpty) return [];
 
-    if (source.returnModels || source is RemoteSource && source.includeLocal) {
-      // Process local queries for all unique requests
-      final requestArgs = <Request, LocalQueryArgs>{};
+    final relayUrls = config.getRelays(source: source, useDefault: true);
 
-      for (final request in uniqueRequests.keys) {
-        final pairs = request.filters.map((f) => f.toSQL()).toList();
-        final args = LocalQueryArgs.fromPairs(pairs);
-        requestArgs[request] = args;
-      }
-
+    if (source case RemoteSource(:final includeLocal)) {
       final response = await _sendMessage(
-        LocalQueryIsolateOperation(requestArgs),
+        RemoteQueryIsolateOperation(req: req, source: source),
       );
 
       if (!response.success) {
         throw IsolateException(response.error);
       }
 
-      final results =
-          response.result as Map<Request, List<Map<String, dynamic>>>;
-
-      // Convert results to models and determine background vs blocking behavior
-      for (final entry in results.entries) {
-        final models = entry.value.toModels(ref).toList();
-        localResults[entry.key] = models;
-
-        // Determine if this request needs background or blocking remote query
-        final isBackgroundRemoteQuery = models.isNotEmpty;
-        if (source is RemoteSource) {
-          if (isBackgroundRemoteQuery) {
-            requestsForBackground.add(entry.key);
-          } else {
-            requestsNeedingRemote.add(entry.key);
-          }
-        }
+      if (includeLocal == false) {
+        final result = response.result as List<Map<String, dynamic>>;
+        return result.toModels(ref);
       }
     }
 
-    // Step 2: Handle blocking remote queries (performed separately)
-    final remoteResults = <Request<Model<dynamic>>, List<Model<dynamic>>>{};
-
-    if (requestsNeedingRemote.isNotEmpty && source is RemoteSource) {
-      // print('blocking remote queries for ${requestsNeedingRemote.length} requests');
-
-      for (final request in requestsNeedingRemote) {
-        final response = await _sendMessage(
-          RemoteQueryIsolateOperation(req: request, source: source),
-        );
-
-        if (!response.success) {
-          throw IsolateException(response.error);
-        }
-
-        final result = response.result as Iterable<Map<String, dynamic>>;
-        remoteResults[request] = result.toModels(ref).toList();
-      }
+    final pairs =
+        req.filters.map((f) => f.toSQL(relayUrls: relayUrls)).toList();
+    final queries = LocalQueryArgs.fromPairs(pairs);
+    final response = await _sendMessage(
+      LocalQueryIsolateOperation({req: queries}),
+    );
+    if (!response.success) {
+      // TODO: Should have a timeout for isolate as well
+      throw IsolateException(response.error);
     }
 
-    // Step 3: Handle background remote queries (merged for efficiency)
-    if (requestsForBackground.isNotEmpty && source is RemoteSource) {
-      // print('background remote queries for ${requestsForBackground.length} requests');
-
-      // Use RequestFilter.mergeMultiple to compress requests
-      final allFilters =
-          requestsForBackground.expand((req) => req.filters).toList();
-
-      final mergedFilters = RequestFilter.mergeMultiple(allFilters);
-
-      // Create merged requests for background fetching
-
-      final mergedRequest = mergedFilters.toRequest();
-
-      // Fire and forget - these will show up via notifier
-      _sendMessage(
-        RemoteQueryIsolateOperation(req: mergedRequest, source: source),
-      ).catchError((error) {
-        // print('Background remote query error: $error');
-        // Return a dummy response since this is fire-and-forget
-        return IsolateResponse(success: false, error: error.toString());
-      });
-    }
-
-    // Step 4: Combine results and expand to all original requests
-    for (final entry in uniqueRequests.entries) {
-      final uniqueRequest = entry.key;
-      final duplicateRequests = entry.value;
-
-      final localModels = localResults[uniqueRequest] ?? <Model<dynamic>>[];
-      final remoteModels = remoteResults[uniqueRequest] ?? <Model<dynamic>>[];
-
-      final combinedModels =
-          [...localModels, ...remoteModels].sortByCreatedAt();
-
-      // Add results for all duplicate requests
-      for (final request in duplicateRequests) {
-        result[request] = combinedModels;
-      }
-    }
-
-    // print('internalMultipleQuery returning results for ${result.length} requests');
-    return result;
+    final result =
+        response.result as Map<Request, Iterable<Map<String, dynamic>>>;
+    return result[req]!.toModels(ref);
   }
 
   @override

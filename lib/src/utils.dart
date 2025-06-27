@@ -49,8 +49,6 @@ extension JSONIterableExt on Iterable<Map<String, dynamic>> {
         'content': content,
         if (other.isNotEmpty) 'sig': other.first.toString(),
         'tags': tags,
-        // TODO: Restore relays or make class?
-        // 'relays': row['relays'] != null ? jsonDecode(row['relays']) : null,
       };
     }).toList();
   }

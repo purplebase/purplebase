@@ -61,13 +61,13 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // Send the request first
     await send(req, relayUrls: relayUrls);
 
-    // Return nothing if we only care about new models showing up via the notifier
-    if (!source.returnModels) {
+    final subscription = _subscriptions[req.subscriptionId];
+    if (subscription == null) {
       return [];
     }
 
-    final subscription = _subscriptions[req.subscriptionId];
-    if (subscription == null) {
+    // Return nothing if we only care about new models showing up via the notifier
+    if (!source.returnModels) {
       return [];
     }
 
@@ -466,6 +466,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final subscription = _subscriptions[subscriptionId];
     if (subscription == null) return;
 
+    // Clear the timer so new flushes can be scheduled (for throttling)
+    subscription.streamingBuffer = null;
+
     if (subscription.phase == SubscriptionPhase.eose) {
       subscription.phase = SubscriptionPhase.streaming;
 
@@ -557,11 +560,13 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final subscription = _subscriptions[subscriptionId];
     if (subscription == null) return;
 
-    subscription.streamingBuffer?.cancel();
-    subscription.streamingBuffer = Timer(
-      config.streamingBufferWindow,
-      () => _flushEventBuffer(subscriptionId),
-    );
+    // Throttling: only schedule if not already scheduled
+    if (subscription.streamingBuffer?.isActive != true) {
+      subscription.streamingBuffer = Timer(
+        config.streamingBufferWindow,
+        () => _flushEventBuffer(subscriptionId),
+      );
+    }
   }
 
   void _handleDisconnection(String url) {
@@ -598,10 +603,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
         // Adjust filter based on subscription phase
         if (subscription.phase == SubscriptionPhase.streaming) {
-          // Re-issue with current timestamp as 'since'
+          // TODO: Re-issue with current timestamp as 'since'
           final adjustedReq =
               req.filters
-                  // TODO: DIsable for now
                   // .map((f) => f.copyWith(since: DateTime.now()))
                   .toRequest();
           final message = jsonEncode([

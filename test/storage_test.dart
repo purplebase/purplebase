@@ -378,20 +378,6 @@ Future<void> main() async {
     expect(comprehensiveResults, unorderedEquals([n1, n4]));
   });
 
-  test('query by relay', () async {
-    final n1 = await PartialNote('no relay').signWith(signer);
-    final n2 = await PartialNote('yes relay').signWith(signer);
-    await storage.save({n1});
-    await storage.save({n2});
-    await storage.publish({n2}, source: RemoteSource(group: 'test'));
-
-    final r1 = await storage.query(
-      RequestFilter().toRequest(),
-      source: RemoteSource(group: 'test'),
-    );
-    expect(r1.cast<Note>().map((n) => n.content), contains('yes relay'));
-  }, skip: true);
-
   group('request notifier', () {
     test(
       'relay request should notify with events',

@@ -61,30 +61,6 @@ extension RequestFilterExt on RequestFilter {
       );
     }
 
-    // Handle Relays
-    if (relayUrls != null && relayUrls.isNotEmpty) {
-      // Join groups with space (implicit AND in standard FTS query syntax)
-      // final ftsQuery = [for (final url in relayUrls) '"$url"'].join(' AND ');
-      // final tagsParamName = nextParamName('relays');
-      // whereClauses.add(
-      //   'id IN (SELECT id FROM events_fts WHERE relays MATCH $tagsParamName)',
-      // );
-      // params[tagsParamName] = ftsQuery;
-    }
-
-    // Handle Search (using FTS on content)
-    // SELECT e.*
-    // FROM events e
-    // JOIN events_fts fts ON e.id = fts.rowid
-    // WHERE fts.text MATCH ?
-    if (search != null && search!.isNotEmpty) {
-      final searchParamName = nextParamName('search');
-      whereClauses.add(
-        'id IN (SELECT rowid FROM events_fts WHERE text MATCH $searchParamName)',
-      );
-      params[searchParamName] = search!;
-    }
-
     // Handle Since (created_at > since)
     if (since != null) {
       final sinceParamName = nextParamName('since');

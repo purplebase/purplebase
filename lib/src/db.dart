@@ -50,15 +50,26 @@ extension DbExt on Database {
         })
         .encoded(keepSignatures: config.keepSignatures);
 
-    final incomingIds = events.map((p) => p['id']).toList();
+    // Get all IDs excluding replaceable events (which are inserted always)
+    final incomingIds =
+        events
+            .where((e) => !Utils.isReplaceable(e['kind']))
+            .map((p) => p['id'])
+            .toList();
 
-    // TODO: If replacing event make sure date is latest!
     final sql = '''
     SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
-    INSERT OR REPLACE INTO events (id, pubkey, kind, created_at, blob) VALUES (:id, :pubkey, :kind, :created_at, :blob);
+    INSERT INTO events (id, pubkey, kind, created_at, blob) 
+    VALUES (:id, :pubkey, :kind, :created_at, :blob)
+    ON CONFLICT(id) DO UPDATE SET
+        pubkey = EXCLUDED.pubkey,
+        kind = EXCLUDED.kind,
+        created_at = EXCLUDED.created_at,
+        blob = EXCLUDED.blob
+    WHERE EXCLUDED.created_at > events.created_at;
     INSERT OR REPLACE INTO event_tags (event_id, value, is_relay) VALUES (:event_id, :value, :is_relay);
   ''';
-    // TODO: And FTS?
+
     final [existingPs, eventPs, tagsPs] = prepareMultiple(sql);
 
     final ids = <String>{};
@@ -69,7 +80,7 @@ extension DbExt on Database {
       execute('BEGIN');
       for (final event in encodedEvents) {
         // Remember encoded events properties start with a colon
-        // Also: :id can be a replaceable!
+        // For replaceables, alreadySaved is always false
         final alreadySaved = existingIds.contains(event[':id']);
         final relayUrls = relaysForId[event[':id']] ?? {};
 
@@ -80,7 +91,6 @@ extension DbExt on Database {
           }
 
           for (final List tag in tagsForId[event[':id']]!) {
-            // TODO: Allow specific tags to be indexed
             if (tag.length < 2 || tag[0].toString().length > 1) continue;
             tagsPs.executeWith(
               StatementParameters.named({
@@ -101,7 +111,6 @@ extension DbExt on Database {
             );
           }
         } else {
-          print('just updating relay');
           for (final relayUrl in relayUrls) {
             tagsPs.executeWith(
               StatementParameters.named({
@@ -111,11 +120,7 @@ extension DbExt on Database {
               }),
             );
           }
-          if (updatedRows > 0) {
-            // If rows were updated then value changed, so notifier gets the ID
-            // TODO: Won't trigger rebuild just for relay update, for now
-            // ids.add(event[':id']);
-          }
+          // Since we are updating relays only, do not add IDs to notify (for now)
         }
       }
       execute('COMMIT');
@@ -138,7 +143,6 @@ extension DbExt on Database {
     execute(_setUpSql);
   }
 
-  // TODO: Faster validation via ffi?
   bool _verifyEvent(Map<String, dynamic> map) {
     bool verified = false;
     if (map['sig'] != null && map['sig'] != '') {
@@ -153,7 +157,6 @@ extension DbExt on Database {
   }
 }
 
-// TODO: Fulltext search should be optional via config
 final _setUpSql = '''
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
@@ -184,22 +187,10 @@ final _setUpSql = '''
     FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
   ) WITHOUT ROWID;
 
-  CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-    text,
-    content='events',
-    content_rowid='id',
-    tokenize='unicode61 remove_diacritics 1',
-    columnsize=0,
-    detail=none
-  );
-
   CREATE INDEX IF NOT EXISTS value_idx ON event_tags(value);
     ''';
-
-// TODO: Add triggers, necessary for updates (replaceables) and deletions
 
 final _tearDownSql = '''
   DROP TABLE IF EXISTS events;
   DROP TABLE IF EXISTS event_tags;
-  DROP TABLE IF EXISTS events_fts;
 ''';

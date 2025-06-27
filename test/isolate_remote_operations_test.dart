@@ -592,7 +592,6 @@ Future<void> main() async {
 
     test('should handle malformed events in publish', () async {
       // Create an event with potential issues
-      // TODO: empty content not malformed
       final note = await PartialNote('').signWith(signer); // Empty content
 
       final response = await storage.publish({
@@ -601,15 +600,12 @@ Future<void> main() async {
 
       expect(response, isA<PublishResponse>());
 
-      // Even malformed events should get a response
-      // The relay may accept or reject, but we should get feedback
       expect(response.results, isNotEmpty);
+      expect(
+        response.results.values.firstOrNull?.firstOrNull?.accepted,
+        isTrue,
+      );
       expect(response.results.containsKey(note.id), isTrue);
-
-      final eventStates = response.results[note.id]!;
-      expect(eventStates, isNotEmpty);
-      // Note: the relay might accept or reject empty content,
-      // but we should get a definitive response either way
     });
   });
 }
