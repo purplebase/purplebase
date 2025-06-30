@@ -66,14 +66,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         case SendPort() when _sendPort == null:
           _sendPort = message;
           _initCompleter.complete();
-        case (Set<String> ids, Request? req) when ids.isNotEmpty:
-          state = InternalStorageData(updatedIds: ids, req: req);
+        case QueryResultMessage(:final request, :final savedIds)
+            when savedIds.isNotEmpty:
+          state = InternalStorageData(updatedIds: savedIds, req: request);
+        case InfoMessage infoMessage:
+          ref.read(infoNotifierProvider.notifier).emit(infoMessage);
       }
-
-      if (_sendPort == null && message is SendPort) {
-        _sendPort = message;
-        _initCompleter.complete();
-      } else {}
     });
 
     await _initCompleter.future;
@@ -214,7 +212,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       LocalQueryIsolateOperation({req: queries}),
     );
     if (!response.success) {
-      // TODO: Should have a timeout for isolate as well
       throw IsolateException(response.error);
     }
 
@@ -259,7 +256,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
 
     try {
-      await _initCompleter.future;
+      await _initCompleter.future.timeout(
+        Duration(seconds: 12),
+        onTimeout: () => IsolateResponse(success: false, error: 'Timeout'),
+      );
 
       // Double-check after waiting - dispose might have been called while waiting
       if (!_initialized || _sendPort == null) {

@@ -121,6 +121,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.6"
+  cryptography:
+    dependency: transitive
+    description:
+      name: cryptography
+      sha256: d146b76d33d94548cf035233fbc2f4338c1242fa119013bead807d033fc4ae05
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.7.0"
   dart_style:
     dependency: transitive
     description:
@@ -129,6 +137,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.1"
+  elliptic:
+    dependency: transitive
+    description:
+      name: elliptic
+      sha256: "0c303d810603953a65dc39c4c542fb7538defd9e212403c54c266140819523b6"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.11"
   equatable:
     dependency: transitive
     description:
@@ -213,10 +229,10 @@ packages:
     dependency: transitive
     description:
       name: js
-      sha256: "53385261521cc4a0c4658fd0ad07a7d14591cf8fc33abbceae306ddb974888dc"
+      sha256: f2c445dce49627136094980615a031419f7f3eb393237e4ecd97ac15dea343f3
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.2"
+    version: "0.6.7"
   lints:
     dependency: "direct dev"
     description:
@@ -280,6 +296,15 @@ packages:
       relative: true
     source: path
     version: "0.1.2"
+  nip44:
+    dependency: transitive
+    description:
+      path: dart
+      ref: "3b40d453c772ad10b57b81762d5b56e80aa1facb"
+      resolved-ref: "3b40d453c772ad10b57b81762d5b56e80aa1facb"
+      url: "https://github.com/paulmillr/nip44.git"
+    source: git
+    version: "1.0.0"
   node_preamble:
     dependency: transitive
     description:

@@ -523,11 +523,6 @@ void main() {
     final eventIds = allEvents.map((event) => event['id'] as String).toList();
     final uniqueEventIds = eventIds.toSet();
 
-    // Debug information
-    print('Total events across both requests: ${eventIds.length}');
-    print('Unique event IDs: ${uniqueEventIds.length}');
-    print('All event IDs: $eventIds');
-
     // Since both requests overlap (both asking for kind 1 events),
     // we expect all events to appear in both results (6 total, 3 unique)
     expect(
@@ -627,5 +622,271 @@ void main() {
     );
 
     print('✓ URL normalization successful: $normalizedUrl');
+  });
+
+  test('should reconnect and resend subscriptions after relay restart', () async {
+    final port = relayPorts[0];
+    final expectedRelayUrl = 'ws://localhost:$port';
+    final relayUrls = {expectedRelayUrl};
+
+    // Create a subscription that should persist through reconnection
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    print('Step 1: Establishing initial connection and subscription');
+
+    // Set up debug listener to track connection events
+    final debugMessages = <String>[];
+    final removeDebugListener = pool.addInfoListener((message) {
+      debugMessages.add(message);
+      print('DEBUG: $message');
+    });
+
+    // Send initial request and verify connection
+    await pool.send(req, relayUrls: relayUrls);
+
+    // Wait for connection to establish
+    await Future.delayed(Duration(milliseconds: 2000));
+
+    // Verify initial connection
+    expect(
+      pool.relays.containsKey(expectedRelayUrl),
+      isTrue,
+      reason: 'Should have relay connection tracked',
+    );
+
+    final initialRelayState = pool.relays[expectedRelayUrl]!;
+    expect(
+      initialRelayState.isConnected,
+      isTrue,
+      reason: 'Relay should be initially connected',
+    );
+
+    expect(
+      pool.subscriptions.containsKey(req.subscriptionId),
+      isTrue,
+      reason: 'Should have active subscription',
+    );
+
+    print('Step 2: Setting up listener for reconnection events');
+
+    // Set up listener for new events BEFORE killing relay
+    final eventsAfterReconnection = <Map<String, dynamic>>[];
+    late StreamSubscription eventsSubscription;
+
+    final eventsCompleter = Completer<void>();
+
+    eventsSubscription = pool.stream
+        .where((response) => response != null && response is EventRelayResponse)
+        .listen((response) {
+          final eventResponse = response as EventRelayResponse;
+          if (eventResponse.req.subscriptionId == req.subscriptionId) {
+            eventsAfterReconnection.addAll(eventResponse.events);
+            print(
+              'Received ${eventResponse.events.length} events after reconnection',
+            );
+
+            // Only complete when we receive actual events (not empty responses)
+            if (eventResponse.events.isNotEmpty &&
+                !eventsCompleter.isCompleted) {
+              eventsCompleter.complete();
+            }
+          }
+        });
+
+    print('Step 3: Killing relay process to simulate network disconnection');
+
+    // Kill the current relay process
+    final originalProcess = relayProcesses[0];
+    originalProcess.kill(ProcessSignal.sigterm);
+
+    // Wait for disconnection to be detected
+    await Future.delayed(Duration(milliseconds: 1000));
+
+    print('Step 4: Restarting relay process');
+
+    // Restart the relay process
+    final newProcess = await Process.start('nak', [
+      'serve',
+      '--port',
+      port.toString(),
+    ], mode: ProcessStartMode.detached);
+
+    // Replace the process in our tracking list
+    relayProcesses[0] = newProcess;
+
+    // Give the new relay time to start up
+    await Future.delayed(Duration(milliseconds: 3000));
+
+    // Republish test events to the restarted relay
+    await populateRelayWithTestEvents(port);
+
+    print('Step 5: Waiting for automatic reconnection and events');
+
+    // Wait for events or timeout
+    try {
+      await eventsCompleter.future.timeout(Duration(seconds: 10));
+
+      expect(
+        eventsAfterReconnection.isNotEmpty,
+        isTrue,
+        reason: 'Should receive events after reconnection',
+      );
+
+      print(
+        '✓ Received ${eventsAfterReconnection.length} events after reconnection',
+      );
+
+      // Verify events have proper structure
+      for (final event in eventsAfterReconnection) {
+        expect(
+          event.containsKey('id'),
+          isTrue,
+          reason: 'Event should have id field',
+        );
+        expect(event['id'], isA<String>(), reason: 'Event id should be string');
+      }
+
+      // Verify the relay state after reconnection and events received
+      final reconnectedRelayState = pool.relays[expectedRelayUrl];
+      expect(
+        reconnectedRelayState,
+        isNotNull,
+        reason: 'Relay state should still exist after reconnection',
+      );
+
+      expect(
+        reconnectedRelayState!.isConnected,
+        isTrue,
+        reason: 'Relay should be reconnected',
+      );
+
+      // Verify subscription is still active
+      expect(
+        pool.subscriptions.containsKey(req.subscriptionId),
+        isTrue,
+        reason: 'Subscription should still be active after reconnection',
+      );
+    } catch (e) {
+      fail('Failed to receive events after reconnection within timeout: $e');
+    } finally {
+      eventsSubscription.cancel();
+      removeDebugListener();
+    }
+
+    // Check debug messages for reconnection indicators
+    final hasDisconnectionMessage = debugMessages.any(
+      (msg) => msg.contains('Disconnected from relay'),
+    );
+    final hasReconnectionMessage = debugMessages.any(
+      (msg) => msg.contains('Reconnected to relay'),
+    );
+
+    expect(
+      hasDisconnectionMessage,
+      isTrue,
+      reason: 'Should have logged disconnection',
+    );
+    expect(
+      hasReconnectionMessage,
+      isTrue,
+      reason: 'Should have logged reconnection',
+    );
+
+    print('✓ Reconnection test completed successfully');
+    print('  - Initial connection: ✓');
+    print('  - Disconnection detected: ✓');
+    print('  - Reconnection successful: ✓');
+    print('  - Subscriptions resent: ✓');
+    print('  - Events received after reconnection: ✓');
+  });
+
+  test('should NOT reconnect after intentional unsubscribe', () async {
+    final port = relayPorts[0];
+    final expectedRelayUrl = 'ws://localhost:$port';
+    final relayUrls = {expectedRelayUrl};
+
+    // Create a subscription
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    print('Step 1: Establishing connection and subscription');
+
+    // Set up debug listener
+    final debugMessages = <String>[];
+    final removeDebugListener = pool.addInfoListener((message) {
+      debugMessages.add(message);
+      print('DEBUG: $message');
+    });
+
+    await pool.send(req, relayUrls: relayUrls);
+
+    // Wait for connection
+    await Future.delayed(Duration(milliseconds: 2000));
+
+    // Verify connection established
+    expect(
+      pool.relays[expectedRelayUrl]?.isConnected,
+      isTrue,
+      reason: 'Should be initially connected',
+    );
+
+    print('Step 2: Intentionally unsubscribing');
+
+    // Intentionally unsubscribe
+    pool.unsubscribe(req);
+
+    // Wait for cleanup
+    await Future.delayed(Duration(milliseconds: 1000));
+
+    print('Step 3: Killing and restarting relay to test no reconnection');
+
+    // Kill and restart relay
+    final originalProcess = relayProcesses[0];
+    originalProcess.kill(ProcessSignal.sigterm);
+
+    await Future.delayed(Duration(milliseconds: 1000));
+
+    final newProcess = await Process.start('nak', [
+      'serve',
+      '--port',
+      port.toString(),
+    ], mode: ProcessStartMode.detached);
+
+    relayProcesses[0] = newProcess;
+
+    // Wait longer than normal reconnection time
+    await Future.delayed(Duration(milliseconds: 5000));
+
+    print('Step 4: Verifying no reconnection occurred');
+
+    // Verify that subscription was not restored
+    expect(
+      pool.subscriptions.containsKey(req.subscriptionId),
+      isFalse,
+      reason:
+          'Subscription should remain removed after intentional unsubscribe',
+    );
+
+    // The relay might still be tracked but should not have active subscriptions
+    if (pool.relays.containsKey(expectedRelayUrl)) {
+      // The connection might exist but no subscriptions should be active
+      expect(
+        pool.subscriptions.values.any(
+          (sub) => sub.targetRelays.contains(expectedRelayUrl),
+        ),
+        isFalse,
+        reason: 'Should not have any active subscriptions to this relay',
+      );
+    }
+
+    removeDebugListener();
+
+    print('✓ Intentional disconnection test completed successfully');
+    print('  - Initial connection: ✓');
+    print('  - Intentional unsubscribe: ✓');
+    print('  - No reconnection after restart: ✓');
   });
 }

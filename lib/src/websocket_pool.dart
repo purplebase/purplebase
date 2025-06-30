@@ -12,10 +12,30 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   final Map<String, PublishState> _publishStates = {};
   final StorageConfiguration config;
 
+  // Info listeners
+  final List<void Function(String)> _infoListeners = [];
+
   WebSocketPool(this.config) : super(null);
+
+  /// Add a info listener that receives messages
+  void Function() addInfoListener(void Function(String) listener) {
+    _infoListeners.add(listener);
+    return () => _infoListeners.remove(listener);
+  }
+
+  /// Send info message to all listeners
+  void _info(String message) {
+    for (final listener in _infoListeners) {
+      listener(message);
+    }
+  }
 
   Future<void> send(Request req, {Set<String> relayUrls = const {}}) async {
     if (relayUrls.isEmpty) return;
+
+    _info(
+      'Sending request $req to ${relayUrls.length} relay(s): [${relayUrls.join(', ')}]',
+    );
 
     // Create subscription state
     final subscription = SubscriptionState(req: req, targetRelays: relayUrls);
@@ -47,6 +67,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
           })
           .catchError((error) {
             print(error);
+            _info(
+              'ERROR: Failed to send request ${req.subscriptionId} to relay $url - $error',
+            );
             // Connection failed for this relay, continue with others
             // The timeout will handle this case
           });
@@ -90,6 +113,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     Set<String> relayUrls = const {},
   }) async {
     if (relayUrls.isEmpty || events.isEmpty) return PublishRelayResponse();
+
+    _info(
+      'Publishing ${events.length} event(s) to ${relayUrls.length} relay(s): [${relayUrls.join(', ')}]',
+    );
 
     // Create publish state to track responses
     final publishId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -166,6 +193,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final subscription = _subscriptions[subscriptionId];
     if (subscription == null) return;
 
+    _info(
+      'Unsubscribing from ${subscription.targetRelays.length} relay(s) for subscription: $subscriptionId',
+    );
+
     // Send CLOSE message to all target relays
     final message = jsonEncode(['CLOSE', subscriptionId]);
     for (final url in subscription.targetRelays) {
@@ -211,6 +242,8 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     }
 
     for (final relay in _relays.values) {
+      // Mark as intentional disconnection during disposal
+      relay.intentionalDisconnection = true;
       relay.connectionSubscription?.cancel();
       relay.messageSubscription?.cancel();
       relay.reconnectTimer?.cancel();
@@ -248,6 +281,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
           relay.reconnectTimer?.cancel();
           relay.idleTimer?.cancel();
 
+          // Mark as intentional disconnection since we're cleaning up
+          relay.intentionalDisconnection = true;
+
           // Close the socket cleanly - this will trigger disconnection
           if (relay.socket != null) {
             try {
@@ -279,6 +315,8 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // If we already have a connected socket, don't create another one
     if (relay.isConnected) return;
 
+    _info('Connecting to relay: $url');
+
     try {
       final socket = WebSocket(
         Uri.parse(url),
@@ -309,12 +347,15 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
         return;
       }
 
+      _info('Successfully connected to relay: $url');
+
       // Give the server a moment to set up its message handler
       await Future.delayed(Duration(milliseconds: 50));
 
       // Re-send active subscriptions to this relay
       await _resendSubscriptions(url);
     } catch (e) {
+      _info('ERROR: Failed to connect to relay $url - $e');
       // Connection failed - rethrow so that the publish method can handle it
       rethrow;
     }
@@ -327,6 +368,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     relay.connectionSubscription = socket.connection.listen((state) {
       if (state is Disconnected) {
         _handleDisconnection(url);
+      } else if (state is Reconnected) {
+        _handleReconnection(url);
+      } else if (state is Reconnecting) {
+        _handleReconnecting(url);
       }
     });
 
@@ -483,10 +528,18 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     // Only emit state if there are buffered events
     if (subscription.bufferedEvents.isNotEmpty) {
+      // Create copies to avoid clearing the Set while it's being used
+      final eventsCopy = Set<Map<String, dynamic>>.from(
+        subscription.bufferedEvents,
+      );
+      final relaysCopy = Map<String, Set<String>>.from(
+        subscription.relaysForId,
+      );
+
       state = EventRelayResponse(
         req: subscription.req,
-        events: subscription.bufferedEvents,
-        relaysForIds: subscription.relaysForId,
+        events: eventsCopy,
+        relaysForIds: relaysCopy,
       );
 
       subscription.bufferedEvents.clear();
@@ -547,6 +600,13 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
         );
       }
 
+      final totalEvents = publishState.pendingEventIds.length;
+      final unreachableCount =
+          publishState.response.wrapped.unreachableRelayUrls.length;
+      _info(
+        'Flushing publish buffer for $totalEvents event(s), $unreachableCount unreachable relay(s)',
+      );
+
       publishState.completer!.complete(publishState.response);
     }
 
@@ -575,13 +635,57 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     final relay = _relays[url];
     if (relay == null) return;
 
-    // Only clean up timers and subscriptions, let the socket state speak for itself
-    relay.idleTimer?.cancel();
-    relay.connectionSubscription?.cancel();
-    relay.messageSubscription?.cancel();
+    _info('Disconnected from relay: $url');
 
-    // Let the underlying WebSocket library handle reconnection automatically
-    // No manual reconnection logic needed
+    // Cancel idle timer but keep connection listeners active to detect reconnection
+    relay.idleTimer?.cancel();
+
+    // If this was an intentional disconnection, clean up everything
+    if (relay.intentionalDisconnection) {
+      _info('Intentional disconnection from relay: $url');
+      relay.connectionSubscription?.cancel();
+      relay.messageSubscription?.cancel();
+      relay.intentionalDisconnection = false; // Reset flag
+      // Don't attempt reconnection for intentional disconnections
+      return;
+    }
+
+    // For unintentional disconnections, keep listeners active to detect reconnection
+    // The underlying WebSocket library will handle reconnection automatically
+  }
+
+  void _handleReconnecting(String url) {
+    if (!mounted) return;
+
+    final relay = _relays[url];
+    if (relay == null) return;
+
+    // Reset intentional disconnection flag in case it was set
+    relay.intentionalDisconnection = false;
+  }
+
+  void _handleReconnection(String url) {
+    if (!mounted) return;
+
+    final relay = _relays[url];
+    if (relay == null) return;
+
+    _info('Reconnected to relay: $url');
+
+    // Reset connection state
+    relay.lastActivity = DateTime.now();
+    relay.reconnectAttempts = 0;
+    relay.intentionalDisconnection = false;
+
+    // Reset idle timer
+    _resetIdleTimer(url);
+
+    // Give the server a moment to set up its message handler, then re-send subscriptions
+    Future.delayed(Duration(milliseconds: 50), () {
+      if (mounted) {
+        _resendSubscriptions(url);
+      }
+    });
   }
 
   void _resetIdleTimer(String url) {
@@ -590,6 +694,8 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     relay.idleTimer?.cancel();
     relay.idleTimer = Timer(config.idleTimeout, () {
+      // Mark as intentional disconnection since this is due to idle timeout
+      relay.intentionalDisconnection = true;
       if (relay.socket != null) {
         relay.socket?.close();
       }
@@ -597,33 +703,34 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   }
 
   Future<void> _resendSubscriptions(String url) async {
-    for (final subscription in _subscriptions.values) {
-      if (subscription.targetRelays.contains(url)) {
-        final req = subscription.req;
+    final subscriptionsToResend =
+        _subscriptions.values
+            .where((subscription) => subscription.targetRelays.contains(url))
+            .toList();
 
-        // Adjust filter based on subscription phase
-        if (subscription.phase == SubscriptionPhase.streaming) {
-          // TODO: Re-issue with current timestamp as 'since'
-          final adjustedReq =
-              req.filters
-                  // .map((f) => f.copyWith(since: DateTime.now()))
-                  .toRequest();
-          final message = jsonEncode([
-            'REQ',
-            req.subscriptionId,
-            ...adjustedReq.toMaps(),
-          ]);
-          _relays[url]?.socket?.send(message);
-        } else {
-          // Re-send original filter
-          final message = jsonEncode([
-            'REQ',
-            req.subscriptionId,
-            ...req.toMaps(),
-          ]);
-          _relays[url]?.socket?.send(message);
-        }
-      }
+    for (final subscription in subscriptionsToResend) {
+      final req = subscription.req;
+
+      // Reset subscription state BEFORE sending REQ to ensure proper event processing
+      subscription.eoseReceived.remove(url);
+      subscription.connectedRelays.add(url);
+      subscription.phase = SubscriptionPhase.eose;
+
+      // Reset EOSE timer for reconnected subscription
+      subscription.eoseTimer?.cancel();
+      subscription.eoseTimer = Timer(
+        config.responseTimeout,
+        () => _flushEventBuffer(req.subscriptionId),
+      );
+
+      // Clear any existing buffered events from before disconnection
+      subscription.bufferedEvents.clear();
+      subscription.relaysForId.clear();
+
+      // Now send the REQ message
+      _info('Re-sending request $req to relay: $url');
+      final message = jsonEncode(['REQ', req.subscriptionId, ...req.toMaps()]);
+      _relays[url]?.socket?.send(message);
     }
   }
 
@@ -707,6 +814,8 @@ class RelayState {
   Timer? idleTimer;
   StreamSubscription? connectionSubscription;
   StreamSubscription? messageSubscription;
+  bool intentionalDisconnection =
+      false; // Track if disconnection was intentional
 
   RelayState() : reconnectAttempts = 0;
 

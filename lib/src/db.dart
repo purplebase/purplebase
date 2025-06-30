@@ -43,16 +43,20 @@ extension DbExt on Database {
     }
 
     // Event massaging
-    final (encodedEvents, tagsForId) = events
+    final verifiedEvents =
+        events
         // Filter events by verified
         .where((e) {
           return config.skipVerification ? true : _verifyEvent(e);
-        })
-        .encoded(keepSignatures: config.keepSignatures);
+        }).toSet();
+
+    final (encodedEvents, tagsForId) = verifiedEvents.encoded(
+      keepSignatures: config.keepSignatures,
+    );
 
     // Get all IDs excluding replaceable events (which are inserted always)
     final incomingIds =
-        events
+        verifiedEvents
             .where((e) => !Utils.isReplaceable(e['kind']))
             .map((p) => p['id'])
             .toList();
