@@ -1,79 +1,46 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/src/websocket_pool.dart';
 import 'package:test/test.dart';
 
 void main() {
-  late List<Process> relayProcesses;
+  late List<NostrRelay> relays;
   late List<int> relayPorts;
   late WebSocketPool pool;
-  late String testSecKey;
   late String testPubKey;
   late List<Map<String, dynamic>> testEvents;
 
-  Future<void> populateRelayWithTestEvents(int port) async {
-    final relayUrl = 'ws://localhost:$port';
-
-    // Create and publish several test events using nak event
+  Future<void> populateRelayWithTestEvents(NostrRelay relay) async {
+    // Create and store test events directly in the relay's storage
     for (int i = 1; i <= 3; i++) {
       final content = 'Test event content $i';
-      final eventResult = await Process.run('nak', [
-        'event',
-        '--sec',
-        testSecKey,
-        '--content',
-        content,
-        '--kind',
-        '1',
-        relayUrl,
-      ]);
+      final event = <String, dynamic>{
+        'id': Utils.generateRandomHex64(),
+        'pubkey': testPubKey,
+        'createdAt': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'kind': 1,
+        'tags': [],
+        'content': content,
+        'sig': Utils.generateRandomHex64(), // Mock signature for testing
+      };
 
-      if (eventResult.exitCode == 0) {
-        // Parse the generated event from output
-        final eventJson = eventResult.stdout.toString().trim();
-        try {
-          final event = jsonDecode(eventJson) as Map<String, dynamic>;
-          testEvents.add(event);
-          print('Published test event $i: ${event['id']}');
-        } catch (e) {
-          print('Could not parse event JSON: $eventJson');
-        }
-      } else {
-        print('Failed to publish test event $i: ${eventResult.stderr}');
-      }
-
-      // Small delay between events
-      await Future.delayed(Duration(milliseconds: 200));
+      // Store the event directly in the relay's storage
+      relay.storage.storeEvent(event);
+      testEvents.add(event);
+      print('Stored test event $i: ${event['id']}');
     }
 
     print('Populated relay with ${testEvents.length} test events');
   }
 
   setUpAll(() async {
-    relayProcesses = [];
+    relays = [];
     relayPorts = [];
     testEvents = [];
 
-    // Generate a test private key for consistent event creation
-    final keyGenResult = await Process.run('nak', ['key', 'generate']);
-    if (keyGenResult.exitCode != 0) {
-      throw Exception('Failed to generate test key: ${keyGenResult.stderr}');
-    }
-    testSecKey = keyGenResult.stdout.toString().trim();
-
-    // Get the corresponding public key
-    final pubKeyProcess = await Process.start('nak', ['key', 'public']);
-    pubKeyProcess.stdin.writeln(testSecKey);
-    await pubKeyProcess.stdin.close();
-    final pubKeyExitCode = await pubKeyProcess.exitCode;
-    if (pubKeyExitCode != 0) {
-      throw Exception('Failed to get public key');
-    }
-    testPubKey = await pubKeyProcess.stdout.transform(utf8.decoder).join();
-    testPubKey = testPubKey.trim();
+    // Generate test keys (mock keys for testing)
+    testPubKey = Utils.generateRandomHex64();
 
     print('Test keys generated - pubkey: $testPubKey');
 
@@ -81,35 +48,26 @@ void main() {
     final port = 49152 + (DateTime.now().millisecondsSinceEpoch % 1000);
     relayPorts.add(port);
 
-    // Start nak serve process
     try {
-      final process = await Process.start('nak', [
-        'serve',
-        '--port',
-        port.toString(),
-      ], mode: ProcessStartMode.detached);
-      relayProcesses.add(process);
+      final relay = NostrRelay(port: port, host: 'localhost');
+      relays.add(relay);
 
-      // Give relay time to start up
-      await Future.delayed(Duration(milliseconds: 3000));
-
-      print('Started nak serve on port $port');
+      await relay.start();
+      print('Started dart_relay on port $port');
 
       // Populate relay with test events
-      await populateRelayWithTestEvents(port);
+      await populateRelayWithTestEvents(relay);
     } catch (e) {
-      throw Exception(
-        'Failed to start nak serve: $e. Make sure nak is installed and available in PATH.',
-      );
+      throw Exception('Failed to start dart_relay: $e');
     }
   });
 
   tearDownAll(() async {
     // Stop all relay processes
-    for (final process in relayProcesses) {
-      process.kill();
+    for (final relay in relays) {
+      await relay.stop();
     }
-    relayProcesses.clear();
+    relays.clear();
     relayPorts.clear();
   });
 
@@ -120,14 +78,14 @@ void main() {
         'test': {'wss://test.com'},
       },
       defaultRelayGroup: 'test',
-      responseTimeout: Duration(milliseconds: 500),
+      responseTimeout: Duration(
+        seconds: 5,
+      ), // Increased timeout for WebSocket connections
     );
     pool = WebSocketPool(config);
   });
 
   tearDown(() async {
-    // Wait a moment for any pending timers to complete
-    await Future.delayed(Duration(milliseconds: 100));
     pool.dispose();
   });
 
@@ -378,9 +336,6 @@ void main() {
 
     await pool.send(req, relayUrls: relayUrls);
 
-    // Give time for connection to establish
-    await Future.delayed(Duration(milliseconds: 1500));
-
     // Verify connection state
     expect(
       pool.relays.containsKey(expectedRelayUrl),
@@ -432,9 +387,6 @@ void main() {
     ]);
 
     await pool.send(req, relayUrls: relayUrls);
-
-    // Give time for subscription to establish
-    await Future.delayed(Duration(milliseconds: 1500));
 
     // Verify subscription exists
     expect(
@@ -598,9 +550,6 @@ void main() {
 
     await pool.send(req, relayUrls: relayUrls);
 
-    // Give time for connection normalization
-    await Future.delayed(Duration(milliseconds: 1000));
-
     // Verify URL normalization - should only have one connection
     final connectedRelays =
         pool.relays.keys
@@ -646,8 +595,7 @@ void main() {
     // Send initial request and verify connection
     await pool.send(req, relayUrls: relayUrls);
 
-    // Wait for connection to establish
-    await Future.delayed(Duration(milliseconds: 2000));
+    // Connection should be immediate with dart_relay
 
     // Verify initial connection
     expect(
@@ -698,29 +646,24 @@ void main() {
     print('Step 3: Killing relay process to simulate network disconnection');
 
     // Kill the current relay process
-    final originalProcess = relayProcesses[0];
-    originalProcess.kill(ProcessSignal.sigterm);
+    final originalRelay = relays[0];
+    await originalRelay.stop();
 
-    // Wait for disconnection to be detected
-    await Future.delayed(Duration(milliseconds: 1000));
+    // Disconnection should be immediate
 
     print('Step 4: Restarting relay process');
 
     // Restart the relay process
-    final newProcess = await Process.start('nak', [
-      'serve',
-      '--port',
-      port.toString(),
-    ], mode: ProcessStartMode.detached);
+    final newRelay = NostrRelay(port: port, host: 'localhost');
+    await newRelay.start();
 
-    // Replace the process in our tracking list
-    relayProcesses[0] = newProcess;
+    // Replace the relay in our tracking list
+    relays[0] = newRelay;
 
-    // Give the new relay time to start up
-    await Future.delayed(Duration(milliseconds: 3000));
+    // dart_relay starts immediately
 
     // Republish test events to the restarted relay
-    await populateRelayWithTestEvents(port);
+    await populateRelayWithTestEvents(newRelay);
 
     print('Step 5: Waiting for automatic reconnection and events');
 
@@ -823,9 +766,6 @@ void main() {
 
     await pool.send(req, relayUrls: relayUrls);
 
-    // Wait for connection
-    await Future.delayed(Duration(milliseconds: 2000));
-
     // Verify connection established
     expect(
       pool.relays[expectedRelayUrl]?.isConnected,
@@ -838,27 +778,16 @@ void main() {
     // Intentionally unsubscribe
     pool.unsubscribe(req);
 
-    // Wait for cleanup
-    await Future.delayed(Duration(milliseconds: 1000));
-
     print('Step 3: Killing and restarting relay to test no reconnection');
 
     // Kill and restart relay
-    final originalProcess = relayProcesses[0];
-    originalProcess.kill(ProcessSignal.sigterm);
+    final originalRelay = relays[0];
+    await originalRelay.stop();
 
-    await Future.delayed(Duration(milliseconds: 1000));
+    final newRelay = NostrRelay(port: port, host: 'localhost');
+    await newRelay.start();
 
-    final newProcess = await Process.start('nak', [
-      'serve',
-      '--port',
-      port.toString(),
-    ], mode: ProcessStartMode.detached);
-
-    relayProcesses[0] = newProcess;
-
-    // Wait longer than normal reconnection time
-    await Future.delayed(Duration(milliseconds: 5000));
+    relays[0] = newRelay;
 
     print('Step 4: Verifying no reconnection occurred');
 

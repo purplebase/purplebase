@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
@@ -8,7 +7,7 @@ import 'package:test/test.dart';
 import 'helpers.dart';
 
 Future<void> main() async {
-  Process? nakProcess;
+  NostrRelay? relay;
   final relayPorts = [7078, 7079, 7080, 7081, 7082];
   final relayUrl = 'ws://127.0.0.1:${relayPorts.first}';
 
@@ -18,50 +17,21 @@ Future<void> main() async {
   late Bip340PrivateKeySigner signer;
 
   setUpAll(() async {
-    final completer = Completer<void>();
-
     try {
-      nakProcess = await Process.start('nak', [
-        'serve',
-        '--port',
-        '${relayPorts.first}',
-      ], mode: ProcessStartMode.detached);
-      print(
-        'Started nak at port ${relayPorts.first} with PID: ${nakProcess!.pid}',
-      );
-      await Future.delayed(Duration(milliseconds: 1300));
+      relay = NostrRelay(port: relayPorts.first, host: '127.0.0.1');
+      await relay!.start();
+      print('Started dart_relay at port ${relayPorts.first}');
     } catch (e) {
-      print('Failed to start nak process: $e');
+      print('Failed to start dart_relay: $e');
       rethrow;
     }
-
-    // Poll websocket connection every 200ms
-    void checkConnection() {
-      Timer.periodic(Duration(milliseconds: 200), (timer) async {
-        try {
-          final socket = await WebSocket.connect(relayUrl);
-          await socket.close();
-          timer.cancel();
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
-        } catch (e) {
-          // Connection failed, keep trying
-          print('Connection attempt failed, retrying... $e');
-        }
-      });
-    }
-
-    checkConnection();
-
-    await completer.future;
   });
 
-  tearDownAll(() {
-    if (nakProcess != null) {
-      nakProcess!.kill(ProcessSignal.sigint);
-      nakProcess = null;
-      // print('Stopped nak relay');
+  tearDownAll(() async {
+    if (relay != null) {
+      await relay!.stop();
+      relay = null;
+      print('Stopped dart_relay');
     }
   });
 
@@ -423,7 +393,6 @@ Future<void> main() async {
     test('should deduplicate events from multiple relays', () async {
       // Publish the same event to both relays
       await storage.publish({testNote1}, source: RemoteSource(group: 'both'));
-      await Future.delayed(Duration(milliseconds: 100));
 
       final request = RequestFilter(ids: {testNote1.id}).toRequest();
 

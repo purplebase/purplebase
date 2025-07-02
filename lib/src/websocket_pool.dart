@@ -349,9 +349,6 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
       _info('Successfully connected to relay: $url');
 
-      // Give the server a moment to set up its message handler
-      await Future.delayed(Duration(milliseconds: 50));
-
       // Re-send active subscriptions to this relay
       await _resendSubscriptions(url);
     } catch (e) {
@@ -680,12 +677,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // Reset idle timer
     _resetIdleTimer(url);
 
-    // Give the server a moment to set up its message handler, then re-send subscriptions
-    Future.delayed(Duration(milliseconds: 50), () {
-      if (mounted) {
-        _resendSubscriptions(url);
-      }
-    });
+    // Re-send subscriptions immediately
+    if (mounted) {
+      _resendSubscriptions(url);
+    }
   }
 
   void _resetIdleTimer(String url) {
