@@ -125,7 +125,6 @@ Future<void> main() async {
     await storage.save(notes.toSet());
     notes.shuffle();
 
-    // final m1 = DateTime.now().millisecondsSinceEpoch;
     for (final i in List.generate(amount, (i) => i)) {
       final r1 = await storage.query(
         RequestFilter<Note>(
@@ -136,8 +135,6 @@ Future<void> main() async {
       );
       expect(r1.first.content, contains('note $i'));
     }
-    // final m2 = DateTime.now().millisecondsSinceEpoch;
-    // print(m2 - m1);
   });
 
   test('query by kinds', () async {

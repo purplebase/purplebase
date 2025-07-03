@@ -124,7 +124,7 @@ void isolateEntryPoint(List args) {
         // REMOTE
 
         case RemoteQueryIsolateOperation(:final req, :final source):
-          final relayUrls = config.getRelays(source: source);
+          final relayUrls = config.getRelays(source: source, useDefault: true);
           final future = pool.query(req, relayUrls: relayUrls);
           if (source.background) {
             response = IsolateResponse(success: true, result: []);

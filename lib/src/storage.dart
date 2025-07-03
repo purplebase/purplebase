@@ -110,7 +110,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<PublishResponse> publish(
     Set<Model<dynamic>> events, {
-    Source? source,
+    RemoteSource source = const RemoteSource(),
   }) async {
     if (events.isEmpty && source == LocalSource()) {
       return PublishResponse();
@@ -119,10 +119,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final maps = events.map((e) => e.toMap()).toList();
 
     final response = await _sendMessage(
-      RemotePublishIsolateOperation(
-        events: maps,
-        source: source as RemoteSource? ?? RemoteSource(),
-      ),
+      RemotePublishIsolateOperation(events: maps, source: source),
     );
 
     if (!response.success) {
@@ -183,7 +180,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<List<E>> query<E extends Model<dynamic>>(
     Request<E> req, {
-    Source source = const LocalAndRemoteSource(stream: false),
+    Source source = const LocalSource(),
     Set<String>? onIds,
   }) async {
     if (req.filters.isEmpty) return [];

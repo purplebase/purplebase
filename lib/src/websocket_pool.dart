@@ -30,7 +30,11 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     }
   }
 
-  Future<void> send(Request req, {Set<String> relayUrls = const {}}) async {
+  Future<void> send(
+    Request req, {
+    Set<String> relayUrls = const {},
+    Completer<List<Map<String, dynamic>>>? queryCompleter,
+  }) async {
     if (relayUrls.isEmpty) return;
 
     _info(
@@ -40,6 +44,11 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // Create subscription state
     final subscription = SubscriptionState(req: req, targetRelays: relayUrls);
     _subscriptions[req.subscriptionId] = subscription;
+
+    // Set up query completer if provided (to avoid race condition with timeout)
+    if (queryCompleter != null) {
+      subscription.queryCompleter = queryCompleter;
+    }
 
     // Start timeout timer for ENTIRE process (responseTimeout from config)
     subscription.eoseTimer = Timer(
@@ -83,8 +92,11 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     RemoteSource source = const LocalAndRemoteSource(),
     Set<String> relayUrls = const {},
   }) async {
-    // Send the request first
-    await send(req, relayUrls: relayUrls);
+    // Set up completer first to avoid race condition with timeout
+    final completer = Completer<List<Map<String, dynamic>>>();
+
+    // Send the request first, passing the completer to avoid race condition
+    await send(req, relayUrls: relayUrls, queryCompleter: completer);
 
     final subscription = _subscriptions[req.subscriptionId];
     if (subscription == null) {
@@ -95,9 +107,6 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     if (source.background) {
       return [];
     }
-
-    final completer = Completer<List<Map<String, dynamic>>>();
-    subscription.queryCompleter = completer;
 
     List<Map<String, dynamic>> events;
     try {
@@ -114,7 +123,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     List<Map<String, dynamic>> events, {
     Set<String> relayUrls = const {},
   }) async {
-    if (relayUrls.isEmpty || events.isEmpty) return PublishRelayResponse();
+    if (relayUrls.isEmpty || events.isEmpty) {
+      return PublishRelayResponse();
+    }
 
     _info(
       'Publishing ${events.length} event(s) to ${relayUrls.length} relay(s): [${relayUrls.join(', ')}]',
@@ -320,13 +331,25 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     _info('Connecting to relay: $url');
 
     try {
-      final socket = WebSocket(
-        Uri.parse(url),
-        backoff: BinaryExponentialBackoff(
-          initial: Duration(milliseconds: 100),
-          maximumStep: 8,
+      // Validate URL format before attempting connection
+      final uri = Uri.parse(url);
+      if (uri.scheme != 'ws' && uri.scheme != 'wss') {
+        throw FormatException('Invalid WebSocket scheme: ${uri.scheme}');
+      }
+      if (uri.host.isEmpty) {
+        throw FormatException('Empty host in URL: $url');
+      }
+
+      // Create WebSocket with timeout to prevent hanging on invalid URLs
+      final socket = await Future(
+        () => WebSocket(
+          uri,
+          backoff: BinaryExponentialBackoff(
+            initial: Duration(milliseconds: 100),
+            maximumStep: 8,
+          ),
         ),
-      );
+      ).timeout(config.responseTimeout);
 
       relay.socket = socket;
       relay.lastActivity = DateTime.now();
@@ -517,6 +540,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       subscription.phase = SubscriptionPhase.streaming;
 
       // Complete query completer if this is a query() call - even with empty results
+      // Handle race condition where completer might not be set up yet
       if (subscription.queryCompleter != null &&
           !subscription.queryCompleter!.isCompleted) {
         subscription.queryCompleter!.complete(

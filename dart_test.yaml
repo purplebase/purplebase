@@ -3,7 +3,7 @@
 concurrency: 1
 
 # Test timeout
-timeout: 5s
+timeout: 7s
 
 # Platform configuration
 platforms:

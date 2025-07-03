@@ -86,8 +86,8 @@ void main() {
 
   // Unit tests for edge cases and state classes
   test('should handle publish with empty events list', () async {
-    // Publish empty events list (no relay URLs needed since events list is empty)
-    final publishResponse = await pool.publish([], relayUrls: {});
+    // Publish empty events list to actual relay
+    final publishResponse = await pool.publish([], relayUrls: {relayUrl});
 
     expect(
       publishResponse,
@@ -95,7 +95,12 @@ void main() {
       reason: 'Should return PublishRelayResponse even with empty events',
     );
 
-    print('✓ Empty publish test completed successfully');
+    // Verify that no events were sent (since list was empty)
+    expect(
+      publishResponse.wrapped.results,
+      isEmpty,
+      reason: 'Should have no results when publishing empty events list',
+    );
   });
 
   test('should handle publish with empty relay URLs', () async {
@@ -107,7 +112,12 @@ void main() {
       reason: 'Should return PublishRelayResponse with empty relay URLs',
     );
 
-    print('✓ Empty relay URLs publish test completed successfully');
+    // Verify that no results are returned when no relays are specified
+    expect(
+      publishResponse.wrapped.results,
+      isEmpty,
+      reason: 'Should have no results when no relay URLs provided',
+    );
   });
 
   test('should handle query with background=true', () async {
@@ -117,18 +127,26 @@ void main() {
 
     final result = await pool.query(
       req,
-      relayUrls: {}, // TODO: it does need relayUrls!
+      relayUrls: {relayUrl},
       source: const RemoteSource(background: true),
     );
 
-    // Should return empty list when returnModels=false
+    // Should return empty list when background=true
     expect(
       result,
       isEmpty,
       reason: 'Should return empty list when background=true',
     );
 
-    print('✓ Query with background=true test completed successfully');
+    // Verify that subscription was created for background query
+    expect(
+      pool.subscriptions.containsKey(req.subscriptionId),
+      isTrue,
+      reason: 'Should create subscription for background query',
+    );
+
+    // Clean up
+    pool.unsubscribe(req);
   });
 
   test('should handle query with non-existent subscription', () async {
@@ -136,9 +154,9 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    // Query without sending the request first (no relay URLs)
+    // Query without sending the request first
     // This should return empty list since subscription doesn't exist
-    final result = await pool.query(req, relayUrls: {});
+    final result = await pool.query(req, relayUrls: {relayUrl});
 
     expect(
       result,
@@ -146,7 +164,15 @@ void main() {
       reason: 'Should return empty list for non-existent subscription',
     );
 
-    print('✓ Query with non-existent subscription test completed successfully');
+    // Verify that subscription was created for this query (since we provided relay URLs)
+    expect(
+      pool.subscriptions.containsKey(req.subscriptionId),
+      isTrue,
+      reason: 'Should create subscription when relay URLs are provided',
+    );
+
+    // Clean up
+    pool.unsubscribe(req);
   });
 
   test('should handle unsubscribe with non-existent subscription', () async {
@@ -162,10 +188,6 @@ void main() {
       pool.subscriptions.containsKey(req.subscriptionId),
       isFalse,
       reason: 'Subscription should not exist',
-    );
-
-    print(
-      '✓ Unsubscribe with non-existent subscription test completed successfully',
     );
   });
 
@@ -183,8 +205,38 @@ void main() {
       isTrue,
       reason: 'Should not create subscriptions for empty relay URLs',
     );
+  });
 
-    print('✓ Send with empty relay URLs test completed successfully');
+  test('should handle send with actual relay URLs', () async {
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    // Send with actual relay URLs
+    await pool.send(req, relayUrls: {relayUrl});
+
+    // Should create subscription
+    expect(
+      pool.subscriptions.containsKey(req.subscriptionId),
+      isTrue,
+      reason: 'Should create subscription for actual relay URLs',
+    );
+
+    // Verify relay connection
+    expect(
+      pool.relays.containsKey(relayUrl),
+      isTrue,
+      reason: 'Should track relay state',
+    );
+
+    expect(
+      pool.relays[relayUrl]?.isConnected,
+      isTrue,
+      reason: 'Should be connected to relay',
+    );
+
+    // Clean up
+    pool.unsubscribe(req);
   });
 
   test('should handle relay state properties correctly', () async {
@@ -224,8 +276,6 @@ void main() {
       isTrue,
       reason: 'Should be disconnected with null socket',
     );
-
-    print('✓ Relay state properties test completed successfully');
   });
 
   test('should handle subscription state correctly', () async {
@@ -273,8 +323,6 @@ void main() {
       isTrue,
       reason: 'Should have all EOSE with empty targets',
     );
-
-    print('✓ Subscription state test completed successfully');
   });
 
   test('should handle publish state correctly', () async {
@@ -314,8 +362,6 @@ void main() {
       isTrue,
       reason: 'Should have all responses with no pending events',
     );
-
-    print('✓ Publish state test completed successfully');
   });
 
   test('should handle response classes correctly', () async {
@@ -376,8 +422,6 @@ void main() {
       isA<PublishResponse>(),
       reason: 'Should have wrapped PublishResponse',
     );
-
-    print('✓ Response classes test completed successfully');
   });
 
   // Integration tests - Require real WebSocket connections
@@ -403,39 +447,92 @@ void main() {
 
     // Clean up
     pool.unsubscribe(req);
-
-    print('✓ Connection test completed successfully');
   });
 
   test('should handle reconnection after disconnection', () async {
+    // Create a pool with a very short idle timeout to force disconnection
+    final shortTimeoutConfig = StorageConfiguration(
+      skipVerification: true,
+      relayGroups: {
+        'test': {relayUrl},
+      },
+      defaultRelayGroup: 'test',
+      responseTimeout: Duration(seconds: 5),
+      streamingBufferWindow: Duration(milliseconds: 100),
+      idleTimeout: Duration(milliseconds: 500), // Very short timeout
+    );
+    final shortTimeoutPool = WebSocketPool(shortTimeoutConfig);
+
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
+    // Establish initial connection
+    await shortTimeoutPool.send(req, relayUrls: {relayUrl});
 
     // Verify initial connection
     expect(
-      pool.relays[relayUrl]?.isConnected,
+      shortTimeoutPool.relays[relayUrl]?.isConnected,
       isTrue,
       reason: 'Should be initially connected',
     );
 
-    // Instead of restarting relay, just verify the connection is stable
-    // The WebSocket library handles reconnection automatically
-    await Future.delayed(Duration(seconds: 2));
+    // Wait for idle timeout to trigger disconnection
+    await Future.delayed(Duration(seconds: 1));
 
-    // Verify connection is still active
+    // Verify connection is now disconnected due to idle timeout
     expect(
-      pool.relays[relayUrl]?.isConnected,
+      shortTimeoutPool.relays[relayUrl]?.isDisconnected,
       isTrue,
-      reason: 'Should maintain connection',
+      reason: 'Should be disconnected after idle timeout',
+    );
+
+    // Test that we can attempt to reconnect by sending a new request
+    final newReq = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    await shortTimeoutPool.send(newReq, relayUrls: {relayUrl});
+
+    // Wait for reconnection
+    bool isReconnected = false;
+    for (int i = 0; i < 30; i++) {
+      // Try for up to 3 seconds
+      await Future.delayed(Duration(milliseconds: 100));
+      if (shortTimeoutPool.relays[relayUrl]?.isConnected == true) {
+        isReconnected = true;
+        break;
+      }
+    }
+
+    expect(
+      isReconnected,
+      isTrue,
+      reason: 'Should be reconnected after sending new request',
+    );
+
+    // Test that we can still communicate after reconnection
+    final note = await PartialNote('Test reconnection event').signWith(signer);
+    final event = note.toMap();
+
+    final publishResponse = await shortTimeoutPool.publish(
+      [event],
+      relayUrls: {relayUrl},
+    );
+
+    // Verify the event was accepted
+    final eventId = event['id'] as String;
+    final eventStates = publishResponse.wrapped.results[eventId];
+    expect(
+      eventStates?.first.accepted,
+      isTrue,
+      reason: 'Should be able to publish after reconnection',
     );
 
     // Clean up
-    pool.unsubscribe(req);
-
-    print('✓ Reconnection test completed successfully');
+    shortTimeoutPool.unsubscribe(req);
+    shortTimeoutPool.unsubscribe(newReq);
+    shortTimeoutPool.dispose();
   });
 
   test('should publish events and receive OK responses', () async {
@@ -467,8 +564,6 @@ void main() {
         reason: 'Event should be accepted by relay',
       );
     }
-
-    print('✓ Publish test completed successfully');
   });
 
   test('should query events and receive responses', () async {
@@ -480,11 +575,9 @@ void main() {
     // Check if publish was successful
     final eventId = event['id'] as String;
     final eventStates = publishResponse.wrapped.results[eventId];
-    print('Publish response for $eventId: $eventStates');
 
     if (eventStates != null && eventStates.isNotEmpty) {
-      print('Event accepted: ${eventStates.first.accepted}');
-      print('Event message: ${eventStates.first.message}');
+      // Event was accepted
     }
 
     // Now query for the event by ID first
@@ -492,8 +585,7 @@ void main() {
       RequestFilter(ids: {event['id']}),
     ]);
 
-    final resultsById = await pool.query(reqById, relayUrls: {relayUrl});
-    print('Query by ID returned ${resultsById.length} events');
+    await pool.query(reqById, relayUrls: {relayUrl});
 
     // Also try query by author
     final reqByAuthor = Request([
@@ -508,10 +600,6 @@ void main() {
       reason: 'Should return events list',
     );
 
-    print('Query returned ${results.length} events');
-    print('Looking for event ID: ${event['id']}');
-    print('Available event IDs: ${results.map((e) => e['id']).toList()}');
-
     // Should find the published event
     final foundEvent = results.where((e) => e['id'] == event['id']).firstOrNull;
     expect(
@@ -519,8 +607,6 @@ void main() {
       isNotNull,
       reason: 'Should find published event in query results',
     );
-
-    print('✓ Query test completed successfully');
   });
 
   test('should handle event roundtrip (publish then query)', () async {
@@ -536,19 +622,12 @@ void main() {
       reason: 'Event should be accepted',
     );
 
-    // Wait for event to be stored and indexed
-    await Future.delayed(Duration(seconds: 3));
-
     // Query for the event
     final req = Request([
       RequestFilter(kinds: {1}, authors: {signer.pubkey}),
     ]);
 
     final results = await pool.query(req, relayUrls: {relayUrl});
-
-    print('Roundtrip query returned ${results.length} events');
-    print('Looking for event ID: ${event['id']}');
-    print('Available event IDs: ${results.map((e) => e['id']).toList()}');
 
     // Should find the published event
     final foundEvent = results.where((e) => e['id'] == event['id']).firstOrNull;
@@ -564,8 +643,6 @@ void main() {
       equals(event['content']),
       reason: 'Event content should match',
     );
-
-    print('✓ Event roundtrip test completed successfully');
   });
 
   test('should handle event deduplication', () async {
@@ -576,19 +653,12 @@ void main() {
     await pool.publish([event], relayUrls: {relayUrl});
     await pool.publish([event], relayUrls: {relayUrl});
 
-    // Wait for events to be stored and indexed
-    await Future.delayed(Duration(seconds: 3));
-
     // Query for the event
     final req = Request([
       RequestFilter(kinds: {1}, authors: {signer.pubkey}),
     ]);
 
     final results = await pool.query(req, relayUrls: {relayUrl});
-
-    print('Deduplication query returned ${results.length} events');
-    print('Looking for event ID: ${event['id']}');
-    print('Available event IDs: ${results.map((e) => e['id']).toList()}');
 
     // Should find only one instance of the event (deduplicated)
     final foundEvents = results.where((e) => e['id'] == event['id']).toList();
@@ -597,8 +667,6 @@ void main() {
       equals(1),
       reason: 'Should find only one instance of the event',
     );
-
-    print('✓ Event deduplication test completed successfully');
   });
 
   test('should handle URL normalization', () async {
@@ -608,7 +676,6 @@ void main() {
 
     // Send to normalized URL
     await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(seconds: 2));
 
     expect(
       pool.relays[relayUrl]?.isConnected,
@@ -618,8 +685,6 @@ void main() {
 
     // Clean up
     pool.unsubscribe(req);
-
-    print('✓ URL normalization test completed successfully');
   });
 
   test('should handle streaming events', () async {
@@ -653,12 +718,7 @@ void main() {
 
     await pool.publish([newEvent], relayUrls: {relayUrl});
 
-    // Wait for streaming event to be received
-    await Future.delayed(Duration(seconds: 2));
-
     // Clean up
     pool.unsubscribe(req);
-
-    print('✓ Streaming events test completed successfully');
   });
 }

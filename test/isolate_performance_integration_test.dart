@@ -54,7 +54,6 @@ Future<void> main() async {
         );
       }
 
-      final createTime = stopwatch.elapsedMilliseconds;
       stopwatch.reset();
 
       // Save all events in batches
@@ -64,14 +63,7 @@ Future<void> main() async {
         await storage.save(batch.toSet());
       }
 
-      final saveTime = stopwatch.elapsedMilliseconds;
       stopwatch.stop();
-
-      print('Created $eventCount events in ${createTime}ms');
-      print('Saved $eventCount events in ${saveTime}ms');
-      print(
-        'Average save time: ${saveTime / (eventCount / batchSize)}ms per batch',
-      );
 
       // Verify all events were saved
       final result = await storage.query(
@@ -113,12 +105,6 @@ Future<void> main() async {
       }
 
       stopwatch.stop();
-      print(
-        'Executed ${queries.length} complex queries in ${stopwatch.elapsedMilliseconds}ms',
-      );
-      print(
-        'Average query time: ${stopwatch.elapsedMilliseconds / queries.length}ms',
-      );
     });
 
     test('should handle concurrent operations efficiently', () async {
@@ -143,9 +129,6 @@ Future<void> main() async {
       await Future.wait([...saveOperations, ...queryOperations]);
 
       stopwatch.stop();
-      print(
-        'Completed ${saveOperations.length} saves and ${queryOperations.length} queries concurrently in ${stopwatch.elapsedMilliseconds}ms',
-      );
     });
 
     test('should handle large content efficiently', () async {
@@ -167,10 +150,6 @@ Future<void> main() async {
 
         expect(queryResult, hasLength(1));
         expect(queryResult.first.event.content, equals(largeContent));
-
-        print(
-          'Saved and queried $size byte content in ${stopwatch.elapsedMilliseconds}ms',
-        );
       }
     });
   });

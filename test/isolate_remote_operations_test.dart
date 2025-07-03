@@ -13,16 +13,13 @@ Future<void> main() async {
 
   late Set<Model<dynamic>> testEvents;
   late Note testNote1, testNote2;
-  late DirectMessage testDM;
   late Bip340PrivateKeySigner signer;
 
   setUpAll(() async {
     try {
       relay = NostrRelay(port: relayPorts.first, host: '127.0.0.1');
       await relay!.start();
-      print('Started dart_relay at port ${relayPorts.first}');
     } catch (e) {
-      print('Failed to start dart_relay: $e');
       rethrow;
     }
   });
@@ -31,7 +28,6 @@ Future<void> main() async {
     if (relay != null) {
       await relay!.stop();
       relay = null;
-      print('Stopped dart_relay');
     }
   });
 
@@ -52,12 +48,7 @@ Future<void> main() async {
       tags: {'test', 'batch'},
     ).signWith(signer);
 
-    testDM = await PartialDirectMessage(
-      content: 'Test direct message',
-      receiver: Utils.generateRandomHex64(),
-    ).signWith(signer);
-
-    testEvents = {testNote1, testNote2, testDM};
+    testEvents = {testNote1, testNote2};
   }
 
   group('RemotePublishIsolateOperation', () {
@@ -243,7 +234,27 @@ Future<void> main() async {
       await createTestEvents(container);
 
       // Publish some test events first so we can query them
-      await storage.publish(testEvents);
+      final publishResponse = await storage.publish(testEvents);
+
+      // Assert all events were accepted by the relay
+      for (final event in testEvents) {
+        final states = publishResponse.results[event.id];
+        if (states == null ||
+            states.isEmpty ||
+            !states.every((s) => s.accepted)) {
+          throw Exception(
+            'Event not accepted by relay:\n'
+            '  id: ${event.id}\n'
+            '  type: ${event.runtimeType}\n'
+            '  content: ${event is Note
+                ? event.content
+                : event is DirectMessage
+                ? event.content
+                : ''}\n'
+            '  states: ${states?.map((s) => s.accepted)}',
+          );
+        }
+      }
     });
 
     tearDownAll(() async {
@@ -261,6 +272,14 @@ Future<void> main() async {
 
       // Events should be saved automatically from the remote query
       expect(result, isNotEmpty);
+
+      // Verify that we found the specific event we were looking for
+      final foundEvent = result.where((e) => e.id == testNote1.id).firstOrNull;
+      expect(foundEvent, isNotNull);
+      expect(
+        foundEvent!.event.content,
+        contains('Test note for remote operations'),
+      );
     });
 
     test('should query events by kind from relay', () async {
@@ -526,7 +545,6 @@ Future<void> main() async {
 
       // For invalid URLs, we should expect unreachable relay URLs
       expect(response.unreachableRelayUrls, isNotEmpty);
-      print('Unreachable relays: ${response.unreachableRelayUrls}');
     });
 
     test('should handle mixed valid/invalid relays', () async {

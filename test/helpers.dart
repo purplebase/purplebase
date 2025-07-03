@@ -17,7 +17,6 @@ class StateNotifierTester {
 
   StateNotifierTester(this.notifier, {bool fireImmediately = false}) {
     final dispose = notifier.addListener((state) {
-      // print('yo $state');
       if (fireImmediately && initial) {
         Future.microtask(() {
           completer.complete(state);
