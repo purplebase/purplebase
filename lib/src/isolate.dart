@@ -125,9 +125,14 @@ void isolateEntryPoint(List args) {
 
         case RemoteQueryIsolateOperation(:final req, :final source):
           final relayUrls = config.getRelays(source: source);
-          final result = await pool.query(req, relayUrls: relayUrls);
-          // No saving here, events are saved in the callback as query also emits
-          response = IsolateResponse(success: true, result: result.decoded());
+          final future = pool.query(req, relayUrls: relayUrls);
+          if (source.background) {
+            response = IsolateResponse(success: true, result: []);
+          } else {
+            final result = await future;
+            // No saving here, events are saved in the callback as query also emits
+            response = IsolateResponse(success: true, result: result.decoded());
+          }
 
         case RemotePublishIsolateOperation(:final events, :final source):
           final relayUrls = config.getRelays(source: source, useDefault: true);

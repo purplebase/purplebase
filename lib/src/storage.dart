@@ -183,41 +183,45 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<List<E>> query<E extends Model<dynamic>>(
     Request<E> req, {
-    Source source = const LocalSource(),
+    Source source = const LocalAndRemoteSource(stream: false),
     Set<String>? onIds,
   }) async {
     if (req.filters.isEmpty) return [];
+    final results = <E>[];
 
-    final relayUrls = config.getRelays(source: source, useDefault: true);
-
-    if (source case RemoteSource(:final includeLocal)) {
+    if (source case LocalSource() || LocalAndRemoteSource()) {
+      final pairs = req.filters.map((f) => f.toSQL()).toList();
+      final queries = LocalQueryArgs.fromPairs(pairs);
       final response = await _sendMessage(
+        LocalQueryIsolateOperation({req: queries}),
+      );
+      if (!response.success) {
+        throw IsolateException(response.error);
+      }
+
+      final result =
+          response.result as Map<Request, Iterable<Map<String, dynamic>>>;
+      results.addAll(result[req]!.toModels(ref));
+    }
+
+    if (source case RemoteSource()) {
+      final future = _sendMessage(
         RemoteQueryIsolateOperation(req: req, source: source),
       );
+      if (results.isNotEmpty && source.background) {
+        // If we have results, return now, if not block until EOSE
+        return results;
+      }
+      final response = await future;
 
       if (!response.success) {
         throw IsolateException(response.error);
       }
 
-      if (includeLocal == false) {
-        final result = response.result as List<Map<String, dynamic>>;
-        return result.toModels(ref);
-      }
+      final result = response.result as List<Map<String, dynamic>>;
+      results.addAll(result.toModels(ref));
     }
-
-    final pairs =
-        req.filters.map((f) => f.toSQL(relayUrls: relayUrls)).toList();
-    final queries = LocalQueryArgs.fromPairs(pairs);
-    final response = await _sendMessage(
-      LocalQueryIsolateOperation({req: queries}),
-    );
-    if (!response.success) {
-      throw IsolateException(response.error);
-    }
-
-    final result =
-        response.result as Map<Request, Iterable<Map<String, dynamic>>>;
-    return result[req]!.toModels(ref);
+    return results;
   }
 
   @override

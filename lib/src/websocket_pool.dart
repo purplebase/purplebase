@@ -80,7 +80,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
   Future<List<Map<String, dynamic>>> query(
     Request req, {
-    RemoteSource source = const RemoteSource(),
+    RemoteSource source = const LocalAndRemoteSource(),
     Set<String> relayUrls = const {},
   }) async {
     // Send the request first
@@ -92,7 +92,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     }
 
     // Return nothing if we only care about new models showing up via the notifier
-    if (!source.returnModels) {
+    if (source.background) {
       return [];
     }
 

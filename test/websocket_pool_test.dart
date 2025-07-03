@@ -110,26 +110,25 @@ void main() {
     print('✓ Empty relay URLs publish test completed successfully');
   });
 
-  test('should handle query with returnModels=false', () async {
+  test('should handle query with background=true', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    // Query with returnModels=false (no relay URLs needed since returnModels=false)
     final result = await pool.query(
       req,
-      relayUrls: {},
-      source: const RemoteSource(returnModels: false),
+      relayUrls: {}, // TODO: it does need relayUrls!
+      source: const RemoteSource(background: true),
     );
 
     // Should return empty list when returnModels=false
     expect(
       result,
       isEmpty,
-      reason: 'Should return empty list when returnModels=false',
+      reason: 'Should return empty list when background=true',
     );
 
-    print('✓ Query with returnModels=false test completed successfully');
+    print('✓ Query with background=true test completed successfully');
   });
 
   test('should handle query with non-existent subscription', () async {
@@ -603,21 +602,16 @@ void main() {
   });
 
   test('should handle URL normalization', () async {
-    // Test with different URL formats that should connect to the same relay
-    final normalizedUrl = relayUrl;
-    final urlWithPath = '$relayUrl/path';
-    final urlWithQuery = '$relayUrl?param=value';
-
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
     // Send to normalized URL
-    await pool.send(req, relayUrls: {normalizedUrl});
+    await pool.send(req, relayUrls: {relayUrl});
     await Future.delayed(Duration(seconds: 2));
 
     expect(
-      pool.relays[normalizedUrl]?.isConnected,
+      pool.relays[relayUrl]?.isConnected,
       isTrue,
       reason: 'Should connect to normalized URL',
     );
