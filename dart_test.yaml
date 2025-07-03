@@ -1,0 +1,13 @@
+# Test configuration for models package
+# Run tests serially to prevent singleton sharing issues
+concurrency: 1
+
+# Test timeout
+timeout: 5s
+
+# Platform configuration
+platforms:
+  - vm
+
+# Reporter configuration
+reporter: compact 

@@ -100,7 +100,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final result = response.result as Set<String>;
     if (result.isNotEmpty) {
-      state = InternalStorageData(updatedIds: result);
+      state = InternalStorageData(updatedIds: result, req: null);
     }
 
     return true;

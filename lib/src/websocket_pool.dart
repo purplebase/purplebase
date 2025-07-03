@@ -50,9 +50,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // Connect to relays asynchronously and send requests as they connect
     final message = jsonEncode(['REQ', req.subscriptionId, ...req.toMaps()]);
 
-    // Don't await - let connections happen in parallel
+    final futureFns = <Future>[];
     for (final url in relayUrls) {
-      _ensureConnection(url)
+      final future = _ensureConnection(url)
           .then((_) {
             // Send request as soon as this relay connects
             final relay = _relays[url];
@@ -73,7 +73,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
             // Connection failed for this relay, continue with others
             // The timeout will handle this case
           });
+      futureFns.add(future);
     }
+    await Future.wait(futureFns);
   }
 
   Future<List<Map<String, dynamic>>> query(
