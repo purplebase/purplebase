@@ -149,13 +149,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     }
 
     final events = <Map<String, dynamic>>[];
-    final relayUrls = config.getRelays(
-      source: LocalSource(),
-      useDefault: false,
-    );
 
-    final tuples =
-        req.filters.map((f) => f.toSQL(relayUrls: relayUrls)).toList();
+    final tuples = req.filters.map((f) => f.toSQL()).toList();
     final statements = db!.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
     try {
       for (final statement in statements) {

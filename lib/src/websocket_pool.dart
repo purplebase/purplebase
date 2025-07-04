@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:meta/meta.dart';
 import 'package:models/models.dart';
 import 'package:riverpod/riverpod.dart';
@@ -15,6 +16,11 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   // Info listeners
   final List<void Function(String)> _infoListeners = [];
 
+  // LRU cache for relay-request timestamp optimization (max 1000 entries)
+  final Map<String, DateTime> _relayRequestTimestamps = {};
+  final List<String> _timestampKeys = []; // For LRU ordering
+  static const int _maxTimestampEntries = 1000;
+
   WebSocketPool(this.config) : super(null);
 
   /// Add a info listener that receives messages
@@ -28,6 +34,82 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     for (final listener in _infoListeners) {
       listener(message);
     }
+  }
+
+  /// Create a canonical version of the request for hashing (without since/until)
+  Request _canonicalRequest(Request req) {
+    final canonicalFilters =
+        req.filters.map((filter) {
+          // Only remove since for optimization, keep until as it's a query constraint
+          return filter.copyWith(since: DateTime.fromMillisecondsSinceEpoch(0));
+        }).toList();
+    return Request(canonicalFilters);
+  }
+
+  /// Hash a relay-request pair for timestamp tracking
+  String _hashRelayRequestPair(String relayUrl, Request req) {
+    // Use canonical request (without since) for consistent hashing
+    final canonicalReq = _canonicalRequest(req);
+    final data = utf8.encode(relayUrl + canonicalReq.toString());
+    final digest = sha256.convert(data);
+    return digest.toString();
+  }
+
+  /// Get timestamp for relay-request pair, return 0 if not found
+  @protected
+  @visibleForTesting
+  DateTime? getRelayRequestTimestamp(String relayUrl, Request req) {
+    final hash = _hashRelayRequestPair(relayUrl, req);
+    return _relayRequestTimestamps[hash];
+  }
+
+  /// Store timestamp for relay-request pair with LRU eviction
+  void _storeRelayRequestTimestamp(
+    String relayUrl,
+    Request req,
+    DateTime timestamp,
+  ) {
+    final hash = _hashRelayRequestPair(relayUrl, req);
+
+    // Remove from LRU list if it exists
+    _timestampKeys.remove(hash);
+
+    // Add to front of LRU list
+    _timestampKeys.insert(0, hash);
+
+    // Store the timestamp
+    _relayRequestTimestamps[hash] = timestamp;
+
+    // Evict oldest if we exceed max entries
+    if (_timestampKeys.length > _maxTimestampEntries) {
+      final oldestKey = _timestampKeys.removeLast();
+      _relayRequestTimestamps.remove(oldestKey);
+    }
+  }
+
+  /// Optimize request filters for a specific relay based on stored timestamps
+  @protected
+  @visibleForTesting
+  Request optimizeRequestForRelay(String relayUrl, Request originalReq) {
+    // Hash the original request BEFORE any modifications
+    final storedTimestamp = getRelayRequestTimestamp(relayUrl, originalReq);
+
+    if (storedTimestamp == null) {
+      // No stored timestamp, return original request
+      return originalReq;
+    }
+
+    // Create optimized filters
+    final optimizedFilters =
+        originalReq.filters.map((filter) {
+          // If filter has a newer since value, keep it; otherwise use stored timestamp
+          if (filter.since != null && filter.since!.isAfter(storedTimestamp)) {
+            return filter;
+          }
+          return filter.copyWith(since: storedTimestamp);
+        }).toList();
+
+    return Request(optimizedFilters);
   }
 
   Future<void> send(
@@ -56,16 +138,22 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       () => _flushEventBuffer(req.subscriptionId),
     );
 
-    // Connect to relays asynchronously and send requests as they connect
-    final message = jsonEncode(['REQ', req.subscriptionId, ...req.toMaps()]);
-
+    // Connect to relays asynchronously and send optimized requests as they connect
     final futureFns = <Future>[];
     for (final url in relayUrls) {
       final future = _ensureConnection(url)
           .then((_) {
-            // Send request as soon as this relay connects
+            // Send optimized request as soon as this relay connects
             final relay = _relays[url];
             if (relay?.isConnected == true) {
+              // Optimize request for this specific relay
+              final optimizedReq = optimizeRequestForRelay(url, req);
+              final message = jsonEncode([
+                'REQ',
+                req.subscriptionId,
+                ...optimizedReq.toMaps(),
+              ]);
+
               relay!.socket!.send(message);
               relay.lastActivity = DateTime.now();
               _resetIdleTimer(url);
@@ -414,7 +502,7 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
       switch (messageType) {
         case 'EVENT':
-          _handleEvent(url, data);
+          handleEvent(url, data);
           break;
         case 'EOSE':
           await _handleEose(url, data);
@@ -431,7 +519,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     }
   }
 
-  void _handleEvent(String url, List<dynamic> data) {
+  @protected
+  @visibleForTesting
+  void handleEvent(String url, List<dynamic> data) {
     if (data.length < 3) return;
 
     final subscriptionId = data[1] as String;
@@ -453,6 +543,16 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     if (alreadyBuffered) {
       return; // Event already in buffer for this subscription
+    }
+
+    // Track latest timestamp for this relay-request pair
+    final eventTimestamp = event['created_at'] as int?;
+    if (eventTimestamp != null) {
+      _storeRelayRequestTimestamp(
+        url,
+        subscription.req,
+        DateTime.fromMillisecondsSinceEpoch(eventTimestamp * 1000),
+      );
     }
 
     // Remove signature if keepSignatures is false
@@ -748,9 +848,14 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       subscription.bufferedEvents.clear();
       subscription.relaysForId.clear();
 
-      // Now send the REQ message
-      _info('Re-sending request $req to relay: $url');
-      final message = jsonEncode(['REQ', req.subscriptionId, ...req.toMaps()]);
+      // Now send the optimized REQ message
+      _info('Re-sending optimized request $req to relay: $url');
+      final optimizedReq = optimizeRequestForRelay(url, req);
+      final message = jsonEncode([
+        'REQ',
+        req.subscriptionId,
+        ...optimizedReq.toMaps(),
+      ]);
       _relays[url]?.socket?.send(message);
     }
   }
@@ -857,8 +962,6 @@ class RelayState {
     final connectionState = socket!.connection.state;
     return connectionState is Disconnected || connectionState is Disconnecting;
   }
-
-  // TODO: Optimize request filter based on latest seen timestamp
 }
 
 // Response classes

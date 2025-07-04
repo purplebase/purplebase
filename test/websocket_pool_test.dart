@@ -721,4 +721,172 @@ void main() {
     // Clean up
     pool.unsubscribe(req);
   });
+
+  test(
+    'should optimize request filters based on latest seen timestamps',
+    () async {
+      // Create initial request without since filter
+      final initialReq = Request([
+        RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      ]);
+
+      // Send initial request and simulate receiving an event
+      await pool.send(initialReq, relayUrls: {relayUrl});
+
+      // Simulate receiving an event with timestamp
+      final eventTimestamp = DateTime.now();
+      final testEvent = {
+        'id': 'test_event_id',
+        'kind': 1,
+        'pubkey': signer.pubkey,
+        'created_at': eventTimestamp.toSeconds(),
+        'content': 'Test event for timestamp optimization',
+        'tags': [],
+        'sig': 'test_signature',
+      };
+
+      // Manually trigger event handling to store timestamp
+      pool.handleEvent(relayUrl, [
+        'EVENT',
+        initialReq.subscriptionId,
+        testEvent,
+      ]);
+
+      // Create a new request with the same filters
+      final newReq = Request([
+        RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      ]);
+
+      // Send the new request - it should be optimized with the stored timestamp
+      await pool.send(newReq, relayUrls: {relayUrl});
+
+      // Verify that the timestamp was stored
+      final storedTimestamp = pool.getRelayRequestTimestamp(
+        relayUrl,
+        initialReq,
+      );
+      expect(
+        storedTimestamp,
+        isNotNull,
+        reason: 'Should store the event timestamp for relay-request pair',
+      );
+      expect(
+        storedTimestamp!.millisecondsSinceEpoch ~/ 1000,
+        equals(eventTimestamp.toSeconds()),
+        reason:
+            'Should store the correct event timestamp for relay-request pair',
+      );
+
+      // Clean up
+      pool.unsubscribe(initialReq);
+      pool.unsubscribe(newReq);
+    },
+  );
+
+  test(
+    'should respect existing since filter when it is newer than stored timestamp',
+    () async {
+      // Create initial request without since filter
+      final initialReq = Request([
+        RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      ]);
+
+      // Send initial request and simulate receiving an event
+      await pool.send(initialReq, relayUrls: {relayUrl});
+
+      // Simulate receiving an event with old timestamp
+      final oldTimestamp = DateTime.now().subtract(Duration(hours: 1));
+      final testEvent = {
+        'id': 'test_event_id',
+        'kind': 1,
+        'pubkey': signer.pubkey,
+        'created_at': oldTimestamp.toSeconds(),
+        'content': 'Test event with old timestamp',
+        'tags': [],
+        'sig': 'test_signature',
+      };
+
+      // Manually trigger event handling to store timestamp
+      pool.handleEvent(relayUrl, [
+        'EVENT',
+        initialReq.subscriptionId,
+        testEvent,
+      ]);
+
+      // Create a new request with a newer since filter
+      final newerSince = DateTime.now().subtract(Duration(minutes: 30));
+      final newReq = Request([
+        RequestFilter(kinds: {1}, authors: {signer.pubkey}, since: newerSince),
+      ]);
+
+      // Optimize the request
+      final optimizedReq = pool.optimizeRequestForRelay(relayUrl, newReq);
+
+      // Verify that the newer since filter is preserved
+      expect(
+        optimizedReq.filters.first.since,
+        equals(newerSince),
+        reason: 'Should preserve newer since filter over stored timestamp',
+      );
+
+      // Clean up
+      pool.unsubscribe(initialReq);
+    },
+  );
+
+  test(
+    'should use stored timestamp when since filter is older or null',
+    () async {
+      // Create initial request without since filter
+      final initialReq = Request([
+        RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      ]);
+
+      // Send initial request and simulate receiving an event
+      await pool.send(initialReq, relayUrls: {relayUrl});
+
+      // Simulate receiving an event with recent timestamp
+      final recentTimestamp = DateTime.now().subtract(Duration(minutes: 5));
+      final testEvent = {
+        'id': 'test_event_id',
+        'kind': 1,
+        'pubkey': signer.pubkey,
+        'created_at': recentTimestamp.toSeconds(),
+        'content': 'Test event with recent timestamp',
+        'tags': [],
+        'sig': 'test_signature',
+      };
+
+      // Manually trigger event handling to store timestamp
+      pool.handleEvent(relayUrl, [
+        'EVENT',
+        initialReq.subscriptionId,
+        testEvent,
+      ]);
+
+      // Create a new request with an older since filter
+      final olderSince = DateTime.now().subtract(Duration(hours: 2));
+      final newReq = Request([
+        RequestFilter(kinds: {1}, authors: {signer.pubkey}, since: olderSince),
+      ]);
+
+      // Optimize the request
+      final optimizedReq = pool.optimizeRequestForRelay(relayUrl, newReq);
+
+      // Verify that the stored timestamp is used instead of the older since filter
+      expect(
+        optimizedReq.filters.first.since,
+        isNotNull,
+        reason: 'Should have a since filter',
+      );
+      expect(
+        optimizedReq.filters.first.since!.millisecondsSinceEpoch ~/ 1000,
+        equals(recentTimestamp.toSeconds()),
+        reason: 'Should use stored timestamp when since filter is older',
+      );
+
+      // Clean up
+      pool.unsubscribe(initialReq);
+    },
+  );
 }
