@@ -127,7 +127,10 @@ void isolateEntryPoint(List args) {
           final relayUrls = config.getRelays(source: source, useDefault: true);
           final future = pool.query(req, relayUrls: relayUrls);
           if (source.background) {
-            response = IsolateResponse(success: true, result: []);
+            response = IsolateResponse(
+              success: true,
+              result: <Map<String, dynamic>>[],
+            );
           } else {
             final result = await future;
             // No saving here, events are saved in the callback as query also emits
@@ -249,7 +252,8 @@ class IsolateResponse {
 
 class IsolateException implements Exception {
   final String? message;
-  IsolateException([this.message]);
+  final StackTrace? stackTrace;
+  IsolateException([this.message, this.stackTrace]);
 
   @override
   String toString() => 'IsolateException: $message';

@@ -161,10 +161,11 @@ extension DbExt on Database {
   }
 }
 
+// 512 MB memory-mapped
 final _setUpSql = '''
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
-  PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+  PRAGMA mmap_size = ${512 * 1024 * 1024};
   PRAGMA page_size = 4096;
   PRAGMA cache_size = -20000;
 

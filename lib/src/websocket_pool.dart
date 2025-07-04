@@ -835,8 +835,7 @@ class RelayState {
   Timer? idleTimer;
   StreamSubscription? connectionSubscription;
   StreamSubscription? messageSubscription;
-  bool intentionalDisconnection =
-      false; // Track if disconnection was intentional
+  bool intentionalDisconnection = false;
 
   RelayState() : reconnectAttempts = 0;
 

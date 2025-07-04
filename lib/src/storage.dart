@@ -45,9 +45,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       db = sqlite3.openInMemory();
     }
 
-    // Configure sqlite: 1 GB memory mapped
+    // Configure sqlite: 512 MB memory mapped
     db!.execute('''
-      PRAGMA mmap_size = ${1 * 1024 * 1024 * 1024};
+      PRAGMA mmap_size = ${512 * 1024 * 1024};
       PRAGMA page_size = 4096;
       PRAGMA cache_size = -20000;
       ''');
@@ -271,11 +271,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       _sendPort!.send((operation, receivePort.sendPort));
 
       return await receivePort.first as IsolateResponse;
-    } catch (e) {
-      // If any null check error occurs, convert to IsolateException
-      if (e is TypeError &&
-          e.toString().contains('Null check operator used on a null value')) {
-        throw IsolateException('Storage has been disposed');
+    } catch (e, stack) {
+      if (e is Error) {
+        throw IsolateException(e.toString(), stack);
       }
       rethrow;
     }

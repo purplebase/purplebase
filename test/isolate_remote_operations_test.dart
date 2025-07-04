@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
+import 'package:purplebase/src/isolate.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -423,6 +424,24 @@ Future<void> main() async {
       // Should get only one copy despite querying both relays
       expect(result.where((e) => e.id == testNote1.id), hasLength(1));
     });
+
+    test(
+      'should handle RequestFilter with an invalid and operator across isolate',
+      () async {
+        final request =
+            RequestFilter(
+              kinds: {1},
+              // Here it should be `n`, not `testNote1` so it should throw an IsolateException
+              and: (n) => {testNote1.author},
+            ).toRequest();
+
+        // This should throw an IsolateException when sent across the isolate boundary
+        expect(
+          () => storage.query(request, source: RemoteSource(group: 'primary')),
+          throwsA(isA<IsolateException>()),
+        );
+      },
+    );
   });
 
   group('RemoteCancelIsolateOperation', () {
