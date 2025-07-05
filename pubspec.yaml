@@ -27,7 +27,7 @@ dev_dependencies:
 
 dependency_overrides:
   models:
-    path: ../models
-    # git:
-    #     url: https://github.com/purplebase/models
-    #     ref: main
+    # path: ../models
+    git:
+        url: https://github.com/purplebase/models
+        ref: 12d1717
