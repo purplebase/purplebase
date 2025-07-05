@@ -11,17 +11,10 @@ import 'package:purplebase/src/websocket_pool.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-/// Singleton
 class PurplebaseStorageNotifier extends StorageNotifier {
   final Ref ref;
 
-  static PurplebaseStorageNotifier? _instance;
-
-  factory PurplebaseStorageNotifier(Ref ref) {
-    return _instance ??= PurplebaseStorageNotifier._internal(ref);
-  }
-
-  PurplebaseStorageNotifier._internal(this.ref);
+  PurplebaseStorageNotifier(this.ref);
 
   var _initialized = false;
 
@@ -237,8 +230,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _isolate = null;
     _sendPort = null;
     _initialized = false;
-
-    _instance = null;
 
     if (mounted) {
       super.dispose();
