@@ -9,7 +9,11 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
 
 void isolateEntryPoint(List args) {
-  final [SendPort mainSendPort, StorageConfiguration config] = args;
+  final [
+    SendPort mainSendPort,
+    StorageConfiguration config,
+    Verifier verifier,
+  ] = args;
 
   // Create a receive port for incoming messages
   final receivePort = ReceivePort();
@@ -43,7 +47,7 @@ void isolateEntryPoint(List args) {
       :final events,
       :final relaysForIds,
     )) {
-      final ids = db!.save(events, relaysForIds, config);
+      final ids = db!.save(events, relaysForIds, config, verifier);
       mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
     }
   });
@@ -97,7 +101,7 @@ void isolateEntryPoint(List args) {
 
         case LocalSaveIsolateOperation(:final events):
           try {
-            final ids = db!.save(events, {}, config);
+            final ids = db!.save(events, {}, config, verifier);
             response = IsolateResponse(success: true, result: ids);
             mainSendPort.send(
               InfoMessage(

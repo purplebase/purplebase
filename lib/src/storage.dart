@@ -45,6 +45,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       PRAGMA cache_size = -20000;
       ''');
 
+    final verifier = ref.read(verifierProvider);
+
     // Initialize isolate
     if (_isolate != null) return _initCompleter.future;
 
@@ -52,6 +54,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     _isolate = await Isolate.spawn(isolateEntryPoint, [
       receivePort.sendPort,
       config,
+      verifier,
     ]);
 
     sub = receivePort.listen((message) {

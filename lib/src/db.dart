@@ -1,4 +1,3 @@
-import 'package:bip340/bip340.dart' as bip340;
 import 'package:models/models.dart';
 import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/utils.dart';
@@ -37,6 +36,7 @@ extension DbExt on Database {
     Set<Map<String, dynamic>> events,
     Map<String, Set<String>> relaysForId,
     StorageConfiguration config,
+    Verifier verifier,
   ) {
     if (events.isEmpty) {
       return {};
@@ -47,7 +47,7 @@ extension DbExt on Database {
         events
         // Filter events by verified
         .where((e) {
-          return config.skipVerification ? true : _verifyEvent(e);
+          return config.skipVerification ? true : verifier.verify(e);
         }).toSet();
 
     final (encodedEvents, tagsForId) = verifiedEvents.encoded(
@@ -57,7 +57,7 @@ extension DbExt on Database {
     // Get all IDs excluding replaceable events (which are inserted always)
     final incomingIds =
         verifiedEvents
-            .where((e) => !Utils.isReplaceable(e['kind']))
+            .where((e) => !Utils.isEventReplaceable(e['kind']))
             .map((p) => p['id'])
             .toList();
 
@@ -145,19 +145,6 @@ extension DbExt on Database {
       execute(_tearDownSql);
     }
     execute(_setUpSql);
-  }
-
-  bool _verifyEvent(Map<String, dynamic> map) {
-    bool verified = false;
-    if (map['sig'] != null && map['sig'] != '') {
-      verified = bip340.verify(map['pubkey'], map['id'], map['sig']);
-      if (!verified) {
-        print(
-          '[purplebase] WARNING: Event ${map['id']} has an invalid signature',
-        );
-      }
-    }
-    return verified;
   }
 }
 
