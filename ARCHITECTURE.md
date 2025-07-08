@@ -19,7 +19,7 @@ graph TB
     
     subgraph "Models Framework"
         Domain[Domain Models<br/>Note, Profile, Reaction]
-        Query[Query System<br/>query&lt;T&gt;()]
+        Query[Query System<br/>query&lt;T&gt;]
         Storage[StorageNotifier<br/>Abstract Interface]
     end
     
