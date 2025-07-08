@@ -19,7 +19,7 @@ graph TB
     
     subgraph "Models Framework"
         Domain[Domain Models<br/>Note, Profile, Reaction]
-        Query[Query System<br/>query<T>()]
+        Query[Query System<br/>query&lt;T&gt;()]
         Storage[StorageNotifier<br/>Abstract Interface]
     end
     
@@ -157,19 +157,11 @@ erDiagram
     }
     
     events ||--o{ event_tags : "has tags"
-    
-    events {
-        string "Primary key: event ID"
-        string "Indexed: pubkey, kind, created_at"
-        string "Blob: compressed content, tags, signature"
-    }
-    
-    event_tags {
-        string "Composite PK: event_id + value"
-        string "Indexed: value"
-        string "is_relay: 0=tag, 1=relay_url"
-    }
 ```
+
+**Schema Notes:**
+- **events table**: Primary key is event ID, indexed on pubkey/kind/created_at, blob contains compressed content/tags/signature
+- **event_tags table**: Composite primary key (event_id + value), indexed on value, is_relay: 0=tag, 1=relay_url
 
 ## Data Flow Patterns
 
