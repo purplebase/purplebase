@@ -16,20 +16,20 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   PurplebaseStorageNotifier(this.ref);
 
-  var _initialized = false;
-
   Database? db;
   Isolate? _isolate;
   SendPort? _sendPort;
-  final _initCompleter = Completer<void>();
+  Completer<void>? _initCompleter;
   StreamSubscription? sub;
 
   /// Initialize the storage with a configuration
   @override
   Future<void> initialize(StorageConfiguration config) async {
+    if (isInitialized) return;
+
     await super.initialize(config);
 
-    if (_initialized) return;
+    _initCompleter = Completer();
 
     if (config.databasePath != null) {
       final dirPath = path.join(Directory.current.path, config.databasePath!);
@@ -48,7 +48,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final verifier = ref.read(verifierProvider);
 
     // Initialize isolate
-    if (_isolate != null) return _initCompleter.future;
+    if (_isolate != null) return _initCompleter!.future;
 
     final receivePort = ReceivePort();
     _isolate = await Isolate.spawn(isolateEntryPoint, [
@@ -61,7 +61,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       switch (message) {
         case SendPort() when _sendPort == null:
           _sendPort = message;
-          _initCompleter.complete();
+          _initCompleter!.complete();
         case QueryResultMessage(:final request, :final savedIds)
             when savedIds.isNotEmpty:
           state = InternalStorageData(updatedIds: savedIds, req: request);
@@ -70,8 +70,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       }
     });
 
-    await _initCompleter.future;
-    _initialized = true;
+    await _initCompleter!.future;
+    isInitialized = true;
   }
 
   /// Public save method
@@ -237,14 +237,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   void dispose() {
-    if (!_initialized || _isolate == null) return;
+    if (!isInitialized) return;
 
     sub?.cancel();
 
     _isolate?.kill();
     _isolate = null;
     _sendPort = null;
-    _initialized = false;
+    _initCompleter = null;
+    isInitialized = false;
 
     if (mounted) {
       super.dispose();
@@ -253,18 +254,18 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   Future<IsolateResponse> _sendMessage(IsolateOperation operation) async {
     // Check if the isolate has been disposed
-    if (!_initialized || _sendPort == null) {
+    if (!isInitialized) {
       throw IsolateException('Storage has been disposed');
     }
 
     try {
-      await _initCompleter.future.timeout(
+      await _initCompleter!.future.timeout(
         Duration(seconds: 12),
         onTimeout: () => IsolateResponse(success: false, error: 'Timeout'),
       );
 
       // Double-check after waiting - dispose might have been called while waiting
-      if (!_initialized || _sendPort == null) {
+      if (!isInitialized) {
         throw IsolateException('Storage has been disposed');
       }
 
