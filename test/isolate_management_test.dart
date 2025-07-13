@@ -33,7 +33,7 @@ Future<void> main() async {
 
   tearDown(() async {
     storage.dispose();
-    storage.obliterateDatabase();
+    storage.obliterate();
     container.dispose();
   });
 
@@ -80,7 +80,7 @@ Future<void> main() async {
       storage.dispose();
 
       // Verify the database file can be cleaned up
-      storage.obliterateDatabase();
+      storage.obliterate();
     });
 
     test('should handle pending operations gracefully on close', () async {

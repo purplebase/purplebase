@@ -35,7 +35,7 @@ Future<void> main() async {
 
   tearDownAll(() async {
     storage.dispose();
-    storage.obliterateDatabase();
+    storage.obliterate();
   });
 
   test('query by tag', () async {

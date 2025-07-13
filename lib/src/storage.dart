@@ -224,6 +224,18 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
+  Future<void> obliterate() async {
+    if (config.databasePath == null) return;
+    // Directory where database is located
+    final dir = Directory(path.dirname(config.databasePath!));
+    for (final e in await dir.list().toList()) {
+      if (e is File && path.basename(e.path).startsWith(config.databasePath!)) {
+        await e.delete();
+      }
+    }
+  }
+
+  @override
   void dispose() {
     if (!_initialized || _isolate == null) return;
 
