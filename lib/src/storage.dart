@@ -228,8 +228,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (config.databasePath == null) return;
     // Directory where database is located
     final dir = Directory(path.dirname(config.databasePath!));
+    final name = path.basename(config.databasePath!);
     for (final e in await dir.list().toList()) {
-      if (e is File && path.basename(e.path).startsWith(config.databasePath!)) {
+      if (e is File && path.basename(e.path).startsWith(name)) {
         await e.delete();
       }
     }
