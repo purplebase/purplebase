@@ -190,9 +190,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       final result =
           response.result as Map<Request, Iterable<Map<String, dynamic>>>;
       results.addAll(result[req]!.toModels(ref));
-    }
-
-    if (source case RemoteSource()) {
+    } else if (source case RemoteSource()) {
       final future = _sendMessage(
         RemoteQueryIsolateOperation(req: req, source: source),
       );
