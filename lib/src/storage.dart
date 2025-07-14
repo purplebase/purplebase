@@ -175,7 +175,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Set<String>? onIds,
   }) async {
     if (req.filters.isEmpty) return [];
-    final results = <E>[];
+    final results = <E>{};
 
     if (source case LocalSource() || LocalAndRemoteSource()) {
       final pairs = req.filters.map((f) => f.toSQL()).toList();
@@ -190,13 +190,15 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       final result =
           response.result as Map<Request, Iterable<Map<String, dynamic>>>;
       results.addAll(result[req]!.toModels(ref));
-    } else if (source case RemoteSource()) {
+    }
+
+    if (source case RemoteSource()) {
       final future = _sendMessage(
         RemoteQueryIsolateOperation(req: req, source: source),
       );
       if (results.isNotEmpty && source.background) {
         // If we have results, return now, if not block until EOSE
-        return results;
+        return results.sortByCreatedAt();
       }
       final response = await future;
 
@@ -207,7 +209,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       final result = response.result as List<Map<String, dynamic>>;
       results.addAll(result.toModels(ref));
     }
-    return results;
+    return results.sortByCreatedAt();
   }
 
   @override
