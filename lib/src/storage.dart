@@ -171,9 +171,11 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<List<E>> query<E extends Model<dynamic>>(
     Request<E> req, {
-    Source source = const LocalAndRemoteSource(stream: false),
+    Source? source,
     Set<String>? onIds,
   }) async {
+    source ??= config.defaultQuerySource;
+
     if (req.filters.isEmpty) return [];
     final results = <E>{};
 

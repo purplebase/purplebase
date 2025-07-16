@@ -23,6 +23,7 @@ Future<void> main() async {
         'test': {'wss://test.com'},
       },
       defaultRelayGroup: 'test',
+      defaultQuerySource: LocalSource(),
     );
 
     await container.read(initializationProvider(config).future);

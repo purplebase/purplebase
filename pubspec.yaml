@@ -1,10 +1,10 @@
 name: purplebase
-description: A fast, local-first, domain-centric nostr client
-version: 0.3.0
+description: A fast, local-first nostr client
+version: 0.3.1
 repository: https://github.com/purplebase/purplebase
 
 environment:
-  sdk: '>=3.7.0 <4.0.0'
+  sdk: ">=3.7.0 <4.0.0"
 
 dependencies:
   async: ^2.11.0
@@ -13,7 +13,7 @@ dependencies:
   logger: ^2.5.0
   riverpod: ^2.5.0
   web_socket_client: ^0.2.1
-  models: ^0.1.2
+  models: ^0.3.1
   sqlite3: ^2.7.5
   collection: ^1.19.1
   path: ^1.9.1
@@ -28,5 +28,5 @@ dependency_overrides:
   models:
     # path: ../models
     git:
-        url: https://github.com/purplebase/models
-        ref: b80ab95
+      url: https://github.com/purplebase/models
+      ref: b70b9c6
