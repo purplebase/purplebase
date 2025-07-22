@@ -37,7 +37,7 @@ Future<void> main() async {
       Utils.generateRandomHex64(),
       container.read(refProvider),
     );
-    await signer.initialize();
+    await signer.signIn();
 
     testNote1 = await PartialNote(
       'Test note for remote operations',

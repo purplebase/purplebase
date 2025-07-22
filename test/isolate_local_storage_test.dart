@@ -35,7 +35,7 @@ Future<void> main() async {
     await container.read(initializationProvider(config).future);
     storage = container.read(storageNotifierProvider.notifier);
     signer = DummySigner(container.read(refProvider));
-    await signer.initialize();
+    await signer.signIn();
 
     // Create comprehensive test dataset
     testNote1 = await PartialNote(

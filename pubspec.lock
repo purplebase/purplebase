@@ -373,11 +373,11 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: b70b9c6
-      resolved-ref: b70b9c6d731342eb069a60de71bc6437b4784958
+      ref: "501c8cf"
+      resolved-ref: "501c8cf4d5d3ba23fec417820ba7fe25ca7cd339"
       url: "https://github.com/purplebase/models"
     source: git
-    version: "0.3.1"
+    version: "0.3.2"
   nip44:
     dependency: transitive
     description:

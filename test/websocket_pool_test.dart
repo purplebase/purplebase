@@ -48,7 +48,7 @@ void main() {
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       container.read(refProvider),
     );
-    await signer.initialize();
+    await signer.signIn();
 
     // Create test events
     await createTestEvents();

@@ -27,7 +27,7 @@ Future<void> main() async {
     await container.read(initializationProvider(config).future);
     storage = container.read(storageNotifierProvider.notifier);
     signer = DummySigner(container.read(refProvider));
-    await signer.initialize();
+    await signer.signIn();
   });
 
   tearDown(() async {
