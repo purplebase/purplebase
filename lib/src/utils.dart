@@ -55,9 +55,11 @@ extension JSONIterableExt on Iterable<Map<String, dynamic>> {
 
   String _getIdForDatabase(Map<String, dynamic> event) {
     final tags = event['tags'] as Iterable;
+    final dTag = (tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)
+        ?.toList();
     return switch (event['kind']) {
       0 || 3 || >= 10000 && < 20000 || >= 30000 && < 40000 =>
-        '${event['kind']}:${event['pubkey']}:${(tags.firstWhereOrNull((e) => e[0] == 'd') as Iterable?)?.firstOrNull ?? ''}',
+        '${event['kind']}:${event['pubkey']}:${dTag != null ? dTag[1] : ''}',
       _ => event['id'],
     };
   }

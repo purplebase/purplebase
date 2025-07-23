@@ -1,5 +1,6 @@
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
+import 'package:purplebase/src/utils.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -374,6 +375,54 @@ Future<void> main() async {
 
     // Expected: n1 and n4 (they match all criteria)
     expect(comprehensiveResults, unorderedEquals([n1, n4]));
+  });
+
+  test('replaceable event d tag database ID bug', () async {
+    await storage.clear();
+
+    // Create two replaceable events with different d tag values
+    // With the bug: both would get database ID "30000:pubkey:d" and overwrite each other
+    // Fixed: they get "30000:pubkey:a" and "30000:pubkey:b" respectively
+
+    final eventA = {
+      'id': Utils.generateRandomHex64(),
+      'pubkey': signer.pubkey,
+      'created_at': DateTime.now().toSeconds(),
+      'kind': 30000, // Parameterized replaceable event
+      'content': 'Data A',
+      'tags': [
+        ['d', 'a'],
+      ],
+      'sig': 'test_sig',
+    };
+
+    final eventB = {
+      'id': Utils.generateRandomHex64(),
+      'pubkey': signer.pubkey,
+      'created_at': DateTime.now().toSeconds(),
+      'kind': 30000,
+      'content': 'Data B',
+      'tags': [
+        ['d', 'b'],
+      ],
+      'sig': 'test_sig',
+    };
+
+    // Test the database ID generation directly using the encoded method
+    // This is where the bug was - _getIdForDatabase was reading dTag[0] instead of dTag[1]
+    final events = <Map<String, dynamic>>[eventA, eventB];
+    final (encodedEvents, _) = events.encoded();
+    final idsGenerated = encodedEvents.map((e) => e[':id']).toSet();
+
+    // With the bug: both events would get ID "30000:pubkey:d"
+    // Fixed: should get "30000:pubkey:a" and "30000:pubkey:b"
+    expect(
+      idsGenerated.length,
+      equals(2),
+      reason: 'Should generate 2 different database IDs',
+    );
+    expect(idsGenerated, contains('30000:${signer.pubkey}:a'));
+    expect(idsGenerated, contains('30000:${signer.pubkey}:b'));
   });
 
   group('request notifier', () {
