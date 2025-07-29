@@ -18,7 +18,17 @@ Future<void> main() async {
 
   setUpAll(() async {
     try {
-      relay = NostrRelay(port: relayPorts.first, host: '127.0.0.1');
+      // Create container first to get ref
+      final container = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+      relay = NostrRelay(
+        port: relayPorts.first,
+        host: '127.0.0.1',
+        ref: container.read(refProvider),
+      );
       await relay!.start();
     } catch (e) {
       rethrow;
@@ -308,12 +318,11 @@ Future<void> main() async {
     });
 
     test('should query events with tags from relay', () async {
-      final request =
-          RequestFilter(
-            tags: {
-              '#t': {'test'},
-            },
-          ).toRequest();
+      final request = RequestFilter(
+        tags: {
+          '#t': {'test'},
+        },
+      ).toRequest();
 
       final result = await storage.query(
         request,
@@ -338,12 +347,11 @@ Future<void> main() async {
       final now = DateTime.now();
       final oneHourAgo = now.subtract(Duration(hours: 1));
 
-      final request =
-          RequestFilter(
-            authors: {signer.pubkey},
-            since: oneHourAgo,
-            limit: 10,
-          ).toRequest();
+      final request = RequestFilter(
+        authors: {signer.pubkey},
+        since: oneHourAgo,
+        limit: 10,
+      ).toRequest();
 
       final result = await storage.query(
         request,
@@ -381,14 +389,13 @@ Future<void> main() async {
       final now = DateTime.now();
       final oneHourAgo = now.subtract(Duration(hours: 1));
 
-      final request =
-          RequestFilter(
-            kinds: {1},
-            authors: {signer.pubkey},
-            since: oneHourAgo,
-            until: now,
-            limit: 5,
-          ).toRequest();
+      final request = RequestFilter(
+        kinds: {1},
+        authors: {signer.pubkey},
+        since: oneHourAgo,
+        until: now,
+        limit: 5,
+      ).toRequest();
 
       final result = await storage.query(
         request,
@@ -428,12 +435,11 @@ Future<void> main() async {
     test(
       'should handle RequestFilter with an invalid and operator across isolate',
       () async {
-        final request =
-            RequestFilter(
-              kinds: {1},
-              // Here it should be `n`, not `testNote1` so it should throw an IsolateException
-              and: (n) => {testNote1.author},
-            ).toRequest();
+        final request = RequestFilter(
+          kinds: {1},
+          // Here it should be `n`, not `testNote1` so it should throw an IsolateException
+          and: (n) => {testNote1.author},
+        ).toRequest();
 
         // This should throw an IsolateException when sent across the isolate boundary
         expect(

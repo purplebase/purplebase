@@ -48,6 +48,20 @@ void isolateEntryPoint(List args) {
       :final relaysForIds,
     )) {
       final ids = db!.save(events, relaysForIds, config, verifier);
+
+      // Log save results with comparison
+      if (ids.length < events.length) {
+        mainSendPort.send(
+          InfoMessage(
+            'Remote save completed: ${ids.length}/${events.length} event(s) saved (${events.length - ids.length} rejected)',
+          ),
+        );
+      } else {
+        mainSendPort.send(
+          InfoMessage('Remote save completed: ${ids.length} event(s) saved'),
+        );
+      }
+
       mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
     }
   });
@@ -103,11 +117,21 @@ void isolateEntryPoint(List args) {
           try {
             final ids = db!.save(events, {}, config, verifier);
             response = IsolateResponse(success: true, result: ids);
-            mainSendPort.send(
-              InfoMessage(
-                'Local save completed: ${ids.length} event(s) saved [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
-              ),
-            );
+
+            // Log save results with comparison
+            if (ids.length < events.length) {
+              mainSendPort.send(
+                InfoMessage(
+                  'Local save completed: ${ids.length}/${events.length} event(s) saved (${events.length - ids.length} rejected) [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
+                ),
+              );
+            } else {
+              mainSendPort.send(
+                InfoMessage(
+                  'Local save completed: ${ids.length} event(s) saved [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
+                ),
+              );
+            }
           } catch (e) {
             response = IsolateResponse(success: false, error: e.toString());
             mainSendPort.send(InfoMessage('ERROR: Local save failed - $e'));
@@ -128,8 +152,7 @@ void isolateEntryPoint(List args) {
         // REMOTE
 
         case RemoteQueryIsolateOperation(:final req, :final source):
-          final relayUrls = config.getRelays(source: source, useDefault: true);
-          final future = pool.query(req, source: source, relayUrls: relayUrls);
+          final future = pool.query(req, source: source);
           if (source.background) {
             response = IsolateResponse(
               success: true,
@@ -142,13 +165,12 @@ void isolateEntryPoint(List args) {
           }
 
         case RemotePublishIsolateOperation(:final events, :final source):
-          final relayUrls = config.getRelays(source: source, useDefault: true);
           mainSendPort.send(
             InfoMessage(
-              'Publishing ${events.length} event(s) to ${relayUrls.length} relay(s) [${relayUrls.join(', ')}]',
+              'Publishing ${events.length} event(s) to ${config.getRelays(source: source).join(', ')}',
             ),
           );
-          final result = await pool.publish(events, relayUrls: relayUrls);
+          final result = await pool.publish(events, source: source);
           response = IsolateResponse(success: true, result: result);
 
         case RemoteCancelIsolateOperation(:final req):

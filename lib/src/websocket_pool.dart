@@ -38,11 +38,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
   /// Create a canonical version of the request for hashing (without since/until)
   Request _canonicalRequest(Request req) {
-    final canonicalFilters =
-        req.filters.map((filter) {
-          // Only remove since for optimization, keep until as it's a query constraint
-          return filter.copyWith(since: DateTime.fromMillisecondsSinceEpoch(0));
-        }).toList();
+    final canonicalFilters = req.filters.map((filter) {
+      // Only remove since for optimization, keep until as it's a query constraint
+      return filter.copyWith(since: DateTime.fromMillisecondsSinceEpoch(0));
+    }).toList();
     return Request(canonicalFilters);
   }
 
@@ -100,14 +99,13 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     }
 
     // Create optimized filters
-    final optimizedFilters =
-        originalReq.filters.map((filter) {
-          // If filter has a newer since value, keep it; otherwise use stored timestamp
-          if (filter.since != null && filter.since!.isAfter(storedTimestamp)) {
-            return filter;
-          }
-          return filter.copyWith(since: storedTimestamp);
-        }).toList();
+    final optimizedFilters = originalReq.filters.map((filter) {
+      // If filter has a newer since value, keep it; otherwise use stored timestamp
+      if (filter.since != null && filter.since!.isAfter(storedTimestamp)) {
+        return filter;
+      }
+      return filter.copyWith(since: storedTimestamp);
+    }).toList();
 
     return Request(optimizedFilters);
   }
@@ -154,12 +152,19 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
                 ...optimizedReq.toMaps(),
               ]);
 
-              relay!.socket!.send(message);
-              relay.lastActivity = DateTime.now();
-              _resetIdleTimer(url);
-              subscription.connectedRelays.add(
-                url,
-              ); // Track which relays we sent to
+              try {
+                relay!.socket!.send(message);
+                relay.lastActivity = DateTime.now();
+                _resetIdleTimer(url);
+                subscription.connectedRelays.add(
+                  url,
+                ); // Track which relays we sent to
+              } catch (e) {
+                _info(
+                  'ERROR: Failed to send request ${req.subscriptionId} to relay $url - $e',
+                );
+                // Continue with other relays
+              }
             }
           })
           .catchError((error) {
@@ -177,9 +182,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
   Future<List<Map<String, dynamic>>> query(
     Request req, {
-    RemoteSource source = const LocalAndRemoteSource(),
-    Set<String> relayUrls = const {},
+    RemoteSource source = const RemoteSource(),
   }) async {
+    final relayUrls = config.getRelays(source: source);
+
     // Set up completer first to avoid race condition with timeout
     final completer = Completer<List<Map<String, dynamic>>>();
 
@@ -209,8 +215,10 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
   Future<PublishRelayResponse> publish(
     List<Map<String, dynamic>> events, {
-    Set<String> relayUrls = const {},
+    RemoteSource source = const RemoteSource(),
   }) async {
+    final relayUrls = config.getRelays(source: source);
+
     if (relayUrls.isEmpty || events.isEmpty) {
       return PublishRelayResponse();
     }
@@ -255,11 +263,22 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
                 final eventId = entry.key;
                 final message = entry.value;
 
-                relay!.socket!.send(message);
-                relay.lastActivity = DateTime.now();
-                _resetIdleTimer(url);
+                try {
+                  relay!.socket!.send(message);
+                  relay.lastActivity = DateTime.now();
+                  _resetIdleTimer(url);
 
-                // Track that we sent this event to this relay
+                  // Track that we sent this event to this relay
+                } catch (e) {
+                  _info(
+                    'ERROR: Failed to send event $eventId to relay $url - $e',
+                  );
+                  // Mark this relay as failed for this event
+                  publishState.failedRelays
+                      .putIfAbsent(eventId, () => <String>{})
+                      .add(url);
+                  continue; // Skip to next event
+                }
                 publishState.sentToRelays
                     .putIfAbsent(eventId, () => <String>{})
                     .add(url);
@@ -303,9 +322,14 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     for (final url in subscription.targetRelays) {
       final relay = _relays[url];
       if (relay?.isConnected == true) {
-        relay!.socket!.send(message);
-        relay.lastActivity = DateTime.now();
-        _resetIdleTimer(url);
+        try {
+          relay!.socket!.send(message);
+          relay.lastActivity = DateTime.now();
+          _resetIdleTimer(url);
+        } catch (e) {
+          _info('ERROR: Failed to send CLOSE to relay $url - $e');
+          // Continue with other relays
+        }
       }
     }
 
@@ -708,10 +732,12 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
         }
       } else {
         // No events to track, just mark all target relays as unreachable if we never sent anything
-        final allSentToRelays =
-            publishState.sentToRelays.values.expand((urls) => urls).toSet();
-        final allFailedRelays =
-            publishState.failedRelays.values.expand((urls) => urls).toSet();
+        final allSentToRelays = publishState.sentToRelays.values
+            .expand((urls) => urls)
+            .toSet();
+        final allFailedRelays = publishState.failedRelays.values
+            .expand((urls) => urls)
+            .toSet();
         final neverConnected = publishState.targetRelays
             .difference(allSentToRelays)
             .difference(allFailedRelays);
@@ -824,10 +850,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
   }
 
   Future<void> _resendSubscriptions(String url) async {
-    final subscriptionsToResend =
-        _subscriptions.values
-            .where((subscription) => subscription.targetRelays.contains(url))
-            .toList();
+    final subscriptionsToResend = _subscriptions.values
+        .where((subscription) => subscription.targetRelays.contains(url))
+        .toList();
 
     for (final subscription in subscriptionsToResend) {
       final req = subscription.req;
@@ -856,7 +881,19 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
         req.subscriptionId,
         ...optimizedReq.toMaps(),
       ]);
-      _relays[url]?.socket?.send(message);
+
+      // Guard against sending to closed sockets (handles race conditions during reconnection)
+      final relay = _relays[url];
+      if (relay?.isConnected == true) {
+        try {
+          relay!.socket!.send(message);
+        } catch (e) {
+          _info(
+            'ERROR: Failed to send message to $url after reconnection - $e',
+          );
+          // Socket might be in an inconsistent state, let it reconnect naturally
+        }
+      }
     }
   }
 

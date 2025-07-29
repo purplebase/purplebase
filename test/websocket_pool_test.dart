@@ -58,7 +58,11 @@ void main() {
     relayUrl = 'ws://localhost:$port';
 
     // Create and start the relay
-    relay = NostrRelay(port: port, host: '127.0.0.1');
+    relay = NostrRelay(
+      port: port,
+      host: '127.0.0.1',
+      ref: container.read(refProvider),
+    );
     await relay.start();
   });
 
@@ -87,7 +91,8 @@ void main() {
   // Unit tests for edge cases and state classes
   test('should handle publish with empty events list', () async {
     // Publish empty events list to actual relay
-    final publishResponse = await pool.publish([], relayUrls: {relayUrl});
+    final source = RemoteSource(relayUrls: {relayUrl});
+    final publishResponse = await pool.publish([], source: source);
 
     expect(
       publishResponse,
@@ -104,7 +109,8 @@ void main() {
   });
 
   test('should handle publish with empty relay URLs', () async {
-    final publishResponse = await pool.publish(testEvents, relayUrls: {});
+    final source = RemoteSource(relayUrls: {}, group: 'missing');
+    final publishResponse = await pool.publish(testEvents, source: source);
 
     expect(
       publishResponse,
@@ -125,11 +131,8 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    final result = await pool.query(
-      req,
-      relayUrls: {relayUrl},
-      source: const RemoteSource(background: true),
-    );
+    final source = RemoteSource(relayUrls: {relayUrl}, background: true);
+    final result = await pool.query(req, source: source);
 
     // Should return empty list when background=true
     expect(
@@ -156,7 +159,8 @@ void main() {
 
     // Query without sending the request first
     // This should return empty list since subscription doesn't exist
-    final result = await pool.query(req, relayUrls: {relayUrl});
+    final source = RemoteSource(relayUrls: {relayUrl});
+    final result = await pool.query(req, source: source);
 
     expect(
       result,
@@ -515,10 +519,10 @@ void main() {
     final note = await PartialNote('Test reconnection event').signWith(signer);
     final event = note.toMap();
 
-    final publishResponse = await shortTimeoutPool.publish(
-      [event],
-      relayUrls: {relayUrl},
-    );
+    final source = RemoteSource(relayUrls: {relayUrl});
+    final publishResponse = await shortTimeoutPool.publish([
+      event,
+    ], source: source);
 
     // Verify the event was accepted
     final eventId = event['id'] as String;
@@ -540,7 +544,8 @@ void main() {
     final event = note.toMap();
     final events = [event];
 
-    final publishResponse = await pool.publish(events, relayUrls: {relayUrl});
+    final source = RemoteSource(relayUrls: {relayUrl});
+    final publishResponse = await pool.publish(events, source: source);
 
     expect(
       publishResponse,
@@ -570,7 +575,9 @@ void main() {
     // First publish an event
     final note = await PartialNote('Test query event').signWith(signer);
     final event = note.toMap();
-    final publishResponse = await pool.publish([event], relayUrls: {relayUrl});
+    final publishResponse = await pool.publish([
+      event,
+    ], source: RemoteSource(relayUrls: {relayUrl}));
 
     // Check if publish was successful
     final eventId = event['id'] as String;
@@ -585,14 +592,17 @@ void main() {
       RequestFilter(ids: {event['id']}),
     ]);
 
-    await pool.query(reqById, relayUrls: {relayUrl});
+    await pool.query(reqById, source: RemoteSource(relayUrls: {relayUrl}));
 
     // Also try query by author
     final reqByAuthor = Request([
       RequestFilter(kinds: {1}, authors: {signer.pubkey}),
     ]);
 
-    final results = await pool.query(reqByAuthor, relayUrls: {relayUrl});
+    final results = await pool.query(
+      reqByAuthor,
+      source: RemoteSource(relayUrls: {relayUrl}),
+    );
 
     expect(
       results,
@@ -614,7 +624,9 @@ void main() {
     final event = note.toMap();
 
     // Publish event
-    final publishResponse = await pool.publish([event], relayUrls: {relayUrl});
+    final publishResponse = await pool.publish([
+      event,
+    ], source: RemoteSource(relayUrls: {relayUrl}));
     final eventStates = publishResponse.wrapped.results[event['id']];
     expect(
       eventStates?.first.accepted,
@@ -627,7 +639,10 @@ void main() {
       RequestFilter(kinds: {1}, authors: {signer.pubkey}),
     ]);
 
-    final results = await pool.query(req, relayUrls: {relayUrl});
+    final results = await pool.query(
+      req,
+      source: RemoteSource(relayUrls: {relayUrl}),
+    );
 
     // Should find the published event
     final foundEvent = results.where((e) => e['id'] == event['id']).firstOrNull;
@@ -650,15 +665,19 @@ void main() {
     final event = note.toMap();
 
     // Publish the same event twice
-    await pool.publish([event], relayUrls: {relayUrl});
-    await pool.publish([event], relayUrls: {relayUrl});
+    final source = RemoteSource(relayUrls: {relayUrl});
+    await pool.publish([event], source: source);
+    await pool.publish([event], source: source);
 
     // Query for the event
     final req = Request([
       RequestFilter(kinds: {1}, authors: {signer.pubkey}),
     ]);
 
-    final results = await pool.query(req, relayUrls: {relayUrl});
+    final results = await pool.query(
+      req,
+      source: RemoteSource(relayUrls: {relayUrl}),
+    );
 
     // Should find only one instance of the event (deduplicated)
     final foundEvents = results.where((e) => e['id'] == event['id']).toList();
@@ -693,11 +712,7 @@ void main() {
     ]);
 
     // Start streaming subscription
-    final results = await pool.query(
-      req,
-      relayUrls: {relayUrl},
-      source: const RemoteSource(stream: true),
-    );
+    final results = await pool.query(req, source: RemoteSource(stream: true));
 
     expect(
       results,
@@ -716,7 +731,7 @@ void main() {
     final note = await PartialNote('Test streaming event').signWith(signer);
     final newEvent = note.toMap();
 
-    await pool.publish([newEvent], relayUrls: {relayUrl});
+    await pool.publish([newEvent], source: RemoteSource(relayUrls: {relayUrl}));
 
     // Clean up
     pool.unsubscribe(req);
