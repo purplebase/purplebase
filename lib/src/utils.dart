@@ -15,6 +15,24 @@ extension JSONIterableExt on Iterable<Map<String, dynamic>> {
 
     return (
       map((e) {
+        // Sanitize event fields first - only keep expected nostr event fields
+        const expectedFields = {
+          'id',
+          'pubkey',
+          'kind',
+          'created_at',
+          'content',
+          'tags',
+          'sig',
+        };
+        final sanitizedEvent = <String, dynamic>{};
+        for (final entry in e.entries) {
+          if (expectedFields.contains(entry.key)) {
+            sanitizedEvent[entry.key] = entry.value;
+          }
+        }
+        e = sanitizedEvent;
+
         // Get actual ID including replaceable
         e['id'] = _getIdForDatabase(e);
 
