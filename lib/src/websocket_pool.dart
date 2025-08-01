@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:meta/meta.dart';
 import 'package:models/models.dart';
+import 'package:purplebase/src/relay_status_types.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:web_socket_client/web_socket_client.dart';
 
@@ -15,6 +16,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
   // Info listeners
   final List<void Function(String)> _infoListeners = [];
+
+  // Relay status listeners
+  final List<void Function(RelayStatusData)> _relayStatusListeners = [];
 
   // LRU cache for relay-request timestamp optimization (max 1000 entries)
   final Map<String, DateTime> _relayRequestTimestamps = {};
@@ -34,6 +38,86 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     for (final listener in _infoListeners) {
       listener(message);
     }
+  }
+
+  /// Add a relay status listener that receives status updates
+  void Function() addRelayStatusListener(
+    void Function(RelayStatusData) listener,
+  ) {
+    _relayStatusListeners.add(listener);
+    return () => _relayStatusListeners.remove(listener);
+  }
+
+  /// Send relay status update to all listeners
+  void _emitRelayStatus() {
+    if (_relayStatusListeners.isEmpty) return;
+
+    final statusData = _buildRelayStatusData();
+    for (final listener in _relayStatusListeners) {
+      listener(statusData);
+    }
+  }
+
+  /// Build current relay status data
+  RelayStatusData _buildRelayStatusData() {
+    // Build relay connection info
+    final relayInfo = <String, RelayConnectionInfo>{};
+    for (final entry in _relays.entries) {
+      final url = entry.key;
+      final relay = entry.value;
+
+      RelayConnectionState state;
+      if (relay.isConnected) {
+        state = RelayConnectionState.connected;
+      } else if (relay.isConnecting) {
+        state = RelayConnectionState.connecting;
+      } else {
+        state = RelayConnectionState.disconnected;
+      }
+
+      relayInfo[url] = RelayConnectionInfo(
+        url: url,
+        state: state,
+        lastActivity: relay.lastActivity,
+        reconnectAttempts: relay.reconnectAttempts,
+      );
+    }
+
+    // Build active request info
+    final requestInfo = <String, ActiveRequestInfo>{};
+    for (final entry in _subscriptions.entries) {
+      final subscriptionId = entry.key;
+      final subscription = entry.value;
+
+      requestInfo[subscriptionId] = ActiveRequestInfo(
+        subscriptionId: subscriptionId,
+        targetRelays: subscription.targetRelays,
+        connectedRelays: subscription.connectedRelays,
+        eoseReceived: subscription.eoseReceived,
+        phase: subscription.phase,
+        startTime: DateTime.now(), // TODO: Track actual start time
+      );
+    }
+
+    // Build publish request info (simplified for now)
+    final publishInfo = <String, PublishRequestInfo>{};
+    for (final entry in _publishStates.entries) {
+      final id = entry.key;
+      final publishState = entry.value;
+
+      publishInfo[id] = PublishRequestInfo(
+        id: id,
+        targetRelays: publishState.targetRelays.toList(), // Convert Set to List
+        relayResults: {}, // TODO: Build from pendingResponses and failedRelays
+        startTime: DateTime.now(), // TODO: Track actual start time
+      );
+    }
+
+    return RelayStatusData(
+      relays: relayInfo,
+      activeRequests: requestInfo,
+      publishRequests: publishInfo,
+    );
   }
 
   /// Create a canonical version of the request for hashing (without since/until)
@@ -124,6 +208,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     // Create subscription state
     final subscription = SubscriptionState(req: req, targetRelays: relayUrls);
     _subscriptions[req.subscriptionId] = subscription;
+
+    // Emit relay status update
+    _emitRelayStatus();
 
     // Set up query completer if provided (to avoid race condition with timeout)
     if (queryCompleter != null) {
@@ -338,6 +425,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
     subscription.eoseTimer?.cancel();
     _subscriptions.remove(subscriptionId);
 
+    // Emit relay status update
+    _emitRelayStatus();
+
     // Check if any relay has no more active subscriptions and close if idle
     _cleanupIdleRelays(subscription.targetRelays);
   }
@@ -485,6 +575,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
       }
 
       _info('Successfully connected to relay: $url');
+
+      // Emit relay status update
+      _emitRelayStatus();
 
       // Re-send active subscriptions to this relay
       await _resendSubscriptions(url);
@@ -786,6 +879,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     _info('Disconnected from relay: $url');
 
+    // Emit relay status update
+    _emitRelayStatus();
+
     // Cancel idle timer but keep connection listeners active to detect reconnection
     relay.idleTimer?.cancel();
 
@@ -811,6 +907,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     // Reset intentional disconnection flag in case it was set
     relay.intentionalDisconnection = false;
+
+    // Emit relay status update
+    _emitRelayStatus();
   }
 
   void _handleReconnection(String url) {
@@ -828,6 +927,9 @@ class WebSocketPool extends StateNotifier<RelayResponse?> {
 
     // Reset idle timer
     _resetIdleTimer(url);
+
+    // Emit relay status update
+    _emitRelayStatus();
 
     // Re-send subscriptions immediately
     if (mounted) {

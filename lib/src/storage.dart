@@ -67,6 +67,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
           state = InternalStorageData(updatedIds: savedIds, req: request);
         case InfoMessage infoMessage:
           ref.read(infoNotifierProvider.notifier).emit(infoMessage);
+        case RelayStatusMessage relayStatusMessage:
+          ref
+              .read(relayStatusProvider.notifier)
+              .emit(relayStatusMessage.statusData);
       }
     });
 

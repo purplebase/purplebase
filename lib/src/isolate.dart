@@ -5,6 +5,7 @@ import 'package:models/models.dart';
 import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/db.dart';
 import 'package:purplebase/src/websocket_pool.dart';
+import 'package:purplebase/src/relay_status_types.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
 
@@ -69,6 +70,11 @@ void isolateEntryPoint(List args) {
   // Add info listener for websocket pool
   pool.addInfoListener((message) {
     mainSendPort.send(InfoMessage(message));
+  });
+
+  // Add relay status listener for websocket pool
+  pool.addRelayStatusListener((statusData) {
+    mainSendPort.send(RelayStatusMessage(statusData));
   });
 
   // Listen for messages from main isolate (UI)
@@ -214,6 +220,12 @@ final class QueryResultMessage extends IsolateMessage {
 final class InfoMessage extends IsolateMessage {
   final String message;
   InfoMessage(this.message);
+}
+
+/// Message containing relay status information
+final class RelayStatusMessage extends IsolateMessage {
+  final RelayStatusData statusData;
+  RelayStatusMessage(this.statusData);
 }
 
 sealed class IsolateOperation {}
