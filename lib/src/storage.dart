@@ -181,41 +181,41 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     source ??= config.defaultQuerySource;
 
     if (req.filters.isEmpty) return [];
-    final results = <E>{};
-
-    if (source case LocalSource() || LocalAndRemoteSource()) {
-      final pairs = req.filters.map((f) => f.toSQL()).toList();
-      final queries = LocalQueryArgs.fromPairs(pairs);
-      final response = await _sendMessage(
-        LocalQueryIsolateOperation({req: queries}),
-      );
-      if (!response.success) {
-        throw IsolateException(response.error);
-      }
-
-      final result =
-          response.result as Map<Request, Iterable<Map<String, dynamic>>>;
-      results.addAll(result[req]!.toModels(ref));
-    }
 
     if (source case RemoteSource()) {
       final future = _sendMessage(
         RemoteQueryIsolateOperation(req: req, source: source),
       );
-      if (results.isNotEmpty && source.background) {
-        // If we have results, return now, if not block until EOSE
-        return results.sortByCreatedAt();
-      }
-      final response = await future;
 
-      if (!response.success) {
-        throw IsolateException(response.error);
-      }
+      if (source.background) {
+        unawaited(future);
+      } else {
+        final response = await future;
 
-      final result = response.result as List<Map<String, dynamic>>;
-      results.addAll(result.toModels(ref));
+        if (!response.success) {
+          throw IsolateException(response.error);
+        }
+
+        // ONLY return here if source has no local
+        if (source is! LocalAndRemoteSource) {
+          final result = response.result as List<Map<String, dynamic>>;
+          return result.toModels<E>(ref).toSet().sortByCreatedAt();
+        }
+      }
     }
-    return results.sortByCreatedAt();
+
+    final pairs = req.filters.map((f) => f.toSQL()).toList();
+    final queries = LocalQueryArgs.fromPairs(pairs);
+    final response = await _sendMessage(
+      LocalQueryIsolateOperation({req: queries}),
+    );
+    if (!response.success) {
+      throw IsolateException(response.error);
+    }
+
+    final result =
+        response.result as Map<Request, Iterable<Map<String, dynamic>>>;
+    return result[req]!.toModels<E>(ref).toSet().sortByCreatedAt();
   }
 
   @override
