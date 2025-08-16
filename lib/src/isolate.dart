@@ -19,9 +19,6 @@ void isolateEntryPoint(List args) {
   // Create a receive port for incoming messages
   final receivePort = ReceivePort();
 
-  // Send this isolate's SendPort back to the main isolate
-  mainSendPort.send(receivePort.sendPort);
-
   void Function()? closeFn;
   StreamSubscription? sub;
 
@@ -36,9 +33,14 @@ void isolateEntryPoint(List args) {
       db = sqlite3.openInMemory();
     }
     db.initialize();
+    
+    // Send SendPort AFTER database is initialized
+    mainSendPort.send(receivePort.sendPort);
   } catch (e) {
     print('Error opening database: $e');
     mainSendPort.send(InfoMessage('ERROR: Failed to open database - $e'));
+    // Don't send SendPort if initialization failed
+    return;
   }
 
   // Listen for messages from websocket pool
