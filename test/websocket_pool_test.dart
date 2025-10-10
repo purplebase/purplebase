@@ -81,7 +81,13 @@ void main() {
       streamingBufferWindow: Duration(milliseconds: 100),
       idleTimeout: Duration(seconds: 30),
     );
-    pool = WebSocketPool(config);
+    pool = WebSocketPool(
+      config: config,
+      eventNotifier: RelayEventNotifier(),
+      statusNotifier: PoolStatusNotifier(
+        throttleDuration: config.streamingBufferWindow,
+      ),
+    );
   });
 
   tearDown(() async {
@@ -465,7 +471,13 @@ void main() {
       streamingBufferWindow: Duration(milliseconds: 100),
       idleTimeout: Duration(milliseconds: 500), // Very short timeout
     );
-    final shortTimeoutPool = WebSocketPool(shortTimeoutConfig);
+    final shortTimeoutPool = WebSocketPool(
+      config: shortTimeoutConfig,
+      eventNotifier: RelayEventNotifier(),
+      statusNotifier: PoolStatusNotifier(
+        throttleDuration: shortTimeoutConfig.streamingBufferWindow,
+      ),
+    );
 
     final req = Request([
       RequestFilter(kinds: {1}),
@@ -480,6 +492,9 @@ void main() {
       isTrue,
       reason: 'Should be initially connected',
     );
+
+    // Unsubscribe to allow idle timeout to trigger
+    shortTimeoutPool.unsubscribe(req);
 
     // Wait for idle timeout to trigger disconnection
     await Future.delayed(Duration(seconds: 1));
@@ -693,17 +708,54 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    // Send to normalized URL
-    await pool.send(req, relayUrls: {relayUrl});
+    // Test various URL variations that should all normalize to the same relay
+    final urlVariations = [
+      relayUrl, // Base URL
+      '$relayUrl/', // With trailing slash
+      '$relayUrl//', // With double trailing slash
+      relayUrl.toUpperCase(), // Uppercase (if it has letters)
+    ];
 
+    // Send to first variation
+    await pool.send(req, relayUrls: {urlVariations[0]});
+
+    // Wait for connection
+    await Future.delayed(Duration(milliseconds: 100));
+
+    // Verify connection exists with normalized URL
+    final normalizedUrl = relayUrl.toLowerCase();
     expect(
-      pool.relays[relayUrl]?.isConnected,
+      pool.relays[normalizedUrl]?.isConnected,
       isTrue,
       reason: 'Should connect to normalized URL',
     );
 
+    // Verify all variations point to the same relay (should only create one connection)
+    expect(
+      pool.relays.length,
+      equals(1),
+      reason: 'Should only have one relay connection despite URL variations',
+    );
+
+    // Send another request with a different URL variation (with trailing slash)
+    final req2 = Request([
+      RequestFilter(kinds: {2}),
+    ]);
+    await pool.send(req2, relayUrls: {'$relayUrl/'});
+
+    // Wait a bit
+    await Future.delayed(Duration(milliseconds: 100));
+
+    // Should still only have one relay connection
+    expect(
+      pool.relays.length,
+      equals(1),
+      reason: 'URLs with trailing slashes should normalize to same relay',
+    );
+
     // Clean up
     pool.unsubscribe(req);
+    pool.unsubscribe(req2);
   });
 
   test('should handle streaming events', () async {

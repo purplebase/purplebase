@@ -7,6 +7,32 @@ final fastZlib = ZLibCodec(
   strategy: ZLibOption.strategyRle, // often yields a few more %
 );
 
+/// Normalize a relay URL to ensure consistent formatting when used as an ID.
+///
+/// This function:
+/// - Removes trailing slashes
+/// - Converts to lowercase (domain names are case-insensitive)
+/// - Preserves the protocol (ws/wss)
+///
+/// Examples:
+/// - 'wss://relay.example.com/' -> 'wss://relay.example.com'
+/// - 'WSS://Relay.Example.COM' -> 'wss://relay.example.com'
+/// - 'ws://localhost:8080//' -> 'ws://localhost:8080'
+String normalizeRelayUrl(String url) {
+  if (url.isEmpty) return url;
+
+  // Remove trailing slashes
+  var normalized = url;
+  while (normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+
+  // Convert to lowercase for consistent comparison
+  normalized = normalized.toLowerCase();
+
+  return normalized;
+}
+
 extension JSONIterableExt on Iterable<Map<String, dynamic>> {
   (Set<Map<String, dynamic>> events, Map<String, List> tagsForId) encoded({
     bool keepSignatures = true,

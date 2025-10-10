@@ -16,8 +16,9 @@ extension DbExt on Database {
         for (final statement in statements) {
           final i = statements.indexOf(statement);
           final params = entry.value.params[i];
-          result[entry.key] =
-              statement.selectWith(StatementParameters.named(params)).decoded();
+          result[entry.key] = statement
+              .selectWith(StatementParameters.named(params))
+              .decoded();
         }
       }
     } catch (e) {
@@ -43,25 +44,25 @@ extension DbExt on Database {
     }
 
     // Event massaging
-    final verifiedEvents =
-        events
+    final verifiedEvents = events
         // Filter events by verified
         .where((e) {
           return config.skipVerification ? true : verifier.verify(e);
-        }).toSet();
+        })
+        .toSet();
 
     final (encodedEvents, tagsForId) = verifiedEvents.encoded(
       keepSignatures: config.keepSignatures,
     );
 
     // Get all IDs excluding replaceable events (which are inserted always)
-    final incomingIds =
-        verifiedEvents
-            .where((e) => !Utils.isEventReplaceable(e['kind']))
-            .map((p) => p['id'])
-            .toList();
+    final incomingIds = verifiedEvents
+        .where((e) => !Utils.isEventReplaceable(e['kind']))
+        .map((p) => p['id'])
+        .toList();
 
-    final sql = '''
+    final sql =
+        '''
     SELECT id FROM events WHERE id IN (${incomingIds.map((_) => '?').join(', ')});
     INSERT INTO events (id, pubkey, kind, created_at, blob) 
     VALUES (:id, :pubkey, :kind, :created_at, :blob)
@@ -78,8 +79,10 @@ extension DbExt on Database {
 
     final ids = <String>{};
     try {
-      final existingIds =
-          existingPs.select(incomingIds).map((e) => e['id']).toSet();
+      final existingIds = existingPs
+          .select(incomingIds)
+          .map((e) => e['id'])
+          .toSet();
 
       execute('BEGIN');
       for (final event in encodedEvents) {
@@ -87,6 +90,9 @@ extension DbExt on Database {
         // For replaceables, alreadySaved is always false
         final alreadySaved = existingIds.contains(event[':id']);
         final relayUrls = relaysForId[event[':id']] ?? {};
+
+        // Normalize all relay URLs before storing
+        final normalizedRelayUrls = relayUrls.map(normalizeRelayUrl).toSet();
 
         if (!alreadySaved) {
           eventPs.executeWith(StatementParameters.named(event));
@@ -105,7 +111,7 @@ extension DbExt on Database {
             );
           }
 
-          for (final relayUrl in relayUrls) {
+          for (final relayUrl in normalizedRelayUrls) {
             tagsPs.executeWith(
               StatementParameters.named({
                 ':event_id': event[':id'],
@@ -115,7 +121,7 @@ extension DbExt on Database {
             );
           }
         } else {
-          for (final relayUrl in relayUrls) {
+          for (final relayUrl in normalizedRelayUrls) {
             tagsPs.executeWith(
               StatementParameters.named({
                 ':event_id': event[':id'],
@@ -149,7 +155,8 @@ extension DbExt on Database {
 }
 
 // 512 MB memory-mapped
-final _setUpSql = '''
+final _setUpSql =
+    '''
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
   PRAGMA mmap_size = ${512 * 1024 * 1024};

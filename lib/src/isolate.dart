@@ -9,6 +9,8 @@ import 'package:purplebase/src/relay_status_types.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
 
+import 'package:purplebase/src/pool_notifiers.dart';
+
 void isolateEntryPoint(List args) {
   final [
     SendPort mainSendPort,
@@ -19,10 +21,21 @@ void isolateEntryPoint(List args) {
   // Create a receive port for incoming messages
   final receivePort = ReceivePort();
 
-  void Function()? closeFn;
+  void Function()? eventCloseFn;
+  void Function()? statusCloseFn;
   StreamSubscription? sub;
 
-  final pool = WebSocketPool(config);
+  // Create notifiers
+  final eventNotifier = RelayEventNotifier();
+  final statusNotifier = PoolStatusNotifier(
+    throttleDuration: config.streamingBufferWindow,
+  );
+
+  final pool = WebSocketPool(
+    config: config,
+    eventNotifier: eventNotifier,
+    statusNotifier: statusNotifier,
+  );
 
   Database? db;
   try {
@@ -33,7 +46,7 @@ void isolateEntryPoint(List args) {
       db = sqlite3.openInMemory();
     }
     db.initialize();
-    
+
     // Send SendPort AFTER database is initialized
     mainSendPort.send(receivePort.sendPort);
   } catch (e) {
@@ -43,40 +56,29 @@ void isolateEntryPoint(List args) {
     return;
   }
 
-  // Listen for messages from websocket pool
-  closeFn = pool.addListener((response) {
-    if (response case EventRelayResponse(
-      :final req,
-      :final events,
-      :final relaysForIds,
-    )) {
-      final ids = db!.save(events, relaysForIds, config, verifier);
+  // Listen for relay events (data channel)
+  eventCloseFn = eventNotifier.addListener((event) {
+    if (event case EventsReceived(:final response)) {
+      final ids = db!.save(
+        response.events,
+        response.relaysForIds,
+        config,
+        verifier,
+      );
 
-      // Log save results with comparison
-      if (ids.length < events.length) {
-        mainSendPort.send(
-          InfoMessage(
-            'Remote save completed: ${ids.length}/${events.length} event(s) saved (${events.length - ids.length} rejected)',
-          ),
-        );
-      } else {
-        mainSendPort.send(
-          InfoMessage('Remote save completed: ${ids.length} event(s) saved'),
-        );
-      }
-
-      mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
+      mainSendPort.send(
+        QueryResultMessage(request: response.req, savedIds: ids),
+      );
     }
+    // Handle notices if needed
+    // if (event case NoticeReceived(:final response)) {
+    //   mainSendPort.send(InfoMessage('NOTICE from ${response.relayUrl}: ${response.message}'));
+    // }
   });
 
-  // Add info listener for websocket pool
-  pool.addInfoListener((message) {
-    mainSendPort.send(InfoMessage(message));
-  });
-
-  // Add relay status listener for websocket pool
-  pool.addRelayStatusListener((statusData) {
-    mainSendPort.send(RelayStatusMessage(statusData));
+  // Listen for pool status updates (meta channel)
+  statusCloseFn = statusNotifier.addListener((status) {
+    mainSendPort.send(RelayStatusMessage(status));
   });
 
   // Listen for messages from main isolate (UI)
@@ -193,7 +195,8 @@ void isolateEntryPoint(List args) {
         case CloseIsolateOperation():
           db?.dispose();
           pool.dispose();
-          closeFn?.call();
+          eventCloseFn?.call();
+          statusCloseFn?.call();
           response = IsolateResponse(success: true);
           Future.microtask(() => sub?.cancel());
       }
