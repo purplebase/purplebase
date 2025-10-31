@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
@@ -8,38 +11,34 @@ import 'package:test/test.dart';
 import 'helpers.dart';
 
 Future<void> main() async {
-  NostrRelay? relay;
-  final relayPorts = [7078, 7079, 7080, 7081, 7082];
-  final relayUrl = 'ws://127.0.0.1:${relayPorts.first}';
+  Process? relayProcess;
+  final relayPort = 7078;
+  final relayUrl = 'ws://127.0.0.1:$relayPort';
 
   late Set<Model<dynamic>> testEvents;
   late Note testNote1, testNote2;
   late Bip340PrivateKeySigner signer;
 
   setUpAll(() async {
-    try {
-      // Create container first to get ref
-      final container = ProviderContainer(
-        overrides: [
-          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
-        ],
-      );
-      relay = NostrRelay(
-        port: relayPorts.first,
-        host: '127.0.0.1',
-        ref: container.read(refProvider),
-      );
-      await relay!.start();
-    } catch (e) {
-      rethrow;
-    }
+    // Start Go test relay
+    relayProcess = await Process.start('test/support/test-relay', [
+      '-port',
+      relayPort.toString(),
+    ]);
+
+    relayProcess!.stdout.transform(utf8.decoder).listen((data) {
+      // Suppress output for cleaner test results
+    });
+    relayProcess!.stderr.transform(utf8.decoder).listen((data) {
+      // Suppress output for cleaner test results
+    });
+
+    await Future.delayed(Duration(milliseconds: 500));
   });
 
   tearDownAll(() async {
-    if (relay != null) {
-      await relay!.stop();
-      relay = null;
-    }
+    relayProcess?.kill();
+    await relayProcess?.exitCode;
   });
 
   Future<void> createTestEvents(ProviderContainer container) async {
@@ -82,7 +81,7 @@ Future<void> main() async {
           'offline': {'ws://127.0.0.1:65534'}, // Non-existent relay
         },
         defaultRelayGroup: 'primary',
-        responseTimeout: Duration(milliseconds: 200),
+        responseTimeout: Duration(seconds: 5),
       );
 
       await container.read(initializationProvider(config).future);

@@ -4,12 +4,12 @@ import 'dart:isolate';
 import 'package:models/models.dart';
 import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/db.dart';
-import 'package:purplebase/src/websocket_pool.dart';
-import 'package:purplebase/src/relay_status_types.dart';
+import 'package:purplebase/src/pool/websocket_pool.dart';
+import 'package:purplebase/src/pool/state/pool_state.dart';
+import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
+import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
-
-import 'package:purplebase/src/pool_notifiers.dart';
 
 void isolateEntryPoint(List args) {
   final [
@@ -22,19 +22,19 @@ void isolateEntryPoint(List args) {
   final receivePort = ReceivePort();
 
   void Function()? eventCloseFn;
-  void Function()? statusCloseFn;
+  void Function()? stateCloseFn;
   StreamSubscription? sub;
 
   // Create notifiers
   final eventNotifier = RelayEventNotifier();
-  final statusNotifier = PoolStatusNotifier(
+  final stateNotifier = PoolStateNotifier(
     throttleDuration: config.streamingBufferWindow,
   );
 
   final pool = WebSocketPool(
     config: config,
     eventNotifier: eventNotifier,
-    statusNotifier: statusNotifier,
+    stateNotifier: stateNotifier,
   );
 
   Database? db;
@@ -50,7 +50,6 @@ void isolateEntryPoint(List args) {
     // Send SendPort AFTER database is initialized
     mainSendPort.send(receivePort.sendPort);
   } catch (e) {
-    print('Error opening database: $e');
     mainSendPort.send(InfoMessage('ERROR: Failed to open database - $e'));
     // Don't send SendPort if initialization failed
     return;
@@ -58,31 +57,49 @@ void isolateEntryPoint(List args) {
 
   // Listen for relay events (data channel)
   eventCloseFn = eventNotifier.addListener((event) {
-    if (event case EventsReceived(:final response)) {
-      final ids = db!.save(
-        response.events,
-        response.relaysForIds,
-        config,
-        verifier,
-      );
+    if (event case EventsReceived(
+      :final events,
+      :final req,
+      :final relaysForIds,
+    )) {
+      final ids = db!.save(events, relaysForIds, config, verifier);
 
-      mainSendPort.send(
-        QueryResultMessage(request: response.req, savedIds: ids),
-      );
+      // Log save results with comparison
+      if (ids.length < events.length) {
+        mainSendPort.send(
+          InfoMessage(
+            'Remote save completed: ${ids.length}/${events.length} event(s) saved (${events.length - ids.length} rejected) [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
+          ),
+        );
+      } else {
+        mainSendPort.send(
+          InfoMessage(
+            'Remote save completed: ${ids.length} event(s) saved [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
+          ),
+        );
+      }
+
+      mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
     }
     // Handle notices if needed
-    // if (event case NoticeReceived(:final response)) {
-    //   mainSendPort.send(InfoMessage('NOTICE from ${response.relayUrl}: ${response.message}'));
+    // if (event case NoticeReceived(:final message, :final relayUrl)) {
+    //   mainSendPort.send(InfoMessage('NOTICE from $relayUrl: $message'));
     // }
   });
 
-  // Listen for pool status updates (meta channel)
-  statusCloseFn = statusNotifier.addListener((status) {
-    mainSendPort.send(RelayStatusMessage(status));
+  // Listen for pool state updates (meta channel)
+  stateCloseFn = stateNotifier.addListener((state) {
+    mainSendPort.send(PoolStateMessage(state));
   });
 
   // Listen for messages from main isolate (UI)
   sub = receivePort.listen((message) async {
+    // Handle heartbeat messages (no reply needed)
+    if (message is HeartbeatMessage) {
+      await pool.performHealthCheck();
+      return;
+    }
+    
     if (message case (
       final IsolateOperation operation,
       final SendPort replyPort,
@@ -96,31 +113,8 @@ void isolateEntryPoint(List args) {
           try {
             final result = db!.find(args);
             response = IsolateResponse(success: true, result: result);
-
-            // Count events by kind
-            final kindCounts = <int, int>{};
-            var totalEvents = 0;
-
-            for (final events in result.values) {
-              for (final event in events) {
-                totalEvents++;
-                final kind = event['kind'] as int? ?? -1;
-                kindCounts[kind] = (kindCounts[kind] ?? 0) + 1;
-              }
-            }
-
-            final kindSummary = kindCounts.entries
-                .map((e) => 'kind ${e.key}: ${e.value}')
-                .join(', ');
-
-            mainSendPort.send(
-              InfoMessage(
-                'Local query completed: ${result.length} request(s) processed, $totalEvents events returned ($kindSummary)',
-              ),
-            );
           } catch (e) {
             response = IsolateResponse(success: false, error: e.toString());
-            mainSendPort.send(InfoMessage('ERROR: Local query failed - $e'));
           }
 
         case LocalSaveIsolateOperation(:final events):
@@ -186,9 +180,6 @@ void isolateEntryPoint(List args) {
         case RemoteCancelIsolateOperation(:final req):
           pool.unsubscribe(req);
           response = IsolateResponse(success: true);
-          mainSendPort.send(
-            InfoMessage('Remote subscription cancelled: ${req.subscriptionId}'),
-          );
 
         // ISOLATE
 
@@ -196,7 +187,7 @@ void isolateEntryPoint(List args) {
           db?.dispose();
           pool.dispose();
           eventCloseFn?.call();
-          statusCloseFn?.call();
+          stateCloseFn?.call();
           response = IsolateResponse(success: true);
           Future.microtask(() => sub?.cancel());
       }
@@ -227,10 +218,22 @@ final class InfoMessage extends IsolateMessage {
   InfoMessage(this.message);
 }
 
-/// Message containing relay status information
+/// Message containing pool state information
+final class PoolStateMessage extends IsolateMessage {
+  final PoolState poolState;
+  PoolStateMessage(this.poolState);
+}
+
+/// Message containing relay status information (legacy, kept for compatibility)
 final class RelayStatusMessage extends IsolateMessage {
-  final RelayStatusData statusData;
+  final PoolState statusData;
   RelayStatusMessage(this.statusData);
+}
+
+/// Heartbeat message from main isolate to trigger health checks
+final class HeartbeatMessage {
+  final DateTime timestamp;
+  HeartbeatMessage(this.timestamp);
 }
 
 sealed class IsolateOperation {}

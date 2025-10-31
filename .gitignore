@@ -9,3 +9,6 @@ test/.dart_tool/
 *.db
 *.db-shm
 *.db-wal
+
+rely/
+test/support/

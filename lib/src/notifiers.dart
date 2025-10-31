@@ -1,5 +1,5 @@
 import 'package:purplebase/src/isolate.dart';
-import 'package:purplebase/src/relay_status_types.dart';
+import 'package:purplebase/src/pool/state/pool_state.dart';
 import 'package:riverpod/riverpod.dart';
 
 /// StateNotifier that manages messages from the background isolate
@@ -22,13 +22,13 @@ final infoNotifierProvider = StateNotifierProvider<InfoNotifier, InfoMessage?>(
   (ref) => InfoNotifier(),
 );
 
-/// StateNotifier that manages relay status from the background isolate
-class RelayStatusNotifier extends StateNotifier<RelayStatusData?> {
-  RelayStatusNotifier() : super(null);
+/// StateNotifier that manages pool state from the background isolate
+class PoolStateNotifierProvider extends StateNotifier<PoolState?> {
+  PoolStateNotifierProvider() : super(null);
 
-  /// Called by the storage system to emit relay status updates
-  void emit(RelayStatusData statusData) {
-    state = statusData;
+  /// Called by the storage system to emit pool state updates
+  void emit(PoolState poolState) {
+    state = poolState;
   }
 
   /// Clear the current status
@@ -37,8 +37,11 @@ class RelayStatusNotifier extends StateNotifier<RelayStatusData?> {
   }
 }
 
-/// Provider for the relay status notifier
-final relayStatusProvider =
-    StateNotifierProvider<RelayStatusNotifier, RelayStatusData?>(
-      (ref) => RelayStatusNotifier(),
+/// Provider for the pool state notifier
+final poolStateProvider =
+    StateNotifierProvider<PoolStateNotifierProvider, PoolState?>(
+      (ref) => PoolStateNotifierProvider(),
     );
+
+/// Legacy alias for backward compatibility
+final relayStatusProvider = poolStateProvider;

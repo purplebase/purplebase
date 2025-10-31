@@ -7,7 +7,6 @@ import 'package:path/path.dart' as path;
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/utils.dart';
-import 'package:purplebase/src/websocket_pool.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
@@ -21,6 +20,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   SendPort? _sendPort;
   Completer<void>? _initCompleter;
   StreamSubscription? sub;
+  Timer? _heartbeatTimer;
 
   /// Initialize the storage with a configuration
   @override
@@ -67,7 +67,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
           state = InternalStorageData(updatedIds: savedIds, req: request);
         case InfoMessage infoMessage:
           ref.read(infoNotifierProvider.notifier).emit(infoMessage);
+        case PoolStateMessage poolStateMessage:
+          ref.read(poolStateProvider.notifier).emit(poolStateMessage.poolState);
         case RelayStatusMessage relayStatusMessage:
+          // Legacy support
           ref
               .read(relayStatusProvider.notifier)
               .emit(relayStatusMessage.statusData);
@@ -76,6 +79,41 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     await _initCompleter!.future;
     isInitialized = true;
+
+    // Start heartbeat to background isolate for health checks
+    // Main isolate timers are reliable even after system sleep
+    _startHeartbeat();
+  }
+
+  /// Start heartbeat to trigger health checks in background isolate
+  void _startHeartbeat() {
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) {
+        _sendPort?.send(HeartbeatMessage(DateTime.now()));
+      },
+    );
+  }
+
+  /// Force immediate health check on all connections.
+  /// 
+  /// Call this when your app resumes from background to detect and recover
+  /// from stale connections caused by system sleep or network changes.
+  /// 
+  /// Example (Flutter):
+  /// ```dart
+  /// @override
+  /// void didChangeAppLifecycleState(AppLifecycleState state) {
+  ///   if (state == AppLifecycleState.resumed) {
+  ///     ref.read(storageNotifierProvider.notifier).ensureConnected();
+  ///   }
+  /// }
+  /// ```
+  void ensureConnected() {
+    if (!isInitialized) return;
+    
+    // Send immediate heartbeat to trigger health check
+    _sendPort?.send(HeartbeatMessage(DateTime.now()));
   }
 
   /// Public save method
@@ -177,6 +215,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Request<E> req, {
     Source? source,
     Set<String>? onIds,
+    String? subscriptionPrefix, // For API compatibility with models library
   }) async {
     source ??= config.defaultQuerySource;
 
@@ -246,6 +285,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   void dispose() {
     if (!isInitialized) return;
 
+    _heartbeatTimer?.cancel();
     sub?.cancel();
 
     _isolate?.kill();

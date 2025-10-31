@@ -1,10 +1,12 @@
 library;
 
 export 'src/notifiers.dart';
-export 'src/isolate.dart' show InfoMessage, RelayStatusMessage;
-export 'src/pool_notifiers.dart';
-export 'src/relay_status_types.dart';
+export 'src/isolate.dart'
+    show InfoMessage, RelayStatusMessage, PoolStateMessage;
+export 'src/pool/state/pool_state.dart';
+export 'src/pool/state/subscription_phase.dart' show SubscriptionPhase;
+export 'src/pool/publish/publish_response.dart' show PublishRelayResponse;
+export 'src/pool/websocket_pool.dart' show WebSocketPool;
 export 'src/request.dart';
 export 'src/storage.dart';
 export 'src/utils.dart' show normalizeRelayUrl;
-export 'src/websocket_pool.dart' show SubscriptionPhase;

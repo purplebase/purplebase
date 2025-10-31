@@ -22,8 +22,8 @@ Purplebase uses a **two-notifier architecture** to separate data from metadata:
 ### Data Channel: `RelayEventNotifier`
 Emits events and notices received from relays. This is your primary data stream.
 
-### Meta Channel: `PoolStatusNotifier`
-Provides queryable status about connections, active subscriptions, and recent errors. Perfect for debugging and UI status displays.
+### Meta Channel: `PoolStateNotifier`
+Provides queryable state about connections, active subscriptions, and health metrics. Perfect for debugging and UI status displays.
 
 ## Installation
 
@@ -108,6 +108,50 @@ for (final entry in response.results.entries) {
 
 ## Advanced Usage
 
+### Handling App Lifecycle (Recommended)
+
+When your app resumes from background (after system sleep, network changes, etc.), call `ensureConnected()` to immediately detect and recover from stale connections:
+
+```dart
+// Flutter example
+class MyApp extends StatefulWidget {
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Force immediate health check after wake
+      ref.read(storageNotifierProvider.notifier).ensureConnected();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(/* ... */);
+  }
+}
+```
+
+**Why this matters:**
+- System timers may pause during sleep, delaying automatic reconnection
+- `ensureConnected()` triggers immediate health check (<1s vs 10-30s)
+- Detects zombie connections (socket says "connected" but is actually dead)
+
 ### Listening to Relay Events (Background Isolate)
 
 The isolate automatically processes events from relays:
@@ -130,118 +174,107 @@ eventNotifier.addListener((event) {
 });
 ```
 
-### Monitoring Pool Status (One Provider, Rich API)
+### Monitoring Pool State (One Provider, Rich API)
 
-Access via the single `relayStatusProvider`:
+Access via the single `poolStateProvider`:
 
 ```dart
 // In your UI widget
-final status = ref.watch(relayStatusProvider);
+final poolState = ref.watch(poolStateProvider);
 
-// Use convenience methods on PoolStatus
+// Access connection and subscription state
 Widget build(BuildContext context, WidgetRef ref) {
-  final status = ref.watch(relayStatusProvider);
+  final poolState = ref.watch(poolStateProvider);
   
-  if (status == null) return CircularProgressIndicator();
+  if (poolState == null) return CircularProgressIndicator();
   
   return Column(
     children: [
-      // Check specific relay
-      if (status.isRelayConnected('wss://relay.damus.io'))
+      // Check specific relay connection
+      if (poolState.connections['wss://relay.damus.io']?.isConnected ?? false)
         Text('Damus: Connected ✅')
       else
         Text('Damus: Offline ❌'),
         
-      // Show relay state
-      Text('State: ${status.getRelayState('wss://relay.damus.io')}'),
+      // Show relay connection phase
+      Text('Phase: ${poolState.connections['wss://relay.damus.io']?.phase}'),
       
-      // Show when state last changed
-      Text('Last change: ${status.getRelayLastStatusChange('wss://relay.damus.io')}'),
+      // Show when phase started
+      Text('Since: ${poolState.connections['wss://relay.damus.io']?.phaseStartedAt}'),
       
-      // Check if subscription is active
-      if (status.isSubscriptionActiveOn(subId, 'wss://relay.damus.io'))
-        Text('Subscription active on relay')
-      else
-        Text('Subscription not active'),
+      // Check subscription status
+      ...poolState.subscriptions.entries.map((entry) {
+        final subId = entry.key;
+        final sub = entry.value;
         
-      // Show active relay count for subscription
-      Text('Active on ${status.getActiveRelayCount(subId)}/${status.subscriptions[subId]?.targetRelays.length} relays'),
+        return ListTile(
+          title: Text(subId),
+          subtitle: Text('${sub.relayStatus.length} relays - Phase: ${sub.phase}'),
+          trailing: Text('${sub.totalEventsReceived} events'),
+        );
+      }),
       
-      // Check if fully active
-      if (status.isSubscriptionFullyActive(subId))
-        Icon(Icons.check_circle, color: Colors.green)
-      else
-        Icon(Icons.warning, color: Colors.orange),
-        
-      // List all connected relays
-      Text('Connected: ${status.connectedRelayUrls.join(", ")}'),
-      
-      // List all disconnected relays
-      Text('Disconnected: ${status.disconnectedRelayUrls.join(", ")}'),
-      
-      // Show errors
-      ...status.recentErrors.take(5).map((e) => 
-        Text('[${e.timestamp}] ${e.message}')
-      ),
+      // Show health metrics
+      Text('Total Connections: ${poolState.health.totalConnections}'),
+      Text('Connected: ${poolState.health.connectedCount}'),
+      Text('Total Subs: ${poolState.health.totalSubscriptions}'),
+      Text('Fully Active: ${poolState.health.fullyActiveSubscriptions}'),
     ],
   );
 }
 ```
 
-**Available Methods on `PoolStatus`:**
-- `getRelayState(url)` - Get relay connection state
-- `isRelayConnected(url)` - Check if relay is connected
-- `hasRelayReconnected(url)` - Check if relay has reconnected
-- `getRelayLastStatusChange(url)` - Get timestamp of last state change
-- `isSubscriptionActiveOn(subId, url)` - Check if subscription active on relay
-- `getActiveRelayCount(subId)` - Count active relays for subscription
-- `isSubscriptionFullyActive(subId)` - Check if all relays are active
-- `connectedRelayUrls` - List of all connected relay URLs
-- `disconnectedRelayUrls` - List of all disconnected relay URLs
+**Available Data in `PoolState`:**
+- `connections` - Map of relay URL to `RelayConnectionState` (phase, reconnect attempts, last message time)
+- `subscriptions` - Map of subscription ID to `SubscriptionState` (relay statuses, phase, event count)
+- `publishes` - Map of publish ID to `PublishOperation` (per-relay responses)
+- `health` - `HealthMetrics` with counters and statistics
+- `timestamp` - When this state snapshot was created
 
-### Relay Disconnection & Reconnection (Simplified)
+### Relay Disconnection & Reconnection
 
-When a relay disconnects, here's exactly what happens:
+The pool implements a **central state machine** that manages connection lifecycles:
 
-#### **Disconnection:**
-1. Relay state → `disconnected`
-2. `lastStatusChange` timestamp updated
-3. Relay **removed** from all subscriptions' `connectedRelays` sets
-4. Request is **no longer active** on that relay
-5. WebSocket library starts auto-reconnect with exponential backoff
+#### **Connection Phases:**
+- `Idle` - Initial state, not yet connected
+- `Connecting` - Connection attempt in progress
+- `Connected` - Successfully connected and ready
+- `Disconnected` - Connection lost (with reason: socket error, timeout, etc.)
+- `Reconnecting` - Attempting to reconnect with exponential backoff
 
-#### **Reconnection:**
-1. Relay state → `reconnected` (marked as reconnected, not initial connection)
-2. `lastStatusChange` timestamp updated
-3. All subscriptions for this relay **automatically re-sent** with optimized `since` filter
-4. Relay **added back** to subscriptions' `connectedRelays` sets
-5. Requests become **active again**
+#### **Disconnection Flow:**
+1. Relay phase → `Disconnected(reason)`
+2. Pool detects disconnection via WebSocket state change
+3. Active subscriptions marked as needing resync
+4. Custom reconnection logic starts with exponential backoff
 
-#### **Simple Rule:**
-> **If relay is in `connectedRelays` → Request is active**  
-> **If relay is NOT in `connectedRelays` → Request is NOT active**
+#### **Reconnection Flow:**
+1. Relay phase → `Reconnecting`
+2. Connection attempt with timeout
+3. On success → `Connected` (with `isReconnection: true`)
+4. All active subscriptions **automatically re-sent** with optimized `since` filter
+5. Events continue flowing
 
-No computed status, no complexity. The presence in the list IS the status.
-
-#### **UI Example (Clean API):**
+#### **UI Example:**
 
 ```dart
 Widget build(BuildContext context, WidgetRef ref) {
-  final status = ref.watch(relayStatusProvider);
+  final poolState = ref.watch(poolStateProvider);
   
-  if (status == null) return SizedBox();
+  if (poolState == null) return SizedBox();
   
   return ListView(
-    children: status.subscriptions.values.map((sub) {
-      // Use convenience methods!
-      final activeCount = status.getActiveRelayCount(sub.subscriptionId);
-      final totalCount = sub.targetRelays.length;
-      final isFullyActive = status.isSubscriptionFullyActive(sub.subscriptionId);
+    children: poolState.subscriptions.values.map((sub) {
+      // Count how many relays are in good state
+      final activeCount = sub.relayStatuses.values
+          .where((s) => s.phase is SubscriptionActive)
+          .length;
+      final totalCount = sub.relayStatuses.length;
       
       Color indicatorColor;
       String statusText;
       
-      if (isFullyActive) {
+      if (activeCount == totalCount) {
         indicatorColor = Colors.green;
         statusText = 'Live';
       } else if (activeCount > 0) {
@@ -255,25 +288,20 @@ Widget build(BuildContext context, WidgetRef ref) {
       return ListTile(
         leading: Icon(Icons.circle, color: indicatorColor),
         title: Text(sub.subscriptionId),
-        subtitle: Text(statusText),
-        trailing: sub.resyncing.isNotEmpty
-            ? Badge(
-                label: Text('${sub.resyncing.length}'),
-                child: Icon(Icons.sync),
-              )
-            : null,
+        subtitle: Text('$statusText - ${sub.eventCount} events'),
+        trailing: Text(sub.phase.name),
       );
     }).toList(),
   );
 }
 ```
 
-#### **Key Principles:**
-- ✅ **Automatic** - Everything happens automatically
-- ✅ **Simple** - In `connectedRelays` = active, not in = not active
-- ✅ **Accurate** - No computed status that can be stale
-- ✅ **Timestamp-tracked** - Every state change has a timestamp
-- ✅ **Optimized** - Only fetches new events since last disconnect
+#### **Key Features:**
+- ✅ **Central State Machine** - Single coordinator manages all connection lifecycles
+- ✅ **Explicit States** - Type-safe sealed classes prevent invalid states
+- ✅ **Custom Reconnection** - Exponential backoff with configurable limits
+- ✅ **Health Checks** - Periodic checks every 10 seconds detect stuck connections
+- ✅ **Optimized Resync** - Only fetches new events since last disconnect
 
 ### Request Optimization
 
@@ -326,76 +354,77 @@ await pool.query(
 // Returns immediately, events processed in background
 ```
 
-## Relay Status Types
+## Pool State Types
 
-### PoolStatus
-Complete status of the WebSocket pool:
-
-```dart
-class PoolStatus {
-  final Map<String, RelayConnectionInfo> connections;
-  final Map<String, SubscriptionInfo> subscriptions;
-  final Map<String, PublishInfo> publishes;
-  final List<ErrorEntry> recentErrors; // Last 100 errors
-  final DateTime lastUpdated;
-}
-```
-
-### RelayConnectionInfo
-Status of individual relay connections (simplified):
+### PoolState
+Complete state snapshot of the WebSocket pool:
 
 ```dart
-class RelayConnectionInfo {
-  final String url;
-  final RelayConnectionState state; // disconnected, connecting, connected, reconnected
-  final DateTime? lastActivity;
-  final int reconnectAttempts;
-  final DateTime lastStatusChange; // When state last changed
-}
-```
-
-**Relay States (Simple):**
-- `disconnected` - Relay is offline
-- `connecting` - Initial connection in progress
-- `connected` - Relay is connected (first time)
-- `reconnected` - Relay reconnected after initial connection
-
-### SubscriptionInfo
-Active subscription tracking (simplified - no status, relays tell the story):
-
-```dart
-class SubscriptionInfo {
-  final String subscriptionId;
-  final Set<String> targetRelays;        // Relays we want to query
-  final Set<String> connectedRelays;     // Relays where request is CURRENTLY ACTIVE
-  final Set<String> eoseReceived;        // Relays that sent EOSE
-  final SubscriptionPhase phase;         // eose or streaming
-  final DateTime startTime;
-  final Map<String, dynamic>? requestFilters;
-  
-  // Reconnection tracking
-  final Map<String, int> reconnectionCount;      // Reconnections per relay
-  final Map<String, DateTime> lastReconnectTime; // Last reconnect timestamp per relay
-  final Set<String> resyncing;                   // Relays currently re-syncing
-}
-```
-
-**How to Determine if a Subscription is Active:**
-- A subscription is active on a relay if the relay URL is in `connectedRelays`
-- Check relay state from `PoolStatus.connections[relayUrl].state`
-- If relay is `disconnected`, it cannot be in `connectedRelays` (automatically removed)
-- If relay is `connected` or `reconnected` AND in `connectedRelays` → Request is active
-
-### ErrorEntry
-Error tracking with context:
-
-```dart
-class ErrorEntry {
+class PoolState {
+  final Map<String, RelayConnectionState> connections;
+  final Map<String, SubscriptionState> subscriptions;
+  final Map<String, PublishOperation> publishes;
+  final HealthMetrics health;
   final DateTime timestamp;
-  final String message;
-  final String? relayUrl;
-  final String? subscriptionId;
-  final String? eventId;
+}
+```
+
+### RelayConnectionState
+State of individual relay connections:
+
+```dart
+class RelayConnectionState {
+  final String url;
+  final ConnectionPhase phase; // Idle, Connecting, Connected, Disconnected, Reconnecting
+  final DateTime phaseStartedAt;
+  final int reconnectAttempts;
+  final DateTime? lastMessageAt;
+  final String? lastError;
+}
+```
+
+**Connection Phases (Sealed Classes):**
+- `Idle` - Initial state, not yet connected
+- `Connecting` - Connection attempt in progress  
+- `Connected` - Successfully connected (tracks if this is a reconnection)
+- `Disconnected` - Connection lost (includes disconnection reason)
+- `Reconnecting` - Attempting to reconnect (tracks attempt number and next retry time)
+
+### SubscriptionState
+Active subscription tracking with per-relay status:
+
+```dart
+class SubscriptionState {
+  final String subscriptionId;
+  final SubscriptionPhase phase; // eose or streaming
+  final Map<String, RelaySubscriptionStatus> relayStatuses; // Per-relay state
+  final int eventCount;
+  final DateTime createdAt;
+}
+```
+
+**Subscription Phases:**
+- `eose` - Waiting for End of Stored Events from all relays
+- `streaming` - Actively receiving new events
+
+**Per-Relay Subscription Status (Sealed Classes):**
+- `SubscriptionPending` - Waiting for subscription to be sent
+- `SubscriptionActive` - Subscription active, receiving events
+- `SubscriptionResyncing` - Relay reconnected, re-sending subscription
+- `SubscriptionFailed` - Subscription failed (includes error message)
+
+### HealthMetrics
+Health and performance metrics:
+
+```dart
+class HealthMetrics {
+  final int totalEventsReceived;
+  final int totalEventsDeduplicated;
+  final int totalPublishes;
+  final int activeConnections;
+  final int activeSubscriptions;
+  final int totalErrors;
+  final DateTime lastHealthCheck;
 }
 ```
 
@@ -434,7 +463,7 @@ Run the test suite:
 dart test
 ```
 
-All 99 tests cover:
+68+ tests cover:
 - Local storage operations (save, query, clear)
 - Remote operations (publish, query, cancel)
 - WebSocket pool management (connections, reconnection)
@@ -452,19 +481,22 @@ Purplebase runs all database and network operations in a background isolate to k
 - **RelayEventNotifier**: Data channel (message bus pattern)
   - Emits batched events as they arrive
   - Ephemeral state (process immediately)
-- **PoolStatusNotifier**: Meta channel (queryable state)
-  - Throttled status updates
+- **PoolStateNotifier**: Meta channel (queryable state)
+  - Throttled state updates
   - Queryable at any time
-  - Circular error buffer (last 100)
+  - Health metrics and connection/subscription status
 
-### WebSocket Pool as Service
-The pool is a plain service class (not a StateNotifier) that coordinates:
-- Connection lifecycle management
-- Automatic reconnection with exponential backoff
-- Request multiplexing across relays
-- EOSE (End of Stored Events) detection
-- Event deduplication
-- Timestamp-based optimization
+### WebSocket Pool with Central State Machine
+The pool uses a central state machine architecture:
+- **ConnectionCoordinator**: Manages all connection lifecycles
+  - Explicit connection phases (sealed classes)
+  - Custom reconnection logic with exponential backoff
+  - Health checks every 10 seconds
+  - Detects stuck and stale connections
+- **Request Optimization**: LRU cache for `since` filters
+- **Event Buffering**: Batching and deduplication
+- **Per-Relay Tracking**: Independent state per relay-subscription pair
+- **Automatic Resync**: Re-sends subscriptions after reconnection
 
 ## Contributing
 
