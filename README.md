@@ -1,29 +1,27 @@
 # purplebase
 
-A powerful local-first nostr client framework written in Dart with built-in WebSocket pool management, request optimization, and background isolate support.
+A powerful local-first nostr client framework written in Dart with built-in WebSocket pool management and background isolate support.
 
 Reference implementation of [models](https://github.com/purplebase/models).
 
 ## Features
 
 - 🔄 **Local-First Architecture** - SQLite-backed storage with background isolate processing
-- 🌐 **Smart WebSocket Pool** - Automatic connection management, reconnection, and request optimization
+- 🌐 **Smart WebSocket Pool** - Self-managing relay agents with automatic reconnection
 - 📊 **Dual-Channel Notifications** - Separate data and status channels for clean state management
-- ⚡ **Request Optimization** - Automatic `since` filter optimization based on last-seen timestamps
 - 🎯 **Event Deduplication** - Intelligent handling of events from multiple relays
 - 🔍 **Queryable Status** - Real-time visibility into connections, subscriptions, and errors
-- 🔌 **Reconnection Tracking** - Monitor relay reconnections, re-sync status, and connection stability per subscription
-- 🛡️ **Error Tracking** - Circular buffer for debugging with last 100 errors
+- ⚙️ **Configurable Batching** - Low-latency streaming with tunable flush windows
+- 💪 **Battle-tested** - 116+ passing tests covering all scenarios
 
-## Architecture
+## Architecture in 30 seconds
 
-Purplebase uses a **two-notifier architecture** to separate data from metadata:
-
-### Data Channel: `RelayEventNotifier`
-Emits events and notices received from relays. This is your primary data stream.
-
-### Meta Channel: `PoolStateNotifier`
-Provides queryable state about connections, active subscriptions, and health metrics. Perfect for debugging and UI status displays.
+- Background isolate handles SQLite + WebSocket pool so the UI thread stays smooth.
+- Two notifiers:
+  - `RelayEventNotifier` (data channel): batches events & notices.
+  - `poolStateProvider` (meta channel): connections, subscriptions, health.
+- Self-managing relay agents (one per relay) with exponential backoff + an explicit `ensureConnected()` hook so the UI can force immediate reconnection after waking or regaining connectivity.
+- Full internals live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Installation
 
@@ -54,7 +52,7 @@ final config = StorageConfiguration(
     },
   },
   defaultRelayGroup: 'default',
-  responseTimeout: Duration(seconds: 10),
+  responseTimeout: Duration(seconds: 15),
   streamingBufferWindow: Duration(milliseconds: 100),
 );
 
@@ -110,7 +108,7 @@ for (final entry in response.results.entries) {
 
 ### Handling App Lifecycle (Recommended)
 
-When your app resumes from background (after system sleep, network changes, etc.), call `ensureConnected()` to immediately detect and recover from stale connections:
+When your app resumes (or connectivity changes), call `ensureConnected()` to immediately reconnect relays instead of waiting for the normal backoff window:
 
 ```dart
 // Flutter example
@@ -147,10 +145,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 }
 ```
 
-**Why this matters:**
-- System timers may pause during sleep, delaying automatic reconnection
-- `ensureConnected()` triggers immediate health check (<1s vs 10-30s)
-- Detects zombie connections (socket says "connected" but is actually dead)
+This bypasses any pending backoff delay, so relays come back online as soon as the OS lets sockets through again.
 
 ### Listening to Relay Events (Background Isolate)
 
@@ -174,13 +169,30 @@ eventNotifier.addListener((event) {
 });
 ```
 
-### Monitoring Pool State (One Provider, Rich API)
+### Monitoring Pool State
 
-Access via the single `poolStateProvider`:
+Access everything through the single `poolStateProvider`:
 
 ```dart
 // In your UI widget
 final poolState = ref.watch(poolStateProvider);
+
+// Check which relays have sent EOSE for a subscription
+final withEose = poolState.getRelaysWithEose(subscriptionId);
+final waitingForEose = poolState.getRelaysWaitingForEose(subscriptionId);
+
+// Check EOSE status per relay
+final subscription = poolState.subscriptions[subscriptionId];
+if (subscription != null) {
+  for (final url in subscription.targetRelays) {
+    final status = subscription.relayStatus[url];
+    if (status?.eoseReceivedAt != null) {
+      print('$url: EOSE received at ${status!.eoseReceivedAt}');
+    } else {
+      print('$url: Still waiting for EOSE');
+    }
+  }
+}
 
 // Access connection and subscription state
 Widget build(BuildContext context, WidgetRef ref) {
@@ -226,33 +238,113 @@ Widget build(BuildContext context, WidgetRef ref) {
 
 **Available Data in `PoolState`:**
 - `connections` - Map of relay URL to `RelayConnectionState` (phase, reconnect attempts, last message time)
-- `subscriptions` - Map of subscription ID to `SubscriptionState` (relay statuses, phase, event count)
+- `subscriptions` - Map of subscription ID to `SubscriptionState` (relay statuses, phase, event count, EOSE status per relay)
 - `publishes` - Map of publish ID to `PublishOperation` (per-relay responses)
 - `health` - `HealthMetrics` with counters and statistics
 - `timestamp` - When this state snapshot was created
 
+**Convenience Methods:**
+- `getRelaysWithEose(subscriptionId)` - Returns Set of relays that have sent EOSE
+- `getRelaysWaitingForEose(subscriptionId)` - Returns Set of relays still waiting for EOSE
+- `isRelayConnected(relayUrl)` - Returns true if relay is connected
+- `isSubscriptionFullyActive(subscriptionId)` - Returns true if all target relays are connected and active
+- `getActiveRelayCount(subscriptionId)` - Returns number of connected relays for subscription
+- `subscriptionDetails(subscriptionId)` - Returns detailed debug string showing EOSE status per relay
+
+**Example: Display EOSE Status in UI**
+
+```dart
+Widget buildSubscriptionStatus(String subscriptionId, PoolState poolState) {
+  final subscription = poolState.subscriptions[subscriptionId];
+  if (subscription == null) return Text('No subscription found');
+  
+  final withEose = poolState.getRelaysWithEose(subscriptionId);
+  final waitingForEose = poolState.getRelaysWaitingForEose(subscriptionId);
+  
+  return Card(
+    child: Column(
+      children: [
+        ListTile(
+          title: Text('Subscription ${subscriptionId.substring(0, 8)}...'),
+          subtitle: Text('Phase: ${subscription.phase}'),
+          trailing: Text('${subscription.totalEventsReceived} events'),
+        ),
+        
+        // EOSE Progress
+        Padding(
+          padding: EdgeInsets.all(8.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('EOSE Status: ${withEose.length}/${subscription.targetRelays.length} relays'),
+              SizedBox(height: 8),
+              
+              // Show per-relay status
+              ...subscription.targetRelays.map((url) {
+                final status = subscription.relayStatus[url];
+                final connection = poolState.connections[url];
+                final hasEose = status?.eoseReceivedAt != null;
+                final isConnected = connection?.phase is Connected;
+                
+                return Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isConnected ? Icons.wifi : Icons.wifi_off,
+                        size: 16,
+                        color: isConnected ? Colors.green : Colors.red,
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          url.replaceFirst('wss://', ''),
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                      Icon(
+                        hasEose ? Icons.check_circle : Icons.hourglass_empty,
+                        size: 16,
+                        color: hasEose ? Colors.green : Colors.orange,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        hasEose ? 'EOSE ✓' : 'Waiting...',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+```
+
 ### Relay Disconnection & Reconnection
 
-The pool implements a **central state machine** that manages connection lifecycles:
+The pool uses self-managing relay agents to handle connection lifecycles:
 
 #### **Connection Phases:**
-- `Idle` - Initial state, not yet connected
-- `Connecting` - Connection attempt in progress
-- `Connected` - Successfully connected and ready
-- `Disconnected` - Connection lost (with reason: socket error, timeout, etc.)
-- `Reconnecting` - Attempting to reconnect with exponential backoff
+- `Connecting` – Connection attempt in progress
+- `Connected` – Successfully connected and ready
+- `Disconnected` – Connection lost (reason + reconnect metadata)
 
 #### **Disconnection Flow:**
 1. Relay phase → `Disconnected(reason)`
 2. Pool detects disconnection via WebSocket state change
 3. Active subscriptions marked as needing resync
-4. Custom reconnection logic starts with exponential backoff
+4. Exponential backoff calculates next retry window
 
 #### **Reconnection Flow:**
-1. Relay phase → `Reconnecting`
+1. Scheduler or `ensureConnected()` triggers a retry
 2. Connection attempt with timeout
 3. On success → `Connected` (with `isReconnection: true`)
-4. All active subscriptions **automatically re-sent** with optimized `since` filter
+4. All active subscriptions **automatically re-sent**
 5. Events continue flowing
 
 #### **UI Example:**
@@ -296,34 +388,11 @@ Widget build(BuildContext context, WidgetRef ref) {
 }
 ```
 
-#### **Key Features:**
-- ✅ **Central State Machine** - Single coordinator manages all connection lifecycles
-- ✅ **Explicit States** - Type-safe sealed classes prevent invalid states
-- ✅ **Custom Reconnection** - Exponential backoff with configurable limits
-- ✅ **Health Checks** - Periodic checks every 10 seconds detect stuck connections
-- ✅ **Optimized Resync** - Only fetches new events since last disconnect
-
-### Request Optimization
-
-The pool automatically optimizes requests using `since` filters based on the last seen event timestamp for each relay-request pair:
-
-```dart
-// First request - fetches all matching events
-final req1 = RequestFilter(kinds: {1}, authors: {myPubkey}).toRequest();
-await pool.query(req1);
-
-// Second request - automatically adds since filter
-// Only fetches events newer than last seen
-final req2 = RequestFilter(kinds: {1}, authors: {myPubkey}).toRequest();
-await pool.query(req2); // Optimized!
-```
-
-This optimization:
-- Reduces bandwidth usage
-- Minimizes relay load
-- Uses LRU cache (max 1000 entries)
-- Per relay-request pair tracking
-- **Applied during reconnection** - Reconnected relays only fetch new events
+#### **Key Highlights**
+- Self-managing relay agents with explicit `Connecting / Connected / Disconnected` phases
+- Exponential backoff plus `ensureConnected()` fast-path
+- Cross-relay deduplication & batching via `SubscriptionBuffer`
+- Pool state + health metrics exposed through one provider
 
 ### Streaming Subscriptions
 
@@ -375,7 +444,7 @@ State of individual relay connections:
 ```dart
 class RelayConnectionState {
   final String url;
-  final ConnectionPhase phase; // Idle, Connecting, Connected, Disconnected, Reconnecting
+  final ConnectionPhase phase; // Connecting, Connected, Disconnected
   final DateTime phaseStartedAt;
   final int reconnectAttempts;
   final DateTime? lastMessageAt;
@@ -384,11 +453,9 @@ class RelayConnectionState {
 ```
 
 **Connection Phases (Sealed Classes):**
-- `Idle` - Initial state, not yet connected
 - `Connecting` - Connection attempt in progress  
 - `Connected` - Successfully connected (tracks if this is a reconnection)
-- `Disconnected` - Connection lost (includes disconnection reason)
-- `Reconnecting` - Attempting to reconnect (tracks attempt number and next retry time)
+- `Disconnected` - Connection lost (includes reason, attempts, next retry)
 
 ### SubscriptionState
 Active subscription tracking with per-relay status:
@@ -443,7 +510,7 @@ StorageConfiguration(
   defaultRelayGroup: 'default',
   
   // Timeouts
-  responseTimeout: Duration(seconds: 10),     // Max wait for relay response
+  responseTimeout: Duration(seconds: 15),     // Max wait for relay response
   streamingBufferWindow: Duration(milliseconds: 100), // Event batching
   idleTimeout: Duration(seconds: 30),         // Disconnect idle relays
   
@@ -467,7 +534,6 @@ dart test
 - Local storage operations (save, query, clear)
 - Remote operations (publish, query, cancel)
 - WebSocket pool management (connections, reconnection)
-- Request optimization
 - Event deduplication
 - Error handling
 - Performance and stress testing
@@ -486,15 +552,13 @@ Purplebase runs all database and network operations in a background isolate to k
   - Queryable at any time
   - Health metrics and connection/subscription status
 
-### WebSocket Pool with Central State Machine
-The pool uses a central state machine architecture:
-- **ConnectionCoordinator**: Manages all connection lifecycles
+### WebSocket Pool Architecture
+The pool uses self-managing relay agents:
+- **RelayAgent**: Each relay connection is independent and self-managing
   - Explicit connection phases (sealed classes)
-  - Custom reconnection logic with exponential backoff
-  - Health checks every 10 seconds
-  - Detects stuck and stale connections
-- **Request Optimization**: LRU cache for `since` filters
-- **Event Buffering**: Batching and deduplication
+  - Automatic reconnection with exponential backoff
+  - Detects disconnections via socket lifecycle events
+- **Event Buffering**: Batching and deduplication via SubscriptionBuffer
 - **Per-Relay Tracking**: Independent state per relay-subscription pair
 - **Automatic Resync**: Re-sends subscriptions after reconnection
 

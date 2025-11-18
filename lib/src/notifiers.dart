@@ -2,12 +2,21 @@ import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/pool/state/pool_state.dart';
 import 'package:riverpod/riverpod.dart';
 
-/// StateNotifier that manages messages from the background isolate
-class InfoNotifier extends StateNotifier<InfoMessage?> {
-  InfoNotifier() : super(null);
+/// StateNotifier that manages debug messages from the background isolate.
+///
+/// This notifier emits single debug messages (not accumulated) that clients can
+/// listen to for logging, debugging, or monitoring purposes. Each message includes
+/// a timestamp and component tag ([pool], [coordinator], etc.).
+///
+/// Messages are emitted by the WebSocketPool and ConnectionCoordinator during
+/// various lifecycle events like connections, reconnections, subscriptions, etc.
+///
+/// Clients should accumulate these messages if they need historical logs.
+class DebugNotifier extends StateNotifier<DebugMessage?> {
+  DebugNotifier() : super(null);
 
-  /// Called by the storage system to emit a new message
-  void emit(InfoMessage message) {
+  /// Called by the storage system to emit a new debug message
+  void emit(DebugMessage message) {
     state = message;
   }
 
@@ -17,7 +26,25 @@ class InfoNotifier extends StateNotifier<InfoMessage?> {
   }
 }
 
-/// Provider for the info notifier
+/// Provider for the debug notifier
+final debugNotifierProvider =
+    StateNotifierProvider<DebugNotifier, DebugMessage?>(
+      (ref) => DebugNotifier(),
+    );
+
+/// Notifier for informational messages (user-visible notices/logs)
+class InfoNotifier extends StateNotifier<InfoMessage?> {
+  InfoNotifier() : super(null);
+
+  void emit(InfoMessage message) {
+    state = message;
+  }
+
+  void clear() {
+    state = null;
+  }
+}
+
 final infoNotifierProvider = StateNotifierProvider<InfoNotifier, InfoMessage?>(
   (ref) => InfoNotifier(),
 );

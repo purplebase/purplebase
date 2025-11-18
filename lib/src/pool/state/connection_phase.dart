@@ -4,14 +4,6 @@ sealed class ConnectionPhase {
   const ConnectionPhase();
 }
 
-/// Relay connection has not been initiated yet
-class Idle extends ConnectionPhase {
-  const Idle();
-
-  @override
-  String toString() => 'Idle';
-}
-
 /// Relay connection is being established
 class Connecting extends ConnectionPhase {
   final DateTime startedAt;
@@ -38,29 +30,30 @@ class Connected extends ConnectionPhase {
 class Disconnected extends ConnectionPhase {
   final DisconnectionReason reason;
   final DateTime disconnectedAt;
+  final int reconnectAttempts;
+  final DateTime? nextReconnectAt;
+  final String? lastError;
 
-  const Disconnected(this.reason, this.disconnectedAt);
-
-  @override
-  String toString() => 'Disconnected(reason: $reason, at: $disconnectedAt)';
-}
-
-/// Relay is attempting to reconnect after disconnection
-class Reconnecting extends ConnectionPhase {
-  final int attemptNumber;
-  final DateTime nextAttemptAt;
-
-  const Reconnecting(this.attemptNumber, this.nextAttemptAt);
+  const Disconnected(
+    this.reason,
+    this.disconnectedAt, {
+    this.reconnectAttempts = 0,
+    this.nextReconnectAt,
+    this.lastError,
+  });
 
   @override
   String toString() =>
-      'Reconnecting(attempt: $attemptNumber, nextAttempt: $nextAttemptAt)';
+      'Disconnected(reason: $reason, at: $disconnectedAt, attempts: $reconnectAttempts)';
 }
 
 /// Why did we disconnect? (for debugging)
 enum DisconnectionReason {
   /// User called dispose/unsubscribe
   intentional,
+
+  /// Initial state before any connection attempt
+  initial,
 
   /// WebSocket error
   socketError,
@@ -77,5 +70,3 @@ enum DisconnectionReason {
   /// Idle timeout (no active subscriptions)
   idleTimeout,
 }
-
-

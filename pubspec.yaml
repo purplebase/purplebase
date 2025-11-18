@@ -12,7 +12,7 @@ dependencies:
   crypto: ^3.0.3
   logger: ^2.5.0
   riverpod: ^2.5.0
-  web_socket_client: ^0.2.1
+  web_socket: ^0.1.6
   models: ^0.3.3
   sqlite3: ^2.7.5
   collection: ^1.19.1

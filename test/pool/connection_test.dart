@@ -157,12 +157,12 @@ void main() {
     final state = stateNotifier.currentState;
     final connection = state.connections[offlineRelay];
 
-    // Connection should exist but be in disconnected or reconnecting phase
+    // Connection should exist but be in disconnected or connecting phase
     expect(connection, isNotNull, reason: 'Connection state should exist');
     expect(
       connection!.phase,
-      anyOf(isA<Disconnected>(), isA<Reconnecting>()),
-      reason: 'Should be in disconnected or reconnecting phase',
+      anyOf(isA<Disconnected>(), isA<Connecting>()),
+      reason: 'Should be in disconnected or connecting phase',
     );
 
     pool.unsubscribe(req);
@@ -215,12 +215,12 @@ void main() {
 
     final state = stateNotifier.currentState;
 
-    // Connection should be cleaned up or in idle phase
+    // Connection should be cleaned up or disconnected
     final connection = state.connections[relayUrl];
     if (connection != null) {
       expect(
         connection.phase,
-        anyOf(isA<Idle>(), isA<Disconnected>()),
+        isA<Disconnected>(),
         reason: 'Idle connection should be disconnected',
       );
     }

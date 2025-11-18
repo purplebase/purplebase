@@ -162,7 +162,7 @@ void main() {
     expect(state.health.totalConnections, isA<int>());
     expect(state.health.connectedCount, isA<int>());
     expect(state.health.disconnectedCount, isA<int>());
-    expect(state.health.reconnectingCount, isA<int>());
+    expect(state.health.connectingCount, isA<int>());
     expect(state.health.totalSubscriptions, isA<int>());
     expect(state.health.fullyActiveSubscriptions, isA<int>());
     expect(state.health.partiallyActiveSubscriptions, isA<int>());
@@ -205,11 +205,11 @@ void main() {
     final state = stateNotifier.currentState;
     final connection = state.connections[offlineRelay];
 
-    // Offline relay should be in Disconnected or Reconnecting phase
+    // Offline relay should be in Disconnected or Connecting phase
     expect(connection, isNotNull);
     expect(
       connection!.phase,
-      anyOf(isA<Disconnected>(), isA<Reconnecting>(), isA<Connecting>()),
+      anyOf(isA<Disconnected>(), isA<Connecting>()),
       reason: 'Offline relay should not be Connected',
     );
 

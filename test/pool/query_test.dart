@@ -209,13 +209,14 @@ void main() {
   });
 
   test('should handle empty query results', () async {
+    // Use a valid hex pubkey that doesn't exist
     final req = Request([
-      RequestFilter(kinds: {999}, authors: {'nonexistent' * 8}),
+      RequestFilter(kinds: {999}, authors: {'0' * 64}),
     ]);
 
     final events = await pool.query(
       req,
-      source: RemoteSource(relayUrls: {relayUrl}),
+      source: RemoteSource(relayUrls: {relayUrl}, stream: false),
     );
 
     expect(events, isEmpty, reason: 'Should return empty for no matches');

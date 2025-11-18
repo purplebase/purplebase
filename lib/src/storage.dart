@@ -87,19 +87,16 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   /// Start heartbeat to trigger health checks in background isolate
   void _startHeartbeat() {
-    _heartbeatTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) {
-        _sendPort?.send(HeartbeatMessage(DateTime.now()));
-      },
-    );
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _sendPort?.send(HeartbeatMessage(DateTime.now()));
+    });
   }
 
   /// Force immediate health check on all connections.
-  /// 
+  ///
   /// Call this when your app resumes from background to detect and recover
   /// from stale connections caused by system sleep or network changes.
-  /// 
+  ///
   /// Example (Flutter):
   /// ```dart
   /// @override
@@ -111,9 +108,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   /// ```
   void ensureConnected() {
     if (!isInitialized) return;
-    
+
     // Send immediate heartbeat to trigger health check
-    _sendPort?.send(HeartbeatMessage(DateTime.now()));
+    _sendPort?.send(HeartbeatMessage(DateTime.now(), forceReconnect: true));
   }
 
   /// Public save method

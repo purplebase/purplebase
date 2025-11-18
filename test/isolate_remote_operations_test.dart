@@ -163,7 +163,14 @@ Future<void> main() async {
 
       expect(response, isA<PublishResponse>());
 
-      expect(response.unreachableRelayUrls, isNotEmpty);
+      // Verify publish returns results even for offline relays
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+      
+      // Offline relays should report accepted=false
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => !state.accepted), isTrue);
     });
 
     test('should handle empty event set', () async {
@@ -567,8 +574,12 @@ Future<void> main() async {
       // Should not throw, just return a response
       expect(response, isA<PublishResponse>());
 
-      // For invalid URLs, we should expect unreachable relay URLs
-      expect(response.unreachableRelayUrls, isNotEmpty);
+      // Invalid URLs should report accepted=false
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => !state.accepted), isTrue);
     });
 
     test('should handle mixed valid/invalid relays', () async {
@@ -578,15 +589,15 @@ Future<void> main() async {
 
       expect(response, isA<PublishResponse>());
 
-      // For mixed relays, we might have some results and some unreachable
-      // The working relay should accept the event, offline relay should be unreachable
-      if (response.results.isNotEmpty) {
-        expect(response.results.containsKey(testNote1.id), isTrue);
-        final eventStates = response.results[testNote1.id]!;
-        expect(eventStates.any((state) => state.accepted), isTrue);
-      }
-      // Should also have unreachable relays
-      expect(response.unreachableRelayUrls, isNotEmpty);
+      // For mixed relays, we should have results from both
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+      
+      // The working relay should accept, offline relay should reject
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.any((state) => state.accepted), isTrue);
+      expect(eventStates.any((state) => !state.accepted), isTrue);
     });
 
     test('should handle network timeouts gracefully', () async {
@@ -597,8 +608,12 @@ Future<void> main() async {
 
       expect(response, isA<PublishResponse>());
 
-      // For invalid URLs, we should expect unreachable relay URLs
-      expect(response.unreachableRelayUrls, isNotEmpty);
+      // Invalid URLs should report accepted=false
+      expect(response.results, isNotEmpty);
+      expect(response.results.containsKey(testNote1.id), isTrue);
+      final eventStates = response.results[testNote1.id]!;
+      expect(eventStates, isNotEmpty);
+      expect(eventStates.every((state) => !state.accepted), isTrue);
     });
 
     test('should handle malformed events in publish', () async {

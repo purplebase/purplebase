@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'package:models/models.dart';
 import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/db.dart';
+import 'package:purplebase/src/notifiers.dart';
 import 'package:purplebase/src/pool/websocket_pool.dart';
 import 'package:purplebase/src/pool/state/pool_state.dart';
 import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
@@ -31,10 +32,19 @@ void isolateEntryPoint(List args) {
     throttleDuration: config.streamingBufferWindow,
   );
 
+  // Create debug notifier with callback to send messages to main isolate
+  final debugNotifier = DebugNotifier();
+  debugNotifier.addListener((message) {
+    if (message != null) {
+      mainSendPort.send(message);
+    }
+  });
+
   final pool = WebSocketPool(
     config: config,
     eventNotifier: eventNotifier,
     stateNotifier: stateNotifier,
+    debugNotifier: debugNotifier,
   );
 
   Database? db;
@@ -50,7 +60,7 @@ void isolateEntryPoint(List args) {
     // Send SendPort AFTER database is initialized
     mainSendPort.send(receivePort.sendPort);
   } catch (e) {
-    mainSendPort.send(InfoMessage('ERROR: Failed to open database - $e'));
+    mainSendPort.send(DebugMessage('ERROR: Failed to open database - $e'));
     // Don't send SendPort if initialization failed
     return;
   }
@@ -62,24 +72,19 @@ void isolateEntryPoint(List args) {
       :final req,
       :final relaysForIds,
     )) {
+      mainSendPort.send(
+        DebugMessage(
+          '[isolate] Received ${events.length} events for ${req.subscriptionId}',
+        ),
+      );
       final ids = db!.save(events, relaysForIds, config, verifier);
-
-      // Log save results with comparison
-      if (ids.length < events.length) {
-        mainSendPort.send(
-          InfoMessage(
-            'Remote save completed: ${ids.length}/${events.length} event(s) saved (${events.length - ids.length} rejected) [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
-          ),
-        );
-      } else {
-        mainSendPort.send(
-          InfoMessage(
-            'Remote save completed: ${ids.length} event(s) saved [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
-          ),
-        );
-      }
-
+      mainSendPort.send(
+        DebugMessage('[isolate] Saved ${ids.length} events to DB'),
+      );
       mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
+      mainSendPort.send(
+        DebugMessage('[isolate] Sent QueryResultMessage to main isolate'),
+      );
     }
     // Handle notices if needed
     // if (event case NoticeReceived(:final message, :final relayUrl)) {
@@ -96,10 +101,10 @@ void isolateEntryPoint(List args) {
   sub = receivePort.listen((message) async {
     // Handle heartbeat messages (no reply needed)
     if (message is HeartbeatMessage) {
-      await pool.performHealthCheck();
+      await pool.performHealthCheck(force: message.forceReconnect);
       return;
     }
-    
+
     if (message case (
       final IsolateOperation operation,
       final SendPort replyPort,
@@ -121,24 +126,9 @@ void isolateEntryPoint(List args) {
           try {
             final ids = db!.save(events, {}, config, verifier);
             response = IsolateResponse(success: true, result: ids);
-
-            // Log save results with comparison
-            if (ids.length < events.length) {
-              mainSendPort.send(
-                InfoMessage(
-                  'Local save completed: ${ids.length}/${events.length} event(s) saved (${events.length - ids.length} rejected) [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
-                ),
-              );
-            } else {
-              mainSendPort.send(
-                InfoMessage(
-                  'Local save completed: ${ids.length} event(s) saved [${ids.take(10).join(', ')}${ids.length > 10 ? '...' : ''}]',
-                ),
-              );
-            }
           } catch (e) {
             response = IsolateResponse(success: false, error: e.toString());
-            mainSendPort.send(InfoMessage('ERROR: Local save failed - $e'));
+            mainSendPort.send(DebugMessage('ERROR: Local save failed - $e'));
           }
 
         case LocalClearIsolateOperation():
@@ -146,11 +136,13 @@ void isolateEntryPoint(List args) {
             db!.initialize(clear: true);
             response = IsolateResponse(success: true);
             mainSendPort.send(
-              InfoMessage('Database cleared and reinitialized'),
+              DebugMessage('Database cleared and reinitialized'),
             );
           } catch (e) {
             response = IsolateResponse(success: false, error: e.toString());
-            mainSendPort.send(InfoMessage('ERROR: Database clear failed - $e'));
+            mainSendPort.send(
+              DebugMessage('ERROR: Database clear failed - $e'),
+            );
           }
 
         // REMOTE
@@ -169,11 +161,6 @@ void isolateEntryPoint(List args) {
           }
 
         case RemotePublishIsolateOperation(:final events, :final source):
-          mainSendPort.send(
-            InfoMessage(
-              'Publishing ${events.length} event(s) to ${config.getRelays(source: source).join(', ')}',
-            ),
-          );
           final result = await pool.publish(events, source: source);
           response = IsolateResponse(success: true, result: result);
 
@@ -212,16 +199,27 @@ final class QueryResultMessage extends IsolateMessage {
   QueryResultMessage({required this.request, required this.savedIds});
 }
 
-/// Message containing debug/info information
-final class InfoMessage extends IsolateMessage {
+/// Message containing debug information from the background isolate.
+///
+/// These messages are emitted for debugging, logging, and monitoring purposes.
+/// Each message includes a component tag ([pool], [coordinator], etc.) in the text.
+///
+/// Note: Timestamp is automatically added by the IsolateMessage base class.
+final class DebugMessage extends IsolateMessage {
   final String message;
-  InfoMessage(this.message);
+  DebugMessage(this.message);
 }
 
 /// Message containing pool state information
 final class PoolStateMessage extends IsolateMessage {
   final PoolState poolState;
   PoolStateMessage(this.poolState);
+}
+
+/// Message containing informational notices from the background isolate
+final class InfoMessage extends IsolateMessage {
+  final String message;
+  InfoMessage(this.message);
 }
 
 /// Message containing relay status information (legacy, kept for compatibility)
@@ -233,7 +231,8 @@ final class RelayStatusMessage extends IsolateMessage {
 /// Heartbeat message from main isolate to trigger health checks
 final class HeartbeatMessage {
   final DateTime timestamp;
-  HeartbeatMessage(this.timestamp);
+  final bool forceReconnect;
+  HeartbeatMessage(this.timestamp, {this.forceReconnect = false});
 }
 
 sealed class IsolateOperation {}

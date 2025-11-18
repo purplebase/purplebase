@@ -1,39 +1,31 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:models/models.dart';
-import 'package:purplebase/src/pool/connection/connection_coordinator.dart';
-import 'package:purplebase/src/pool/connection/relay_connection.dart';
-import 'package:purplebase/src/pool/optimization/event_buffer.dart';
-import 'package:purplebase/src/pool/optimization/request_optimizer.dart';
+import 'package:purplebase/src/isolate.dart';
+import 'package:purplebase/src/notifiers.dart';
+import 'package:purplebase/src/pool/connection/relay_agent.dart';
 import 'package:purplebase/src/pool/publish/publish_response.dart';
-import 'package:purplebase/src/pool/state/connection_phase.dart';
+import 'package:purplebase/src/pool/state/connection_phase.dart' as pool_phase;
 import 'package:purplebase/src/pool/state/pool_state.dart';
 import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
 import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
 import 'package:purplebase/src/pool/state/subscription_phase.dart';
-import 'package:purplebase/src/pool/subscription/active_subscription.dart';
+import 'package:purplebase/src/pool/subscription/subscription_buffer.dart';
 import 'package:purplebase/src/utils.dart';
 
-/// WebSocket pool orchestrator
-/// Coordinates connections, subscriptions, and message flow
+/// WebSocket pool - thin coordinator that manages relay agents
+/// Agents handle connection lifecycle, pool handles subscriptions and batching
 class WebSocketPool {
   final StorageConfiguration config;
   final PoolStateNotifier stateNotifier;
   final RelayEventNotifier eventNotifier;
+  final DebugNotifier? debugNotifier;
 
-  // Core state
-  final Map<String, RelayConnection> _connections = {};
-  final Map<String, ActiveSubscription> _subscriptions = {};
-  final Map<String, _PublishState> _publishStates = {};
+  // Relay agents (normalized URL -> agent)
+  final Map<String, RelayAgent> _agents = {};
 
-  // Supporting components
-  final ConnectionCoordinator _coordinator;
-  final RequestOptimizer _optimizer;
-  late final EventBuffer _eventBuffer;
-
-  // Health check (triggered by main isolate heartbeat)
-  DateTime? _lastHealthCheck;
+  // Subscription buffers (subscription ID -> buffer)
+  final Map<String, SubscriptionBuffer> _subscriptions = {};
 
   bool _disposed = false;
 
@@ -41,77 +33,16 @@ class WebSocketPool {
     required this.config,
     required this.stateNotifier,
     required this.eventNotifier,
-  }) : _coordinator = ConnectionCoordinator(config: config),
-       _optimizer = RequestOptimizer(maxEntries: 1000) {
-    print('[pool] Initializing WebSocketPool');
-
-    // Set up event buffer
-    _eventBuffer = EventBuffer(
-      batchWindow: config.streamingBufferWindow,
-      onFlush: _handleEventBatch,
-    );
-
-    // Health checks are now triggered by heartbeat from main isolate
-    _lastHealthCheck = DateTime.now();
-
-    print('[pool] WebSocketPool initialized');
-  }
-
-  /// Perform health check (called by main isolate heartbeat)
-  Future<void> performHealthCheck() async {
-    if (_disposed) return;
-
-    print(
-      '[pool] Running health check (connections=${_connections.length}, subs=${_subscriptions.length})',
-    );
-
-    final result = _coordinator.performHealthCheck(
-      _connections,
-      _subscriptions,
-      _lastHealthCheck,
-    );
-
-    _lastHealthCheck = DateTime.now();
-
-    // Reconnect relays that need it
-    for (final url in result.needReconnection) {
-      final relay = _connections[url];
-      if (relay != null) {
-        _attemptReconnection(relay);
-      }
-    }
-
-    // Emit updated state
-    _emitState();
-  }
-
-  /// Attempt to reconnect a relay
-  Future<void> _attemptReconnection(RelayConnection relay) async {
-    print('[pool] Attempting reconnection to ${relay.url}');
-
-    try {
-      await _coordinator.ensureConnected(relay, _subscriptions);
-
-      // Re-send subscriptions
-      await _resendSubscriptions(relay.url);
-
-      _emitState();
-    } catch (e) {
-      print('[pool] Reconnection failed for ${relay.url}: $e');
-    }
-  }
+    this.debugNotifier,
+  });
 
   /// Query relays
   Future<List<Map<String, dynamic>>> query(
     Request req, {
     RemoteSource source = const RemoteSource(),
   }) async {
-    print(
-      '[pool] query() - ${req.subscriptionId} (stream=${source.stream}, background=${source.background})',
-    );
-
-    // CRITICAL: If stream is not explicitly true, force background=false to prevent hangs
-    if (source.stream != true && source.background == true) {
+    // CRITICAL: If stream is false, force background=false to prevent hangs
+    if (!source.stream && source.background == true) {
       source = source.copyWith(background: false);
     }
 
@@ -122,13 +53,8 @@ class WebSocketPool {
         .toSet();
 
     if (relayUrls.isEmpty) {
-      print('[pool] No relays configured, returning empty result');
       return [];
     }
-
-    print(
-      '[pool] query() - ${req.subscriptionId} will use ${relayUrls.length} relay(s)',
-    );
 
     // Set up completer for non-background queries
     final completer = source.background
@@ -140,14 +66,11 @@ class WebSocketPool {
       req,
       relayUrls: relayUrls,
       queryCompleter: completer,
-      isStreaming: source.stream == true,
+      isStreaming: source.stream,
     );
 
     // Return nothing for background queries
     if (source.background) {
-      if (source.stream != true) {
-        unsubscribe(req);
-      }
       return [];
     }
 
@@ -157,7 +80,7 @@ class WebSocketPool {
       events = await completer!.future;
     } finally {
       // Close subscription unless explicitly streaming
-      if (source.stream != true) {
+      if (!source.stream) {
         unsubscribe(req);
       }
     }
@@ -174,41 +97,46 @@ class WebSocketPool {
   }) async {
     if (relayUrls.isEmpty) return;
 
-    print(
-      '[pool] send() - ${req.subscriptionId} to ${relayUrls.length} relay(s), isStreaming=$isStreaming',
-    );
+    final normalizedRelays = relayUrls.map(normalizeRelayUrl).toSet();
 
-    // Create subscription state
-    final subscription = ActiveSubscription(
-      request: req,
-      targetRelays: relayUrls,
+    final originalFilters = req
+        .toMaps()
+        .map((filter) => Map<String, dynamic>.from(filter))
+        .toList();
+
+    // Create subscription buffer with original filters
+    final buffer = SubscriptionBuffer(
+      subscriptionId: req.subscriptionId,
+      targetRelays: normalizedRelays,
       isStreaming: isStreaming,
+      batchWindow: config.streamingBufferWindow,
+      onFlush: (events, relaysForIds) =>
+          _handleEventBatch(req, events, relaysForIds),
+      onFirstFlushTimeout: _handleEoseFirstFlushTimeout,
+      onFinalTimeout: _handleEoseFinalTimeout,
+      filters: originalFilters
+          .map((filter) => Map<String, dynamic>.from(filter))
+          .toList(),
     );
 
-    subscription.queryCompleter = queryCompleter;
-    _subscriptions[req.subscriptionId] = subscription;
+    buffer.queryCompleter = queryCompleter;
+    _subscriptions[req.subscriptionId] = buffer;
 
-    // Set up EOSE timeout
-    subscription.eoseTimer = Timer(
+    // Set up final EOSE timeout (removes stuck relays)
+    buffer.eoseFinalTimeoutTimer = Timer(
       config.responseTimeout,
-      () => _flushSubscription(req.subscriptionId),
+      () => _handleEoseFinalTimeout(req.subscriptionId),
     );
 
-    // Connect to relays and send requests
+    // Subscribe to all relays
     final futures = <Future>[];
-    for (final url in relayUrls) {
-      final future = _ensureConnection(url)
-          .then((_) {
-            final relay = _connections[url];
-            if (relay?.isConnected == true) {
-              _sendSubscriptionToRelay(url, subscription);
-            }
-          })
-          .catchError((error) {
-            print('[pool] Failed to connect/send to $url: $error');
-          });
+    for (final url in normalizedRelays) {
+      final agent = _getOrCreateAgent(url);
 
-      futures.add(future);
+      final filters = originalFilters
+          .map((filter) => Map<String, dynamic>.from(filter))
+          .toList();
+      futures.add(agent.subscribe(req.subscriptionId, filters));
     }
 
     await Future.wait(futures);
@@ -217,280 +145,30 @@ class WebSocketPool {
     _emitState();
   }
 
-  /// Ensure connection to relay
-  Future<void> _ensureConnection(String url) async {
-    final normalizedUrl = normalizeRelayUrl(url);
-    final relay = _connections.putIfAbsent(
-      normalizedUrl,
-      () => RelayConnection(url: normalizedUrl),
-    );
+  /// Unsubscribe from subscription
+  void unsubscribe(Request req) {
+    final subscriptionId = req.subscriptionId;
+    final buffer = _subscriptions[subscriptionId];
 
-    await _coordinator.ensureConnected(relay, _subscriptions);
-
-    // Set up message listener if not already set
-    if (relay.messageSubscription == null && relay.socket != null) {
-      relay.messageSubscription = relay.socket!.messages.listen(
-        (message) => _handleMessage(normalizedUrl, message),
-      );
-    }
-  }
-
-  /// Send subscription to a specific relay
-  void _sendSubscriptionToRelay(String url, ActiveSubscription subscription) {
-    final relay = _connections[url];
-    if (relay == null || !relay.isConnected) return;
-
-    // Optimize request for this relay
-    final optimizedReq = _optimizer.optimize(
-      url,
-      subscription.request,
-      isStreaming: subscription.isStreaming,
-    );
-
-    final message = jsonEncode([
-      'REQ',
-      subscription.request.subscriptionId,
-      ...optimizedReq.toMaps(),
-    ]);
-
-    try {
-      relay.socket!.send(message);
-      relay.recordMessage();
-
-      subscription.setRelayPhase(url, const SubscriptionActive());
-
-      print('[pool] Sent REQ ${subscription.request.subscriptionId} to $url');
-    } catch (e) {
-      print('[pool] Failed to send REQ to $url: $e');
-      subscription.setRelayPhase(url, SubscriptionFailed(e.toString()));
-    }
-  }
-
-  /// Re-send subscriptions to a relay after reconnection
-  Future<void> _resendSubscriptions(String url) async {
-    final subscriptionsToResend = _subscriptions.values
-        .where((sub) => sub.targetRelays.contains(url))
-        .toList();
-
-    if (subscriptionsToResend.isEmpty) {
-      print('[pool] No subscriptions to resend to $url');
+    if (buffer == null) {
       return;
     }
 
-    print(
-      '[pool] Re-sending ${subscriptionsToResend.length} subscription(s) to $url',
-    );
-
-    for (final subscription in subscriptionsToResend) {
-      subscription.markReconnection(url);
-      _sendSubscriptionToRelay(url, subscription);
-    }
-  }
-
-  /// Handle incoming message from relay
-  void _handleMessage(String url, dynamic message) {
-    final relay = _connections[url];
-    if (relay == null) return;
-
-    relay.recordMessage();
-
-    try {
-      final List<dynamic> data = jsonDecode(message);
-      final messageType = data[0] as String;
-
-      switch (messageType) {
-        case 'EVENT':
-          _handleEvent(url, data);
-          break;
-        case 'EOSE':
-          _handleEose(url, data);
-          break;
-        case 'OK':
-          _handleOk(url, data);
-          break;
-        case 'NOTICE':
-          _handleNotice(url, data);
-          break;
-        case 'CLOSED':
-          _handleClosed(url, data);
-          break;
-      }
-    } catch (e) {
-      print('[pool] Invalid message from $url: $e');
-    }
-  }
-
-  /// Handle EVENT message
-  void _handleEvent(String url, List<dynamic> data) {
-    if (data.length < 3) return;
-
-    final subscriptionId = data[1] as String;
-    final event = data[2] as Map<String, dynamic>;
-    final eventId = event['id'] as String?;
-
-    if (eventId == null) return;
-
-    print('[relay] EVENT from $url: ${event['kind']} ${eventId.substring(0, 8)}');
-
-    final subscription = _subscriptions[subscriptionId];
-    if (subscription == null) {
-      print('[pool] EVENT for unknown subscription $subscriptionId');
-      return;
+    // Unsubscribe from all target relays
+    for (final url in buffer.targetRelays) {
+      final agent = _agents[url];
+      agent?.unsubscribe(subscriptionId);
     }
 
-    // Add to subscription's buffer
-    final isNew = subscription.addEvent(url, event);
+    // Clean up buffer
+    buffer.dispose();
+    _subscriptions.remove(subscriptionId);
 
-    if (isNew) {
-      // Record timestamp for optimization
-      final eventTimestamp = event['created_at'] as int?;
-      if (eventTimestamp != null) {
-        _optimizer.recordEvent(
-          url,
-          subscription.request,
-          DateTime.fromMillisecondsSinceEpoch(eventTimestamp * 1000),
-        );
-      }
+    // Clean up idle agents (no active subscriptions)
+    _cleanupIdleAgents();
 
-      // Schedule flush based on phase
-      if (subscription.phase == SubscriptionPhase.eose) {
-        // Wait for EOSE
-      } else {
-        // Streaming - schedule batched flush
-        _scheduleStreamingFlush(subscription);
-      }
-    }
-  }
-
-  /// Handle EOSE message
-  void _handleEose(String url, List<dynamic> data) {
-    if (data.length < 2) return;
-
-    final subscriptionId = data[1] as String;
-    final subscription = _subscriptions[subscriptionId];
-
-    if (subscription == null) {
-      print('[pool] EOSE for unknown subscription $subscriptionId');
-      return;
-    }
-
-    subscription.markEoseReceived(url);
-
-    print('[pool] EOSE received from $url for $subscriptionId');
-
-    // Check if all target relays sent EOSE
-    if (subscription.allEoseReceived &&
-        subscription.phase == SubscriptionPhase.eose) {
-      print('[pool] All EOSEs received for $subscriptionId, flushing buffer');
-      subscription.eoseTimer?.cancel();
-      _flushSubscription(subscriptionId);
-    }
-  }
-
-  /// Handle OK message (publish response)
-  void _handleOk(String url, List<dynamic> data) {
-    if (data.length < 4) return;
-
-    final eventId = data[1] as String;
-    final accepted = data[2] as bool;
-    final message = data.length > 3 ? data[3] as String? : null;
-
-    // Find publish state for this event
-    for (final publishState in _publishStates.values) {
-      if (publishState.pendingEventIds.contains(eventId)) {
-        publishState.recordResponse(url, eventId, accepted, message);
-
-        if (publishState.isComplete) {
-          publishState.timeoutTimer?.cancel();
-          _completePublish(publishState);
-        }
-        break;
-      }
-    }
-  }
-
-  /// Handle NOTICE message
-  void _handleNotice(String url, List<dynamic> data) {
-    if (data.length < 2) return;
-
-    final message = data[1] as String;
-    eventNotifier.emitNotice(message: message, relayUrl: url);
-
-    print('[pool] NOTICE from $url: $message');
-  }
-
-  /// Handle CLOSED message
-  void _handleClosed(String url, List<dynamic> data) {
-    if (data.length < 2) return;
-
-    final subscriptionId = data[1] as String;
-    final reason = data.length > 2 ? data[2] as String? : null;
-
-    final subscription = _subscriptions[subscriptionId];
-    if (subscription == null) return;
-
-    print(
-      '[pool] CLOSED from $url for $subscriptionId${reason != null ? ": $reason" : ""}',
-    );
-
-    // Mark for resubscription
-    subscription.setRelayPhase(url, const SubscriptionResyncing());
-
-    // Attempt to resubscribe
-    _sendSubscriptionToRelay(url, subscription);
-  }
-
-  /// Flush subscription buffer
-  void _flushSubscription(String subscriptionId) {
-    final subscription = _subscriptions[subscriptionId];
-    if (subscription == null) return;
-
-    print(
-      '[pool] Flushing subscription $subscriptionId (${subscription.bufferedEvents.length} events)',
-    );
-
-    // Transition to streaming if was in EOSE phase
-    if (subscription.phase == SubscriptionPhase.eose) {
-      subscription.phase = SubscriptionPhase.streaming;
-
-      // Complete query completer if exists
-      if (subscription.queryCompleter != null &&
-          !subscription.queryCompleter!.isCompleted) {
-        subscription.queryCompleter!.complete(
-          List.from(subscription.bufferedEvents),
-        );
-      }
-    }
-
-    // Emit events if buffer not empty
-    if (subscription.bufferedEvents.isNotEmpty) {
-      eventNotifier.emitEvents(
-        req: subscription.request,
-        events: Set.from(subscription.bufferedEvents),
-        relaysForIds: Map.from(subscription.relaysForEventId),
-      );
-
-      subscription.clearBuffer();
-    }
-  }
-
-  /// Schedule streaming flush
-  void _scheduleStreamingFlush(ActiveSubscription subscription) {
-    if (subscription.streamingFlushTimer?.isActive == true) return;
-
-    subscription.streamingFlushTimer = Timer(
-      config.streamingBufferWindow,
-      () => _flushSubscription(subscription.request.subscriptionId),
-    );
-  }
-
-  /// Handle event batch from EventBuffer
-  void _handleEventBatch(
-    Set<Map<String, dynamic>> events,
-    Map<String, Set<String>> relaysForIds,
-  ) {
-    // This is called by EventBuffer, but we're not using it in this implementation
-    // Events are handled per-subscription instead
+    // Emit state
+    _emitState();
   }
 
   /// Publish events to relays
@@ -511,134 +189,289 @@ class WebSocketPool {
       return PublishRelayResponse();
     }
 
-    print(
-      '[pool] Publishing ${events.length} event(s) to ${relayUrls.length} relay(s)',
-    );
+    final response = PublishRelayResponse();
 
-    // Create publish state
-    final publishId = DateTime.now().millisecondsSinceEpoch.toString();
-    final publishState = _PublishState(
-      publishId: publishId,
-      events: events,
-      targetRelays: relayUrls,
-    );
-
-    _publishStates[publishId] = publishState;
-
-    // Emit state to show publish in progress
-    _emitState();
-
-    // Set up timeout
-    publishState.timeoutTimer = Timer(
-      config.responseTimeout,
-      () => _completePublish(publishState),
-    );
-
-    // Connect to relays and send events
+    // Publish to all relays
+    final futures = <Future>[];
     for (final url in relayUrls) {
-      _ensureConnection(url)
-          .then((_) {
-            final relay = _connections[url];
-            if (relay?.isConnected == true) {
-              _sendEventsToRelay(url, publishState);
-            }
-          })
-          .catchError((error) {
-            print('[pool] Failed to publish to $url: $error');
-            publishState.markRelayUnreachable(url);
-          });
-    }
+      final agent = _getOrCreateAgent(url);
 
-    // Wait for completion
-    return await publishState.completer.future;
-  }
+      for (final event in events) {
+        final eventId = event['id'] as String?;
+        if (eventId == null) continue;
 
-  /// Send events to a specific relay
-  void _sendEventsToRelay(String url, _PublishState publishState) {
-    final relay = _connections[url];
-    if (relay == null || !relay.isConnected || relay.socket == null) {
-      print('[pool] Cannot send events to $url - relay not ready');
-      return;
-    }
+        final future = agent
+            .publish(event)
+            .then((result) {
+              response.wrapped.addEvent(
+                eventId,
+                relayUrl: url,
+                accepted: result.accepted,
+              );
+            })
+            .catchError((error) {
+              response.wrapped.addEvent(
+                eventId,
+                relayUrl: url,
+                accepted: false,
+              );
+            });
 
-    for (final event in publishState.events) {
-      final eventId = event['id'] as String?;
-      if (eventId == null) continue;
-
-      final message = jsonEncode(['EVENT', event]);
-
-      try {
-        relay.socket!.send(message);
-        relay.recordMessage();
-        publishState.markEventSent(url, eventId);
-      } catch (e) {
-        print('[pool] Failed to send event $eventId to $url: $e');
-        publishState.markRelayFailed(url, eventId);
-      }
-    }
-  }
-
-  /// Complete publish operation
-  void _completePublish(_PublishState publishState) {
-    if (publishState.completer.isCompleted) return;
-
-    final response = publishState.buildResponse();
-    publishState.completer.complete(response);
-
-    _publishStates.remove(publishState.publishId);
-  }
-
-  /// Unsubscribe from subscription
-  void unsubscribe(Request req) {
-    final subscriptionId = req.subscriptionId;
-    final subscription = _subscriptions[subscriptionId];
-
-    if (subscription == null) {
-      print('[pool] unsubscribe() - subscription $subscriptionId not found');
-      return;
-    }
-
-    print('[pool] unsubscribe() - closing $subscriptionId');
-
-    // Send CLOSE message to relays
-    final message = jsonEncode(['CLOSE', subscriptionId]);
-    for (final url in subscription.targetRelays) {
-      final relay = _connections[url];
-      if (relay == null || !relay.isConnected || relay.socket == null) continue;
-
-      try {
-        relay.socket!.send(message);
-        relay.recordMessage();
-      } catch (e) {
-        print('[pool] Failed to send CLOSE to $url: $e');
+        futures.add(future);
       }
     }
 
-    // Clean up subscription
-    subscription.dispose();
-    _subscriptions.remove(subscriptionId);
+    await Future.wait(futures);
 
-    // Clean up idle relays
-    _cleanupIdleRelays(subscription.targetRelays);
+    return response;
+  }
 
-    // Emit state
+  /// Perform health check (called by main isolate heartbeat)
+  /// Checks all agents and triggers reconnection if needed
+  Future<void> performHealthCheck({bool force = false}) async {
+    if (_disposed) return;
+
+    // Check all agents and reconnect if needed
+    final futures = _agents.values.map(
+      (agent) => agent.checkAndReconnect(force: force),
+    );
+    await Future.wait(futures);
+
+    // Emit updated state
     _emitState();
   }
 
-  /// Clean up idle relays (no active subscriptions)
-  void _cleanupIdleRelays(Set<String> relayUrls) {
-    for (final url in relayUrls) {
-      final hasActiveSubscriptions = _subscriptions.values.any(
-        (sub) => sub.targetRelays.contains(url),
+  /// Get or create relay agent
+  RelayAgent _getOrCreateAgent(String url) {
+    return _agents.putIfAbsent(url, () {
+      debugNotifier?.emit(DebugMessage('[pool] Creating agent for $url'));
+
+      return RelayAgent(
+        url: url,
+        onStateChange: _handleAgentStateChange,
+        onEvent: _handleEvent,
+        onEose: _handleEose,
+        onPublishResponse: _handlePublishResponse,
+        connectionTimeout: config.responseTimeout,
+      );
+    });
+  }
+
+  /// Handle agent state change
+  void _handleAgentStateChange(RelayAgentState state) {
+    // Log important connection state changes
+    switch (state.phase) {
+      case ConnectionPhase.connected:
+        // Only log reconnections, not initial connections
+        if (state.reconnectAttempts > 0) {
+          debugNotifier?.emit(
+            DebugMessage(
+              '[pool] Relay ${state.url} reconnected after ${state.reconnectAttempts} attempt(s)',
+            ),
+          );
+        }
+        break;
+      case ConnectionPhase.disconnected:
+        final errorMsg = state.lastError != null ? ' (${state.lastError})' : '';
+        debugNotifier?.emit(
+          DebugMessage('[pool] Relay ${state.url} disconnected$errorMsg'),
+        );
+        break;
+      case ConnectionPhase.connecting:
+        // Don't log connecting state, too noisy
+        break;
+    }
+
+    // Agent state changed, emit updated pool state
+    _emitState();
+  }
+
+  /// Handle event from agent
+  void _handleEvent(String relayUrl, String subId, Map<String, dynamic> event) {
+    debugNotifier?.emit(
+      DebugMessage('[pool] EVENT received from $relayUrl for $subId'),
+    );
+
+    final buffer = _subscriptions[subId];
+    if (buffer == null) {
+      debugNotifier?.emit(
+        DebugMessage('[pool] No buffer found for subscription $subId'),
+      );
+      return;
+    }
+
+    final eventId = event['id'] as String?;
+    if (eventId == null) {
+      debugNotifier?.emit(DebugMessage('[pool] Event missing id field'));
+      return;
+    }
+
+    // Add to buffer (deduplication happens here)
+    buffer.addEvent(relayUrl, event);
+    debugNotifier?.emit(
+      DebugMessage('[pool] Event $eventId added to buffer for $subId'),
+    );
+  }
+
+  /// Handle EOSE from agent
+  void _handleEose(String relayUrl, String subId) {
+    debugNotifier?.emit(
+      DebugMessage('[pool] EOSE received from $relayUrl for $subId'),
+    );
+
+    final buffer = _subscriptions[subId];
+    if (buffer == null) {
+      return;
+    }
+
+    buffer.markEose(relayUrl);
+
+    // If all EOSE received, cancel both timers
+    if (buffer.allEoseReceived) {
+      buffer.eoseFirstFlushTimer?.cancel();
+      buffer.eoseFinalTimeoutTimer?.cancel();
+      debugNotifier?.emit(DebugMessage('[pool] All EOSE received for $subId'));
+    }
+  }
+
+  /// Handle publish response from agent
+  void _handlePublishResponse(
+    String relayUrl,
+    String eventId,
+    bool accepted,
+    String? message,
+  ) {
+    // Only log failures
+    if (!accepted) {
+      debugNotifier?.emit(
+        DebugMessage(
+          '[pool] Publish failed from $relayUrl for $eventId${message != null ? ': $message' : ''}',
+        ),
+      );
+    }
+  }
+
+  /// Handle event batch flush from buffer
+  void _handleEventBatch(
+    Request req,
+    List<Map<String, dynamic>> events,
+    Map<String, Set<String>> relaysForIds,
+  ) {
+    if (events.isEmpty) {
+      debugNotifier?.emit(
+        DebugMessage(
+          '[pool] Batch flush called with 0 events for ${req.subscriptionId}',
+        ),
+      );
+      return;
+    }
+
+    debugNotifier?.emit(
+      DebugMessage(
+        '[pool] Emitting ${events.length} events for ${req.subscriptionId}',
+      ),
+    );
+
+    eventNotifier.emitEvents(
+      req: req,
+      events: events.toSet(),
+      relaysForIds: relaysForIds,
+    );
+  }
+
+  /// Handle first EOSE flush timeout (triggered when first relay sends EOSE)
+  void _handleEoseFirstFlushTimeout(String subscriptionId) {
+    final buffer = _subscriptions[subscriptionId];
+    if (buffer == null) return;
+
+    // Only proceed if at least one relay sent EOSE
+    if (buffer.eoseReceived.isEmpty) return;
+
+    // Set up the timer if not already set
+    buffer.eoseFirstFlushTimer ??= Timer(config.eoseFirstFlushTimeout, () {
+      final buf = _subscriptions[subscriptionId];
+      if (buf == null || buf.allEoseReceived) return;
+
+      debugNotifier?.emit(
+        DebugMessage(
+          '[pool] First flush timeout for $subscriptionId - flushing events from ${buf.eoseReceived.length}/${buf.targetRelays.length} relays',
+        ),
       );
 
-      if (!hasActiveSubscriptions) {
-        final relay = _connections[url];
-        if (relay != null) {
-          print('[pool] Cleaning up idle relay $url');
-          _coordinator.cleanupIdleRelay(relay);
-        }
+      // Flush events received so far
+      buf.flush();
+
+      _emitState();
+    });
+  }
+
+  /// Handle final EOSE timeout (removes stuck relays)
+  void _handleEoseFinalTimeout(String subscriptionId) {
+    final buffer = _subscriptions[subscriptionId];
+    if (buffer == null) return;
+
+    // Find relays that didn't send EOSE
+    final slowRelays = buffer.targetRelays
+        .where((url) => !buffer.eoseReceived.contains(url))
+        .toList();
+
+    if (slowRelays.isNotEmpty) {
+      debugNotifier?.emit(
+        DebugMessage(
+          '[pool] Final EOSE timeout for $subscriptionId - closing slow relays: ${slowRelays.join(", ")}',
+        ),
+      );
+
+      // Unsubscribe from slow/stuck relays
+      for (final url in slowRelays) {
+        final agent = _agents[url];
+        agent?.unsubscribe(subscriptionId);
       }
+
+      // Remove slow relays from buffer's target relays
+      buffer.targetRelays.removeAll(slowRelays);
+
+      // If we removed all relays, cancel the subscription entirely
+      if (buffer.targetRelays.isEmpty) {
+        debugNotifier?.emit(
+          DebugMessage(
+            '[pool] All relays timed out for $subscriptionId - cancelling subscription',
+          ),
+        );
+        buffer.dispose();
+        _subscriptions.remove(subscriptionId);
+        _emitState();
+        return;
+      }
+    }
+
+    // Flush whatever events we have from responsive relays
+    buffer.flush();
+
+    _emitState();
+  }
+
+  /// Clean up agents with no active subscriptions
+  void _cleanupIdleAgents() {
+    final agentsToRemove = <String>[];
+
+    for (final entry in _agents.entries) {
+      final url = entry.key;
+      final agent = entry.value;
+
+      // Check if any subscription targets this agent
+      final hasActiveSubscriptions = _subscriptions.values.any(
+        (buffer) => buffer.targetRelays.contains(url),
+      );
+
+      if (!hasActiveSubscriptions && agent.state.activeSubscriptions.isEmpty) {
+        agent.dispose();
+        agentsToRemove.add(url);
+      }
+    }
+
+    for (final url in agentsToRemove) {
+      _agents.remove(url);
     }
   }
 
@@ -649,73 +482,60 @@ class WebSocketPool {
 
   /// Build current pool state
   PoolState _buildPoolState() {
-    // Build connection states
+    // Build connection states from agents
     final connections = <String, RelayConnectionState>{};
-    for (final entry in _connections.entries) {
+    for (final entry in _agents.entries) {
       final url = entry.key;
-      final relay = entry.value;
+      final agent = entry.value;
+      final agentState = agent.state;
 
-      final activeSubIds = _subscriptions.values
-          .where((sub) => sub.targetRelays.contains(url))
-          .map((sub) => sub.request.subscriptionId)
-          .toSet();
+      // Map agent phase to pool connection phase
+      final phase = _mapAgentPhaseToConnectionPhase(agentState);
 
       connections[url] = RelayConnectionState(
         url: url,
-        phase: relay.phase,
-        phaseStartedAt: relay.phaseStartedAt,
-        reconnectAttempts: relay.reconnectAttempts,
-        lastMessageAt: relay.lastMessageAt,
-        lastError: relay.lastError,
-        activeSubscriptionIds: activeSubIds,
+        phase: phase,
+        phaseStartedAt: agentState.phaseStartedAt,
+        reconnectAttempts: agentState.reconnectAttempts,
+        lastMessageAt: agentState.lastActivityAt,
+        lastError: agentState.lastError,
+        activeSubscriptionIds: agentState.activeSubscriptions.keys.toSet(),
       );
     }
 
-    // Build subscription states
+    // Build subscription states from buffers
     final subscriptions = <String, SubscriptionState>{};
     for (final entry in _subscriptions.entries) {
-      final subscriptionId = entry.key;
-      final subscription = entry.value;
+      final subId = entry.key;
+      final buffer = entry.value;
 
-      subscriptions[subscriptionId] = SubscriptionState(
-        subscriptionId: subscriptionId,
-        targetRelays: subscription.targetRelays,
-        isStreaming: subscription.isStreaming,
-        relayStatus: Map.from(subscription.relayStatus),
-        phase: subscription.phase,
-        startedAt: subscription.startedAt,
-        totalEventsReceived: subscription.totalEventsReceived,
-      );
-    }
+      // Build relay status map with actual filters sent to each relay
+      final relayStatus = <String, RelaySubscriptionStatus>{};
+      for (final url in buffer.targetRelays) {
+        final agent = _agents[url];
+        final subscriptionInfo = agent?.state.activeSubscriptions[subId];
 
-    // Build publish states
-    final publishes = <String, PublishOperation>{};
-    for (final entry in _publishStates.entries) {
-      final id = entry.key;
-      final publishState = entry.value;
-
-      // Build relay results from publish state
-      // For PoolState, we track per-relay success (not per-event)
-      final relayResults = <String, bool>{};
-      for (final url in publishState.targetRelays) {
-        // A relay is considered successful if ALL events were accepted
-        bool allAccepted = true;
-        for (final eventId in publishState.pendingEventIds) {
-          final eventResponses = publishState.responses[eventId] ?? {};
-          final accepted = eventResponses[url] ?? false;
-          if (!accepted) {
-            allAccepted = false;
-            break;
-          }
-        }
-        relayResults[url] = allAccepted;
+        relayStatus[url] = RelaySubscriptionStatus(
+          phase: const SubscriptionActive(),
+          eoseReceivedAt: buffer.eoseReceivedAt[url],
+          reconnectionAttempts: 0,
+          lastReconnectAt: null,
+          filters:
+              subscriptionInfo?.filters, // Actual filters sent to this relay
+        );
       }
 
-      publishes[id] = PublishOperation(
-        id: id,
-        targetRelays: publishState.targetRelays,
-        relayResults: relayResults,
-        startedAt: publishState.startTime,
+      subscriptions[subId] = SubscriptionState(
+        subscriptionId: subId,
+        targetRelays: buffer.targetRelays,
+        isStreaming: buffer.isStreaming,
+        relayStatus: relayStatus,
+        phase: buffer.allEoseReceived
+            ? SubscriptionPhase.streaming
+            : SubscriptionPhase.eose,
+        startedAt: buffer.startedAt,
+        totalEventsReceived: buffer.totalEventsReceived,
+        filters: buffer.filters, // Original unoptimized filters
       );
     }
 
@@ -725,10 +545,54 @@ class WebSocketPool {
     return PoolState(
       connections: connections,
       subscriptions: subscriptions,
-      publishes: publishes,
+      publishes: const {}, // Simplified - no tracking needed
       health: health,
       timestamp: DateTime.now(),
     );
+  }
+
+  /// Map agent connection phase to pool connection phase
+  pool_phase.ConnectionPhase _mapAgentPhaseToConnectionPhase(
+    RelayAgentState agentState,
+  ) {
+    switch (agentState.phase) {
+      case ConnectionPhase.disconnected:
+        final reason = _resolveDisconnectionReason(agentState);
+        return pool_phase.Disconnected(
+          reason,
+          agentState.phaseStartedAt,
+          reconnectAttempts: agentState.reconnectAttempts,
+          nextReconnectAt: agentState.nextReconnectAt,
+          lastError: agentState.lastError,
+        );
+      case ConnectionPhase.connecting:
+        return pool_phase.Connecting(agentState.phaseStartedAt);
+      case ConnectionPhase.connected:
+        return pool_phase.Connected(
+          agentState.phaseStartedAt,
+          isReconnection: agentState.reconnectAttempts > 0,
+        );
+    }
+  }
+
+  pool_phase.DisconnectionReason _resolveDisconnectionReason(
+    RelayAgentState agentState,
+  ) {
+    if (agentState.activeSubscriptions.isEmpty &&
+        agentState.reconnectAttempts == 0) {
+      return pool_phase.DisconnectionReason.intentional;
+    }
+
+    if (agentState.reconnectAttempts == 0 && agentState.lastError == null) {
+      return pool_phase.DisconnectionReason.initial;
+    }
+
+    if (agentState.lastError != null &&
+        agentState.lastError!.contains('timeout')) {
+      return pool_phase.DisconnectionReason.timeout;
+    }
+
+    return pool_phase.DisconnectionReason.socketError;
   }
 
   /// Build health metrics
@@ -737,49 +601,38 @@ class WebSocketPool {
     Map<String, SubscriptionState> subscriptions,
   ) {
     final connectedCount = connections.values
-        .where((c) => c.phase is Connected)
+        .where((c) => c.phase is pool_phase.Connected)
         .length;
     final disconnectedCount = connections.values
-        .where((c) => c.phase is Disconnected)
+        .where((c) => c.phase is pool_phase.Disconnected)
         .length;
-    final reconnectingCount = connections.values
-        .where((c) => c.phase is Reconnecting)
+    final connectingCount = connections.values
+        .where((c) => c.phase is pool_phase.Connecting)
         .length;
 
     final fullyActive = subscriptions.values.where((s) {
-      return s.targetRelays.every((url) {
-        final status = s.relayStatus[url];
-        final conn = connections[url];
-        return status?.phase is SubscriptionActive && conn?.phase is Connected;
-      });
+      return s.relayStatus.values.every(
+        (status) => status.eoseReceivedAt != null,
+      );
     }).length;
 
     final partiallyActive = subscriptions.values.where((s) {
-      final activeCount = s.targetRelays.where((url) {
-        final status = s.relayStatus[url];
-        final conn = connections[url];
-        return status?.phase is SubscriptionActive && conn?.phase is Connected;
-      }).length;
+      final activeCount = s.relayStatus.values
+          .where((status) => status.eoseReceivedAt != null)
+          .length;
       return activeCount > 0 && activeCount < s.targetRelays.length;
-    }).length;
-
-    final failed = subscriptions.values.where((s) {
-      return s.targetRelays.every((url) {
-        final status = s.relayStatus[url];
-        return status?.phase is SubscriptionFailed;
-      });
     }).length;
 
     return HealthMetrics(
       totalConnections: connections.length,
       connectedCount: connectedCount,
       disconnectedCount: disconnectedCount,
-      reconnectingCount: reconnectingCount,
+      connectingCount: connectingCount,
       totalSubscriptions: subscriptions.length,
       fullyActiveSubscriptions: fullyActive,
       partiallyActiveSubscriptions: partiallyActive,
-      failedSubscriptions: failed,
-      lastHealthCheckAt: _lastHealthCheck,
+      failedSubscriptions: 0,
+      lastHealthCheckAt: DateTime.now(),
     );
   }
 
@@ -788,155 +641,18 @@ class WebSocketPool {
     if (_disposed) return;
     _disposed = true;
 
-    print('[pool] Disposing WebSocketPool');
-
-    // Cancel all subscriptions
-    for (final subscription in _subscriptions.values) {
-      subscription.dispose();
+    // Dispose all buffers
+    for (final buffer in _subscriptions.values) {
+      buffer.dispose();
     }
-
-    // Cancel all publishes
-    for (final publishState in _publishStates.values) {
-      publishState.timeoutTimer?.cancel();
-      if (!publishState.completer.isCompleted) {
-        publishState.completer.complete(PublishRelayResponse());
-      }
-    }
-
-    // Close all connections
-    for (final relay in _connections.values) {
-      relay.dispose();
-    }
-
-    // Clear state
-    _connections.clear();
     _subscriptions.clear();
-    _publishStates.clear();
 
-    // Dispose utilities
-    _eventBuffer.dispose();
-
-    print('[pool] WebSocketPool disposed');
-  }
-}
-
-/// Publish state tracking
-class _PublishState {
-  final String publishId;
-  final List<Map<String, dynamic>> events;
-  final Set<String> targetRelays;
-  final DateTime startTime;
-
-  final Set<String> pendingEventIds = {};
-  final Map<String, Set<String>> sentToRelays = {}; // eventId -> relays
-  final Map<String, Set<String>> failedRelays = {}; // eventId -> relays
-  final Map<String, Map<String, bool>> responses =
-      {}; // eventId -> {relayUrl -> accepted}
-
-  Timer? timeoutTimer;
-  final Completer<PublishRelayResponse> completer = Completer();
-
-  _PublishState({
-    required this.publishId,
-    required this.events,
-    required this.targetRelays,
-  }) : startTime = DateTime.now() {
-    // Extract event IDs
-    for (final event in events) {
-      final eventId = event['id'] as String?;
-      if (eventId != null) {
-        pendingEventIds.add(eventId);
-      }
+    // Dispose all agents
+    for (final agent in _agents.values) {
+      agent.dispose();
     }
-  }
+    _agents.clear();
 
-  void markEventSent(String url, String eventId) {
-    sentToRelays.putIfAbsent(eventId, () => {}).add(url);
-  }
-
-  void markRelayFailed(String url, String eventId) {
-    failedRelays.putIfAbsent(eventId, () => {}).add(url);
-  }
-
-  void markRelayUnreachable(String url) {
-    for (final eventId in pendingEventIds) {
-      markRelayFailed(url, eventId);
-    }
-  }
-
-  void recordResponse(
-    String url,
-    String eventId,
-    bool accepted,
-    String? message,
-  ) {
-    responses.putIfAbsent(eventId, () => {})[url] = accepted;
-  }
-
-  bool get isComplete {
-    for (final eventId in pendingEventIds) {
-      final sent = sentToRelays[eventId] ?? {};
-      final responded = responses[eventId]?.keys.toSet() ?? {};
-
-      if (!sent.every((url) => responded.contains(url))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  PublishRelayResponse buildResponse() {
-    final response = PublishRelayResponse();
-
-    // Track unreachable relays
-    final allSent = sentToRelays.values.expand((urls) => urls).toSet();
-    final allFailed = failedRelays.values.expand((urls) => urls).toSet();
-    final unreachable = targetRelays.difference(allSent).union(allFailed);
-
-    response.wrapped.unreachableRelayUrls.addAll(unreachable);
-
-    // Add results for each event
-    for (final eventId in pendingEventIds) {
-      final eventResponses = responses[eventId] ?? {};
-
-      // Add successful/responded relays
-      for (final entry in eventResponses.entries) {
-        response.wrapped.addEvent(
-          eventId,
-          relayUrl: entry.key,
-          accepted: entry.value,
-        );
-      }
-
-      // Add failed relays (offline, connection errors, etc.)
-      final eventFailed = failedRelays[eventId] ?? {};
-      for (final url in eventFailed) {
-        // Only add if not already in responses (avoid duplicates)
-        if (!eventResponses.containsKey(url)) {
-          response.wrapped.addEvent(
-            eventId,
-            relayUrl: url,
-            accepted: false,
-          );
-        }
-      }
-
-      // Add relays we never sent to (connection failed before sending)
-      for (final url in targetRelays) {
-        final sent = sentToRelays[eventId]?.contains(url) ?? false;
-        final hasResponse = eventResponses.containsKey(url);
-        final hasFailed = eventFailed.contains(url);
-        
-        if (!sent && !hasResponse && !hasFailed) {
-          response.wrapped.addEvent(
-            eventId,
-            relayUrl: url,
-            accepted: false,
-          );
-        }
-      }
-    }
-
-    return response;
+    debugNotifier?.emit(DebugMessage('[pool] WebSocketPool disposed'));
   }
 }
