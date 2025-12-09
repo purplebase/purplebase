@@ -202,10 +202,28 @@ class RelayPool {
     return response;
   }
 
-  /// Perform health check on all connections
+  /// Perform health check on all connections and re-sync subscriptions
   Future<void> performHealthCheck({bool force = false}) async {
     if (_disposed) return;
 
+    // First, re-sync pool subscriptions with connections.
+    // This handles the case where a connection's subscriptions got cleared
+    // (e.g., due to EOSE timeout) but the pool still has active subscriptions
+    // targeting that relay.
+    for (final sub in _subscriptions.values) {
+      for (final url in sub.targetRelays) {
+        final conn = _connections[url];
+        if (conn != null &&
+            !conn.activeSubscriptionIds.contains(sub.subscriptionId)) {
+          // Re-register this subscription with the connection
+          // This will also trigger connection if disconnected
+          await conn.subscribe(sub.subscriptionId, sub.filters);
+          _emitState('Re-synced ${sub.subscriptionId} to $url');
+        }
+      }
+    }
+
+    // Then perform health checks on all connections
     final futures = _connections.values.map(
       (conn) => conn.checkHealth(force: force),
     );
