@@ -4,11 +4,8 @@ import 'dart:isolate';
 import 'package:models/models.dart';
 import 'package:purplebase/src/utils.dart';
 import 'package:purplebase/src/db.dart';
-import 'package:purplebase/src/notifiers.dart';
-import 'package:purplebase/src/pool/websocket_pool.dart';
-import 'package:purplebase/src/pool/state/pool_state.dart';
-import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
-import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
+import 'package:purplebase/src/pool/pool.dart';
+import 'package:purplebase/src/pool/state.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as path;
 
@@ -21,32 +18,13 @@ void isolateEntryPoint(List args) {
 
   // Create a receive port for incoming messages
   final receivePort = ReceivePort();
-
-  void Function()? eventCloseFn;
-  void Function()? stateCloseFn;
   StreamSubscription? sub;
 
-  // Create notifiers
-  final eventNotifier = RelayEventNotifier();
-  final stateNotifier = PoolStateNotifier(
-    throttleDuration: config.streamingBufferWindow,
-  );
+  // Track which subscriptions should send QueryResultMessage
+  // Only streaming and background queries need this
+  final Set<String> streamingSubscriptions = {};
 
-  // Create debug notifier with callback to send messages to main isolate
-  final debugNotifier = DebugNotifier();
-  debugNotifier.addListener((message) {
-    if (message != null) {
-      mainSendPort.send(message);
-    }
-  });
-
-  final pool = WebSocketPool(
-    config: config,
-    eventNotifier: eventNotifier,
-    stateNotifier: stateNotifier,
-    debugNotifier: debugNotifier,
-  );
-
+  // Initialize database first
   Database? db;
   try {
     if (config.databasePath != null) {
@@ -56,46 +34,37 @@ void isolateEntryPoint(List args) {
       db = sqlite3.openInMemory();
     }
     db.initialize();
-
-    // Send SendPort AFTER database is initialized
-    mainSendPort.send(receivePort.sendPort);
   } catch (e) {
     mainSendPort.send(DebugMessage('ERROR: Failed to open database - $e'));
     // Don't send SendPort if initialization failed
     return;
   }
 
-  // Listen for relay events (data channel)
-  eventCloseFn = eventNotifier.addListener((event) {
-    if (event case EventsReceived(
-      :final events,
-      :final req,
-      :final relaysForIds,
-    )) {
-      mainSendPort.send(
-        DebugMessage(
-          '[isolate] Received ${events.length} events for ${req.subscriptionId}',
-        ),
-      );
-      final ids = db!.save(events, relaysForIds, config, verifier);
-      mainSendPort.send(
-        DebugMessage('[isolate] Saved ${ids.length} events to DB'),
-      );
-      mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
-      mainSendPort.send(
-        DebugMessage('[isolate] Sent QueryResultMessage to main isolate'),
-      );
-    }
-    // Handle notices if needed
-    // if (event case NoticeReceived(:final message, :final relayUrl)) {
-    //   mainSendPort.send(InfoMessage('NOTICE from $relayUrl: $message'));
-    // }
-  });
+  // Create pool with callbacks (after db is initialized)
+  final pool = RelayPool(
+    config: config,
+    onStateChange: (state) {
+      mainSendPort.send(PoolStateMessage(state));
+    },
+    onEvents: ({
+      required Request req,
+      required List<Map<String, dynamic>> events,
+      required Map<String, Set<String>> relaysForIds,
+    }) {
+      if (events.isEmpty) return;
 
-  // Listen for pool state updates (meta channel)
-  stateCloseFn = stateNotifier.addListener((state) {
-    mainSendPort.send(PoolStateMessage(state));
-  });
+      final ids = db!.save(events.toSet(), relaysForIds, config, verifier);
+
+      // Only send QueryResultMessage for streaming/background queries
+      // Non-streaming foreground queries return data directly via IsolateResponse
+      if (streamingSubscriptions.contains(req.subscriptionId)) {
+        mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
+      }
+    },
+  );
+
+  // Send SendPort AFTER database and pool are initialized
+  mainSendPort.send(receivePort.sendPort);
 
   // Listen for messages from main isolate (UI)
   sub = receivePort.listen((message) async {
@@ -148,6 +117,11 @@ void isolateEntryPoint(List args) {
         // REMOTE
 
         case RemoteQueryIsolateOperation(:final req, :final source):
+          // Track streaming and background queries
+          if (source.stream || source.background) {
+            streamingSubscriptions.add(req.subscriptionId);
+          }
+
           final future = pool.query(req, source: source);
           if (source.background) {
             response = IsolateResponse(
@@ -158,6 +132,11 @@ void isolateEntryPoint(List args) {
             final result = await future;
             // No saving here, events are saved in the callback as query also emits
             response = IsolateResponse(success: true, result: result.decoded());
+
+            // Remove from tracking if not streaming (one-time query completed)
+            if (!source.stream) {
+              streamingSubscriptions.remove(req.subscriptionId);
+            }
           }
 
         case RemotePublishIsolateOperation(:final events, :final source):
@@ -166,6 +145,7 @@ void isolateEntryPoint(List args) {
 
         case RemoteCancelIsolateOperation(:final req):
           pool.unsubscribe(req);
+          streamingSubscriptions.remove(req.subscriptionId);
           response = IsolateResponse(success: true);
 
         // ISOLATE
@@ -173,8 +153,6 @@ void isolateEntryPoint(List args) {
         case CloseIsolateOperation():
           db?.dispose();
           pool.dispose();
-          eventCloseFn?.call();
-          stateCloseFn?.call();
           response = IsolateResponse(success: true);
           Future.microtask(() => sub?.cancel());
       }

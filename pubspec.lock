@@ -376,15 +376,6 @@ packages:
       relative: true
     source: path
     version: "0.3.3"
-  nip44:
-    dependency: transitive
-    description:
-      path: dart
-      ref: "3b40d453c772ad10b57b81762d5b56e80aa1facb"
-      resolved-ref: "3b40d453c772ad10b57b81762d5b56e80aa1facb"
-      url: "https://github.com/paulmillr/nip44.git"
-    source: git
-    version: "1.0.0"
   node_preamble:
     dependency: transitive
     description:

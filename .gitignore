@@ -10,5 +10,4 @@ test/.dart_tool/
 *.db-shm
 *.db-wal
 
-rely/
 test/support/

@@ -1,26 +1,22 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
-import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
 import '../helpers.dart';
 
-/// Tests for querying events
+/// Tests for query operations
 void main() {
   late Process? relayProcess;
-  late WebSocketPool pool;
-  late PoolStateNotifier stateNotifier;
-  late RelayEventNotifier eventNotifier;
-  late StorageConfiguration config;
+  late RelayPool pool;
+  late PoolStateCapture stateCapture;
+  late List<Map<String, dynamic>> receivedEvents;
   late ProviderContainer container;
   late Bip340PrivateKeySigner signer;
 
-  const relayPort = 3339;
+  const relayPort = 3338;
   const relayUrl = 'ws://localhost:$relayPort';
 
   setUpAll(() async {
@@ -31,45 +27,33 @@ void main() {
     );
     final tempConfig = StorageConfiguration(
       skipVerification: true,
-      relayGroups: {
+      defaultRelays: {
         'temp': {'wss://temp.com'},
       },
-      defaultRelayGroup: 'temp',
+      defaultQuerySource: const LocalAndRemoteSource(
+        relays: 'temp',
+        stream: false,
+      ),
     );
     await tempContainer.read(initializationProvider(tempConfig).future);
 
-    relayProcess = await Process.start('test/support/test-relay', [
-      '-port',
-      relayPort.toString(),
-    ]);
-
-    relayProcess!.stdout.transform(utf8.decoder).listen((data) {});
-    relayProcess!.stderr.transform(utf8.decoder).listen((data) {});
-
-    await Future.delayed(Duration(milliseconds: 500));
+    // Start test relay once for all tests
+    relayProcess = await startTestRelay(relayPort);
   });
 
   setUp(() async {
     container = ProviderContainer();
+    stateCapture = PoolStateCapture();
+    receivedEvents = [];
 
-    config = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {relayUrl},
-      },
-      defaultRelayGroup: 'test',
-      responseTimeout: Duration(seconds: 5),
-    );
+    final config = testConfig(relayUrl);
 
-    stateNotifier = PoolStateNotifier(
-      throttleDuration: config.streamingBufferWindow,
-    );
-    eventNotifier = RelayEventNotifier();
-
-    pool = WebSocketPool(
+    pool = RelayPool(
       config: config,
-      stateNotifier: stateNotifier,
-      eventNotifier: eventNotifier,
+      onStateChange: stateCapture.onState,
+      onEvents: ({required req, required events, required relaysForIds}) {
+        receivedEvents.addAll(events);
+      },
     );
 
     signer = Bip340PrivateKeySigner(
@@ -77,6 +61,9 @@ void main() {
       container.read(refProvider),
     );
     await signer.signIn();
+
+    // Clear relay state between tests
+    await relayProcess!.clear();
   });
 
   tearDown(() {
@@ -88,200 +75,109 @@ void main() {
     await relayProcess?.exitCode;
   });
 
-  test('should query events and receive responses', () async {
-    // First publish an event
-    final note = await PartialNote('Query test event').signWith(signer);
-    await pool.publish([
-      note.toMap(),
-    ], source: RemoteSource(relayUrls: {relayUrl}));
+  test('should execute foreground query and return published event', () async {
+    // First publish an event so we have something to query
+    final note = await PartialNote(
+      'foreground query test ${DateTime.now().millisecondsSinceEpoch}',
+    ).signWith(signer);
+    await pool.publish([note.toMap()], source: RemoteSource(relays: relayUrl));
 
-    await Future.delayed(Duration(milliseconds: 200));
-
-    // Query for it
     final req = Request([
-      RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      RequestFilter(kinds: {1}, ids: {note.id}),
     ]);
 
-    final events = await pool.query(
+    final result = await pool.query(
       req,
-      source: RemoteSource(relayUrls: {relayUrl}),
+      source: RemoteSource(relays: relayUrl),
     );
 
-    expect(events, isNotEmpty, reason: 'Should receive events');
-    expect(
-      events.any((e) => e['content'] == 'Query test event'),
-      isTrue,
-      reason: 'Should find the published event',
-    );
+    // Verify we got the specific event back
+    expect(result, isNotEmpty, reason: 'Should return published event');
+    expect(result.first['id'], equals(note.id), reason: 'Should return correct event ID');
+    expect(result.first['content'], contains('foreground query test'));
   });
 
-  test('should handle event roundtrip (publish then query)', () async {
-    final testContent =
-        'Roundtrip test ${DateTime.now().millisecondsSinceEpoch}';
-    final note = await PartialNote(testContent).signWith(signer);
-    final event = note.toMap();
-
-    // Publish
-    await pool.publish([event], source: RemoteSource(relayUrls: {relayUrl}));
-
-    await Future.delayed(Duration(milliseconds: 200));
-
-    // Query
-    final req = Request([
-      RequestFilter(kinds: {1}, authors: {signer.pubkey}),
-    ]);
-
-    final events = await pool.query(
-      req,
-      source: RemoteSource(relayUrls: {relayUrl}),
-    );
-
-    expect(
-      events.any((e) => e['content'] == testContent),
-      isTrue,
-      reason: 'Should find published event in query results',
-    );
-  });
-
-  test('should handle event deduplication', () async {
-    // Publish same event to relay
-    final note = await PartialNote('Dedup test').signWith(signer);
-    final event = note.toMap();
-
-    await pool.publish([event], source: RemoteSource(relayUrls: {relayUrl}));
-
-    await Future.delayed(Duration(milliseconds: 200));
-
-    // Query with streaming to receive events
-    final req = Request([
-      RequestFilter(kinds: {1}, authors: {signer.pubkey}),
-    ]);
-
-    final receivedEvents = <String>[];
-
-    eventNotifier.addListener((relayEvent) {
-      if (relayEvent case EventsReceived(:final events)) {
-        for (final event in events) {
-          receivedEvents.add(event['id'] as String);
-        }
-      }
-    });
-
-    await pool.query(
-      req,
-      source: RemoteSource(relayUrls: {relayUrl}, stream: true),
-    );
-
-    await Future.delayed(Duration(seconds: 1));
-
-    // Events should be received
-    expect(receivedEvents, isNotEmpty, reason: 'Should receive events');
-
-    pool.unsubscribe(req);
-  });
-
-  test('should handle query with filters', () async {
-    // Publish multiple events with different kinds
-    final note1 = await PartialNote('Kind 1 event').signWith(signer);
-
-    await pool.publish([
-      note1.toMap(),
-    ], source: RemoteSource(relayUrls: {relayUrl}));
-
-    await Future.delayed(Duration(milliseconds: 200));
-
-    // Query for specific kind
-    final req = Request([
-      RequestFilter(kinds: {1}, authors: {signer.pubkey}),
-    ]);
-
-    final events = await pool.query(
-      req,
-      source: RemoteSource(relayUrls: {relayUrl}),
-    );
-
-    // All events should match the filter
-    for (final event in events) {
-      if (event['pubkey'] == signer.pubkey) {
-        expect(event['kind'], equals(1));
-      }
-    }
-  });
-
-  test('should handle empty query results', () async {
-    // Use a valid hex pubkey that doesn't exist
-    final req = Request([
-      RequestFilter(kinds: {999}, authors: {'0' * 64}),
-    ]);
-
-    final events = await pool.query(
-      req,
-      source: RemoteSource(relayUrls: {relayUrl}, stream: false),
-    );
-
-    expect(events, isEmpty, reason: 'Should return empty for no matches');
-  });
-
-  test('should handle query timeout', () async {
-    const offlineRelay = 'ws://localhost:65536';
-
-    final shortTimeoutConfig = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {offlineRelay},
-      },
-      defaultRelayGroup: 'test',
-      responseTimeout: Duration(milliseconds: 100),
-    );
-
-    final timeoutPool = WebSocketPool(
-      config: shortTimeoutConfig,
-      stateNotifier: stateNotifier,
-      eventNotifier: eventNotifier,
-    );
-
+  test('should execute background query', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    final events = await timeoutPool.query(
+    final result = await pool.query(
       req,
-      source: RemoteSource(relayUrls: {offlineRelay}),
+      source: RemoteSource(relays: relayUrl, background: true),
     );
 
-    expect(events, isEmpty, reason: 'Timeout should return empty');
+    // Background queries return empty immediately
+    expect(result, isEmpty);
 
-    timeoutPool.dispose();
+    // Wait for subscription to be created
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
+
+    expect(state.requests.containsKey(req.subscriptionId), isTrue);
+
+    pool.unsubscribe(req);
   });
 
-  test('should track event count in subscription state', () async {
-    // Publish some events
-    for (int i = 0; i < 3; i++) {
-      final note = await PartialNote('Event $i').signWith(signer);
-      await pool.publish([
-        note.toMap(),
-      ], source: RemoteSource(relayUrls: {relayUrl}));
-    }
-
-    await Future.delayed(Duration(milliseconds: 300));
-
-    // Query them
+  test('should execute streaming query', () async {
     final req = Request([
-      RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      RequestFilter(kinds: {1}),
     ]);
 
-    await pool.query(req, source: RemoteSource(relayUrls: {relayUrl}));
+    // Start streaming query
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    await Future.delayed(Duration(milliseconds: 300));
+    // Wait for subscription and EOSE
+    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
 
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
-
+    final subscription = state.requests[req.subscriptionId];
     expect(subscription, isNotNull);
-    expect(
-      subscription!.totalEventsReceived,
-      greaterThanOrEqualTo(0),
-      reason: 'Should track event count',
+    expect(subscription!.isStreaming, isTrue);
+
+    pool.unsubscribe(req);
+  });
+
+  test('should return empty for empty filters', () async {
+    final req = Request(<RequestFilter<Note>>[]);
+
+    final result = await pool.query(
+      req,
+      source: RemoteSource(relays: relayUrl),
     );
+
+    expect(result, isEmpty);
+  });
+
+  test('should return empty for empty relay URLs', () async {
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    final result = await pool.query(
+      req,
+      source: RemoteSource(),
+    );
+
+    expect(result, isEmpty);
+  });
+
+  test('should call onEvents callback with correct event data', () async {
+    // First publish an event
+    final note = await PartialNote(
+      'callback test ${DateTime.now().millisecondsSinceEpoch}',
+    ).signWith(signer);
+    await pool.publish([note.toMap()], source: RemoteSource(relays: relayUrl));
+
+    // Then query for it
+    final req = Request([
+      RequestFilter(kinds: {1}, ids: {note.id}),
+    ]);
+
+    await pool.query(req, source: RemoteSource(relays: relayUrl));
+
+    // Verify callback received the event with correct data
+    expect(receivedEvents, isNotEmpty, reason: 'onEvents should be called');
+    final matchingEvent = receivedEvents.where((e) => e['id'] == note.id);
+    expect(matchingEvent, isNotEmpty, reason: 'Should receive the published event');
+    expect(matchingEvent.first['content'], contains('callback test'));
   });
 }

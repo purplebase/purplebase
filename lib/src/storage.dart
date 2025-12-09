@@ -7,13 +7,10 @@ import 'package:path/path.dart' as path;
 import 'package:purplebase/purplebase.dart';
 import 'package:purplebase/src/isolate.dart';
 import 'package:purplebase/src/utils.dart';
-import 'package:riverpod/riverpod.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 class PurplebaseStorageNotifier extends StorageNotifier {
-  final Ref ref;
-
-  PurplebaseStorageNotifier(this.ref);
+  PurplebaseStorageNotifier(super.ref);
 
   Database? db;
   Isolate? _isolate;
@@ -65,8 +62,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         case QueryResultMessage(:final request, :final savedIds)
             when savedIds.isNotEmpty:
           state = InternalStorageData(updatedIds: savedIds, req: request);
-        case InfoMessage infoMessage:
-          ref.read(infoNotifierProvider.notifier).emit(infoMessage);
         case PoolStateMessage poolStateMessage:
           ref.read(poolStateProvider.notifier).emit(poolStateMessage.poolState);
         case RelayStatusMessage relayStatusMessage:
@@ -212,7 +207,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Request<E> req, {
     Source? source,
     Set<String>? onIds,
-    String? subscriptionPrefix, // For API compatibility with models library
+    String? subscriptionPrefix,
   }) async {
     source ??= config.defaultQuerySource;
 
@@ -304,6 +299,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     try {
       await _initCompleter!.future.timeout(
+        // TODO: Configurable
         Duration(seconds: 12),
         onTimeout: () => IsolateResponse(success: false, error: 'Timeout'),
       );

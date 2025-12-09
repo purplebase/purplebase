@@ -8,7 +8,7 @@ import 'package:purplebase/src/isolate.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
-import 'helpers.dart';
+import '../helpers.dart';
 
 Future<void> main() async {
   Process? relayProcess;
@@ -48,17 +48,27 @@ Future<void> main() async {
     );
     await signer.signIn();
 
+    // Use unique timestamps to ensure fresh event IDs each run
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
     testNote1 = await PartialNote(
-      'Test note for remote operations',
+      'Test note for remote operations $timestamp',
       tags: {'test', 'remote'},
     ).signWith(signer);
 
     testNote2 = await PartialNote(
-      'Second test note for batch operations',
+      'Second test note for batch operations $timestamp',
       tags: {'test', 'batch'},
     ).signWith(signer);
 
     testEvents = {testNote1, testNote2};
+  }
+
+  /// Clear relay state by sending CLEAR_DB event
+  Future<void> clearRelay(StorageNotifier storage) async {
+    final clearNote = await PartialNote('CLEAR_DB').signWith(signer);
+    await storage.publish({clearNote}, source: RemoteSource(relays: relayUrl));
+    await Future.delayed(Duration(milliseconds: 100));
   }
 
   group('RemotePublishIsolateOperation', () {
@@ -74,13 +84,16 @@ Future<void> main() async {
 
       final config = StorageConfiguration(
         skipVerification: true,
-        relayGroups: {
+        defaultRelays: {
           'primary': {relayUrl},
           'secondary': {relayUrl},
           'both': {relayUrl}, // For now, using single relay for simplicity
           'offline': {'ws://127.0.0.1:65534'}, // Non-existent relay
         },
-        defaultRelayGroup: 'primary',
+        defaultQuerySource: const LocalAndRemoteSource(
+          relays: 'primary',
+          stream: false,
+        ),
         responseTimeout: Duration(seconds: 5),
       );
 
@@ -103,7 +116,7 @@ Future<void> main() async {
     test('should publish single event to primary relay', () async {
       final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'primary'));
+      }, source: RemoteSource(relays: 'primary'));
 
       expect(response, isA<PublishResponse>());
 
@@ -121,7 +134,7 @@ Future<void> main() async {
       final response = await storage.publish({
         testNote1,
         testNote2,
-      }, source: RemoteSource(group: 'primary'));
+      }, source: RemoteSource(relays: 'primary'));
 
       expect(response, isA<PublishResponse>());
 
@@ -142,7 +155,7 @@ Future<void> main() async {
     test('should publish to multiple relays', () async {
       final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'both'));
+      }, source: RemoteSource(relays: 'both'));
 
       expect(response, isA<PublishResponse>());
 
@@ -159,14 +172,14 @@ Future<void> main() async {
     test('should handle publish to offline relay gracefully', () async {
       final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'offline'));
+      }, source: RemoteSource(relays: 'offline'));
 
       expect(response, isA<PublishResponse>());
 
       // Verify publish returns results even for offline relays
       expect(response.results, isNotEmpty);
       expect(response.results.containsKey(testNote1.id), isTrue);
-      
+
       // Offline relays should report accepted=false
       final eventStates = response.results[testNote1.id]!;
       expect(eventStates, isNotEmpty);
@@ -176,7 +189,7 @@ Future<void> main() async {
     test('should handle empty event set', () async {
       final response = await storage.publish(
         <Model<dynamic>>{},
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(response, isA<PublishResponse>());
@@ -185,8 +198,11 @@ Future<void> main() async {
       expect(response.results, isEmpty);
     });
 
-    test('should use default relay group when no source specified', () async {
-      final response = await storage.publish({testNote1});
+    test('should publish using explicit relay identifier when provided', () async {
+      final response = await storage.publish(
+        {testNote1},
+        source: RemoteSource(relays: 'primary'),
+      );
 
       expect(response, isA<PublishResponse>());
 
@@ -206,7 +222,7 @@ Future<void> main() async {
 
       final response = await storage.publish({
         largeNote,
-      }, source: RemoteSource(group: 'primary'));
+      }, source: RemoteSource(relays: 'primary'));
 
       expect(response, isA<PublishResponse>());
 
@@ -234,13 +250,16 @@ Future<void> main() async {
 
       final config = StorageConfiguration(
         skipVerification: true,
-        relayGroups: {
+        defaultRelays: {
           'primary': {relayUrl},
           'secondary': {relayUrl},
           'both': {relayUrl},
           'offline': {'ws://127.0.0.1:65534'},
         },
-        defaultRelayGroup: 'primary',
+        defaultQuerySource: const LocalAndRemoteSource(
+          relays: 'primary',
+          stream: false,
+        ),
         responseTimeout: Duration(milliseconds: 200),
       );
 
@@ -250,8 +269,14 @@ Future<void> main() async {
       // Create test events after initialization
       await createTestEvents(container);
 
+      // Clear relay state before publishing
+      await clearRelay(storage);
+
       // Publish some test events first so we can query them
-      final publishResponse = await storage.publish(testEvents);
+      final publishResponse = await storage.publish(
+        testEvents,
+        source: RemoteSource(relays: 'primary'),
+      );
 
       // Assert all events were accepted by the relay
       for (final event in testEvents) {
@@ -284,7 +309,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       // Events should be saved automatically from the remote query
@@ -304,7 +329,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(result, isNotEmpty);
@@ -316,7 +341,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(result, isNotEmpty);
@@ -332,7 +357,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(result, isNotEmpty);
@@ -343,7 +368,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'both'),
+        source: RemoteSource(relays: 'both'),
       );
 
       expect(result, isNotEmpty);
@@ -361,7 +386,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(result.length, lessThanOrEqualTo(10));
@@ -373,7 +398,7 @@ Future<void> main() async {
       // Should not throw when querying offline relay
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'offline'),
+        source: RemoteSource(relays: 'offline'),
       );
 
       // Result might be empty or contain cached data
@@ -385,7 +410,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(result, isA<List>());
@@ -405,7 +430,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'primary'),
+        source: RemoteSource(relays: 'primary'),
       );
 
       expect(result.length, lessThanOrEqualTo(5));
@@ -425,17 +450,49 @@ Future<void> main() async {
 
     test('should deduplicate events from multiple relays', () async {
       // Publish the same event to both relays
-      await storage.publish({testNote1}, source: RemoteSource(group: 'both'));
+      await storage.publish({testNote1}, source: RemoteSource(relays: 'both'));
 
       final request = RequestFilter(ids: {testNote1.id}).toRequest();
 
       final result = await storage.query(
         request,
-        source: RemoteSource(group: 'both'),
+        source: RemoteSource(relays: 'both'),
       );
 
       // Should get only one copy despite querying both relays
       expect(result.where((e) => e.id == testNote1.id), hasLength(1));
+    });
+
+    test('should persist remote query results to local storage', () async {
+      // Create a unique note for this test
+      final uniqueNote = await PartialNote(
+        'Local cache test ${DateTime.now().millisecondsSinceEpoch}',
+        tags: {'cache_test'},
+      ).signWith(signer);
+
+      // Publish to relay
+      final publishResponse = await storage.publish(
+        {uniqueNote},
+        source: RemoteSource(relays: 'primary'),
+      );
+      expect(publishResponse.results[uniqueNote.id]?.first.accepted, isTrue);
+
+      // Query from remote - this should save to local storage
+      final remoteResult = await storage.query(
+        RequestFilter(ids: {uniqueNote.id}).toRequest(),
+        source: RemoteSource(relays: 'primary'),
+      );
+      expect(remoteResult, isNotEmpty, reason: 'Should find event on remote');
+      expect(remoteResult.first.id, equals(uniqueNote.id));
+
+      // Now query from local storage - event should be persisted
+      final localResult = await storage.query(
+        RequestFilter(ids: {uniqueNote.id}).toRequest(),
+        source: LocalSource(),
+      );
+      expect(localResult, isNotEmpty, reason: 'Event should be persisted locally after remote query');
+      expect(localResult.first.id, equals(uniqueNote.id));
+      expect(localResult.first.event.content, contains('Local cache test'));
     });
 
     test(
@@ -449,7 +506,7 @@ Future<void> main() async {
 
         // This should throw an IsolateException when sent across the isolate boundary
         expect(
-          () => storage.query(request, source: RemoteSource(group: 'primary')),
+          () => storage.query(request, source: RemoteSource(relays: 'primary')),
           throwsA(isA<IsolateException>()),
         );
       },
@@ -469,10 +526,13 @@ Future<void> main() async {
 
       final config = StorageConfiguration(
         skipVerification: true,
-        relayGroups: {
+        defaultRelays: {
           'primary': {relayUrl},
         },
-        defaultRelayGroup: 'primary',
+        defaultQuerySource: const LocalAndRemoteSource(
+          relays: 'primary',
+          stream: false,
+        ),
       );
 
       await container.read(initializationProvider(config).future);
@@ -490,31 +550,51 @@ Future<void> main() async {
     test('should cancel active subscription', () async {
       final request = RequestFilter(authors: {signer.pubkey}).toRequest();
 
-      // Start a subscription
-      storage.query(request, source: RemoteSource(group: 'primary'));
+      // Start a subscription (streaming to keep it active)
+      final queryFuture = storage.query(
+        request,
+        source: RemoteSource(relays: 'primary', stream: true),
+      );
 
-      // Cancel the subscription (this should not throw)
+      // Give time for subscription to start
+      await Future.delayed(Duration(milliseconds: 100));
+
+      // Cancel the subscription - should complete without error
       await storage.cancel(request);
 
-      expect(true, isTrue); // If we get here, cancel worked
+      // Verify cancel completed successfully by checking we can still use storage
+      final newRequest = RequestFilter(kinds: {1}).toRequest();
+      final result = await storage.query(
+        newRequest,
+        source: RemoteSource(relays: 'primary'),
+      );
+      expect(result, isA<List>(), reason: 'Storage should still be functional after cancel');
+
+      // Ignore the streaming future - it may complete or throw after cancel
+      queryFuture.ignore();
     });
 
     test('should handle canceling non-existent subscription', () async {
       final request = RequestFilter(authors: {signer.pubkey}).toRequest();
 
-      // Try to cancel a subscription that doesn't exist
-      await storage.cancel(request);
-
-      expect(true, isTrue); // Should not throw
+      // Try to cancel a subscription that doesn't exist - should complete without throwing
+      await expectLater(
+        storage.cancel(request),
+        completes,
+        reason: 'Canceling non-existent subscription should not throw',
+      );
     });
 
     test('should handle cancel with offline relay', () async {
       final config = StorageConfiguration(
         skipVerification: true,
-        relayGroups: {
+        defaultRelays: {
           'offline': {'ws://127.0.0.1:65534'},
         },
-        defaultRelayGroup: 'offline',
+        defaultQuerySource: const LocalAndRemoteSource(
+          relays: 'offline',
+          stream: false,
+        ),
       );
 
       await container.read(initializationProvider(config).future);
@@ -522,10 +602,12 @@ Future<void> main() async {
 
       final request = RequestFilter(authors: {signer.pubkey}).toRequest();
 
-      // Should not throw when canceling from offline relay
-      await offlineStorage.cancel(request);
-
-      expect(true, isTrue);
+      // Should complete without throwing when canceling from offline relay
+      await expectLater(
+        offlineStorage.cancel(request),
+        completes,
+        reason: 'Cancel on offline relay should not throw',
+      );
     });
   });
 
@@ -542,7 +624,7 @@ Future<void> main() async {
 
       final config = StorageConfiguration(
         skipVerification: true,
-        relayGroups: {
+        defaultRelays: {
           'primary': {relayUrl},
           'invalid': {'invalid-url'},
           'mixed': {
@@ -550,7 +632,10 @@ Future<void> main() async {
             'ws://127.0.0.1:65534',
           }, // Working + offline relay
         },
-        defaultRelayGroup: 'primary',
+        defaultQuerySource: const LocalAndRemoteSource(
+          relays: 'primary',
+          stream: false,
+        ),
         responseTimeout: Duration(milliseconds: 200),
       );
 
@@ -569,7 +654,7 @@ Future<void> main() async {
     test('should handle invalid relay URLs gracefully', () async {
       final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'invalid'));
+      }, source: RemoteSource(relays: 'invalid'));
 
       // Should not throw, just return a response
       expect(response, isA<PublishResponse>());
@@ -585,14 +670,14 @@ Future<void> main() async {
     test('should handle mixed valid/invalid relays', () async {
       final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'mixed'));
+      }, source: RemoteSource(relays: 'mixed'));
 
       expect(response, isA<PublishResponse>());
 
       // For mixed relays, we should have results from both
       expect(response.results, isNotEmpty);
       expect(response.results.containsKey(testNote1.id), isTrue);
-      
+
       // The working relay should accept, offline relay should reject
       final eventStates = response.results[testNote1.id]!;
       expect(eventStates, isNotEmpty);
@@ -604,7 +689,7 @@ Future<void> main() async {
       // Test with a syntactically invalid URL that should fail immediately
       final response = await storage.publish({
         testNote1,
-      }, source: RemoteSource(group: 'invalid'));
+      }, source: RemoteSource(relays: 'invalid'));
 
       expect(response, isA<PublishResponse>());
 
@@ -622,7 +707,7 @@ Future<void> main() async {
 
       final response = await storage.publish({
         note,
-      }, source: RemoteSource(group: 'primary'));
+      }, source: RemoteSource(relays: 'primary'));
 
       expect(response, isA<PublishResponse>());
 

@@ -1,11 +1,7 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
-import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
-import 'package:purplebase/src/pool/state/subscription_phase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -14,10 +10,8 @@ import '../helpers.dart';
 /// Tests for subscription management
 void main() {
   late Process? relayProcess;
-  late WebSocketPool pool;
-  late PoolStateNotifier stateNotifier;
-  late RelayEventNotifier eventNotifier;
-  late StorageConfiguration config;
+  late RelayPool pool;
+  late PoolStateCapture stateCapture;
   late ProviderContainer container;
   late Bip340PrivateKeySigner signer;
 
@@ -32,46 +26,30 @@ void main() {
     );
     final tempConfig = StorageConfiguration(
       skipVerification: true,
-      relayGroups: {
+      defaultRelays: {
         'temp': {'wss://temp.com'},
       },
-      defaultRelayGroup: 'temp',
+      defaultQuerySource: const LocalAndRemoteSource(
+        relays: 'temp',
+        stream: false,
+      ),
     );
     await tempContainer.read(initializationProvider(tempConfig).future);
 
-    relayProcess = await Process.start('test/support/test-relay', [
-      '-port',
-      relayPort.toString(),
-    ]);
-
-    relayProcess!.stdout.transform(utf8.decoder).listen((data) {});
-    relayProcess!.stderr.transform(utf8.decoder).listen((data) {});
-
-    await Future.delayed(Duration(milliseconds: 500));
+    // Start test relay once for all tests
+    relayProcess = await startTestRelay(relayPort);
   });
 
   setUp(() async {
     container = ProviderContainer();
+    stateCapture = PoolStateCapture();
 
-    config = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {relayUrl},
-      },
-      defaultRelayGroup: 'test',
-      responseTimeout: Duration(seconds: 5),
-      streamingBufferWindow: Duration(milliseconds: 100),
-    );
+    final config = testConfig(relayUrl);
 
-    stateNotifier = PoolStateNotifier(
-      throttleDuration: config.streamingBufferWindow,
-    );
-    eventNotifier = RelayEventNotifier();
-
-    pool = WebSocketPool(
+    pool = RelayPool(
       config: config,
-      stateNotifier: stateNotifier,
-      eventNotifier: eventNotifier,
+      onStateChange: stateCapture.onState,
+      onEvents: ({required req, required events, required relaysForIds}) {},
     );
 
     signer = Bip340PrivateKeySigner(
@@ -79,6 +57,9 @@ void main() {
       container.read(refProvider),
     );
     await signer.signIn();
+
+    // Clear relay state between tests
+    await relayProcess!.clear();
   });
 
   tearDown(() {
@@ -90,16 +71,16 @@ void main() {
     await relayProcess?.exitCode;
   });
 
-  test('should create subscription with send()', () async {
+  test('should create subscription with query()', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
+    // Wait for subscription to be created
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
+    final subscription = state.requests[req.subscriptionId];
 
     expect(subscription, isNotNull, reason: 'Subscription should exist');
     expect(
@@ -108,9 +89,9 @@ void main() {
       reason: 'Subscription ID should match',
     );
     expect(
-      subscription.relayStatus.containsKey(relayUrl),
+      subscription.targetRelays.contains(relayUrl),
       isTrue,
-      reason: 'Should have relay status',
+      reason: 'Should have target relay',
     );
 
     pool.unsubscribe(req);
@@ -123,18 +104,16 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relayUrls: {relayUrl}, background: true),
+      source: RemoteSource(relays: relayUrl, background: true),
     );
 
     // Background queries return empty immediately
     expect(result, isEmpty, reason: 'Background query should return empty');
 
-    await Future.delayed(Duration(milliseconds: 500));
-
-    // But subscription should be created
-    final state = stateNotifier.currentState;
+    // Wait for subscription to be created
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
     expect(
-      state.subscriptions.containsKey(req.subscriptionId),
+      state.requests.containsKey(req.subscriptionId),
       isTrue,
       reason: 'Background subscription should be created',
     );
@@ -161,19 +140,14 @@ void main() {
     ]);
 
     // Start streaming
-    pool.query(req, source: RemoteSource(relayUrls: {relayUrl}, stream: true));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    await Future.delayed(Duration(milliseconds: 500));
-
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
+    // Wait for subscription
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
+    final subscription = state.requests[req.subscriptionId];
 
     expect(subscription, isNotNull);
-    expect(
-      subscription!.phase,
-      anyOf(SubscriptionPhase.eose, SubscriptionPhase.streaming),
-      reason: 'Subscription should be in eose or streaming phase',
-    );
+    expect(subscription!.isStreaming, isTrue, reason: 'Should be streaming');
 
     pool.unsubscribe(req);
   });
@@ -183,30 +157,27 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
+    // Wait for EOSE to ensure subscription is fully established
+    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
+    final subscription = state.requests[req.subscriptionId];
 
     expect(subscription, isNotNull);
-    expect(subscription!.totalEventsReceived, greaterThanOrEqualTo(0));
+    expect(subscription!.eventCount, greaterThanOrEqualTo(0));
     expect(subscription.startedAt, isNotNull);
-    expect(subscription.relayStatus, isNotEmpty);
+    expect(subscription.targetRelays, isNotEmpty);
 
     pool.unsubscribe(req);
   });
 
-  test('should handle send with empty relay URLs', () async {
+  test('should handle query with empty relay URLs', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    expect(
-      () async => await pool.send(req, relayUrls: {}),
-      returnsNormally,
-      reason: 'Should handle empty relay URLs gracefully',
-    );
+    final result = await pool.query(req, source: RemoteSource());
+    expect(result, isEmpty, reason: 'Should return empty for empty relay URLs');
   });
 
   test('should handle multiple subscriptions', () async {
@@ -217,19 +188,20 @@ void main() {
       RequestFilter(kinds: {2}),
     ]);
 
-    await pool.send(req1, relayUrls: {relayUrl});
-    await pool.send(req2, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req1, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req2, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
+    // Wait for both subscriptions
+    await stateCapture.waitForSubscription(req1.subscriptionId);
+    final state = await stateCapture.waitForSubscription(req2.subscriptionId);
 
     expect(
-      state.subscriptions.containsKey(req1.subscriptionId),
+      state.requests.containsKey(req1.subscriptionId),
       isTrue,
       reason: 'First subscription should exist',
     );
     expect(
-      state.subscriptions.containsKey(req2.subscriptionId),
+      state.requests.containsKey(req2.subscriptionId),
       isTrue,
       reason: 'Second subscription should exist',
     );
@@ -243,25 +215,186 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+    // Wait for subscription to be created
+    await stateCapture.waitForSubscription(req.subscriptionId);
 
     pool.unsubscribe(req);
-    await Future.delayed(Duration(milliseconds: 200));
 
-    final state = stateNotifier.currentState;
+    // Wait for subscription to be removed
+    final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
 
-    // Subscription should be removed or marked as inactive
-    final subscription = state.subscriptions[req.subscriptionId];
-    if (subscription != null) {
-      // If it still exists, it should have no active relays
-      expect(
-        subscription.relayStatus.values.every(
-          (s) => s.phase is! SubscriptionActive,
-        ),
-        isTrue,
-        reason: 'Unsubscribed subscription should have no active relays',
+    expect(
+      state.requests.containsKey(req.subscriptionId),
+      isFalse,
+      reason: 'Subscription should be removed after unsubscribe',
+    );
+  });
+
+  group('EOSE Handling', () {
+    test('should track EOSE received from relay', () async {
+      final req = Request([
+        RequestFilter(kinds: {1}),
+      ]);
+
+      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+      // Wait for EOSE
+      final state = await stateCapture.waitForEose(
+        req.subscriptionId,
+        relayUrl,
       );
-    }
+      final subscription = state.requests[req.subscriptionId];
+
+      expect(subscription, isNotNull);
+      expect(subscription!.eoseReceived, contains(relayUrl));
+
+      pool.unsubscribe(req);
+    });
+
+    test('should report status after EOSE', () async {
+      final req = Request([
+        RequestFilter(kinds: {1}),
+      ]);
+
+      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+      // Wait for EOSE
+      final state = await stateCapture.waitForEose(
+        req.subscriptionId,
+        relayUrl,
+      );
+      final subscription = state.requests[req.subscriptionId];
+
+      expect(subscription, isNotNull);
+      // When streaming and all EOSE received, statusText is 'streaming'
+      // Otherwise it shows 'N/M EOSE'
+      expect(
+        subscription!.statusText,
+        anyOf(equals('streaming'), contains('EOSE')),
+      );
+
+      pool.unsubscribe(req);
+    });
+  });
+
+  group('Subscription Lifecycle', () {
+    test('should complete foreground query after EOSE', () async {
+      final req = Request([
+        RequestFilter(kinds: {1}),
+      ]);
+
+      // Foreground query should complete after EOSE
+      // Note: stream: false is required for foreground (non-streaming) queries
+      final result = await pool.query(
+        req,
+        source: RemoteSource(relays: relayUrl, stream: false),
+      );
+
+      // Should return a list (may be empty)
+      expect(result, isA<List<Map<String, dynamic>>>());
+
+      // Wait for the unsubscribe state to be emitted
+      final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
+      expect(
+        state.requests.containsKey(req.subscriptionId),
+        isFalse,
+        reason: 'Foreground subscription should be cleaned up after completion',
+      );
+    });
+
+    test('should keep streaming subscription after EOSE', () async {
+      final req = Request([
+        RequestFilter(kinds: {1}),
+      ]);
+
+      // Streaming query
+      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+      // Wait for EOSE
+      await stateCapture.waitForEose(req.subscriptionId, relayUrl);
+
+      // Subscription should still exist
+      final state = stateCapture.lastState;
+      expect(
+        state?.requests.containsKey(req.subscriptionId),
+        isTrue,
+        reason: 'Streaming subscription should persist after EOSE',
+      );
+
+      pool.unsubscribe(req);
+    });
+
+    test('should handle cancel during active subscription', () async {
+      final req = Request([
+        RequestFilter(kinds: {1}),
+      ]);
+
+      // Start streaming
+      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+      // Wait for subscription
+      await stateCapture.waitForSubscription(req.subscriptionId);
+
+      // Cancel immediately
+      pool.unsubscribe(req);
+
+      // Should clean up
+      final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
+      expect(state.requests.containsKey(req.subscriptionId), isFalse);
+    });
+
+    test('should properly dispose all subscriptions on pool dispose', () async {
+      final req1 = Request([
+        RequestFilter(kinds: {1}),
+      ]);
+      final req2 = Request([
+        RequestFilter(kinds: {2}),
+      ]);
+
+      pool.query(req1, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req2, source: RemoteSource(relays: relayUrl, stream: true));
+
+      // Wait for subscriptions
+      await stateCapture.waitForSubscription(req1.subscriptionId);
+      await stateCapture.waitForSubscription(req2.subscriptionId);
+
+      // Dispose pool - should clean up all subscriptions
+      pool.dispose();
+
+      // No exception should be thrown
+    });
+  });
+
+  group('Event Count Tracking', () {
+    test('should track event count in subscription state', () async {
+      // First publish an event so we can receive it
+      final note = await PartialNote(
+        'Event count test ${DateTime.now().millisecondsSinceEpoch}',
+      ).signWith(signer);
+      await pool.publish([
+        note.toMap(),
+      ], source: RemoteSource(relays: relayUrl));
+
+      final req = Request([
+        RequestFilter(kinds: {1}, ids: {note.id}),
+      ]);
+
+      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+      // Wait for EOSE (events should be received before EOSE)
+      final state = await stateCapture.waitForEose(
+        req.subscriptionId,
+        relayUrl,
+      );
+      final subscription = state.requests[req.subscriptionId];
+
+      expect(subscription, isNotNull);
+      // Event count should be at least 1 (the event we published)
+      expect(subscription!.eventCount, greaterThanOrEqualTo(1));
+
+      pool.unsubscribe(req);
+    });
   });
 }

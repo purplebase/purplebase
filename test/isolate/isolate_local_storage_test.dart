@@ -3,7 +3,7 @@ import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
-import 'helpers.dart';
+import '../helpers.dart';
 
 Future<void> main() async {
   late ProviderContainer container;
@@ -24,11 +24,10 @@ Future<void> main() async {
 
     final config = StorageConfiguration(
       skipVerification: true,
-      relayGroups: {
+      defaultRelays: {
         'test': {'wss://test1.com', 'wss://test2.com'},
         'backup': {'wss://backup.com'},
       },
-      defaultRelayGroup: 'test',
       defaultQuerySource: LocalSource(),
     );
 

@@ -1,5 +1,5 @@
 import 'package:purplebase/src/isolate.dart';
-import 'package:purplebase/src/pool/state/pool_state.dart';
+import 'package:purplebase/src/pool/state.dart';
 import 'package:riverpod/riverpod.dart';
 
 /// StateNotifier that manages debug messages from the background isolate.
@@ -44,10 +44,6 @@ class InfoNotifier extends StateNotifier<InfoMessage?> {
     state = null;
   }
 }
-
-final infoNotifierProvider = StateNotifierProvider<InfoNotifier, InfoMessage?>(
-  (ref) => InfoNotifier(),
-);
 
 /// StateNotifier that manages pool state from the background isolate
 class PoolStateNotifierProvider extends StateNotifier<PoolState?> {

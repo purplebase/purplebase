@@ -18,10 +18,9 @@ void main() {
 
       final config = StorageConfiguration(
         skipVerification: true,
-        relayGroups: {
+        defaultRelays: {
           'test': {'wss://relay.test.com'},
         },
-        defaultRelayGroup: 'test',
       );
 
       await container.read(initializationProvider(config).future);

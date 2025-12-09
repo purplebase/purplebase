@@ -1,26 +1,20 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
-import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
 import '../helpers.dart';
 
-/// Tests for event publishing
+/// Tests for publish operations
 void main() {
   late Process? relayProcess;
-  late WebSocketPool pool;
-  late PoolStateNotifier stateNotifier;
-  late RelayEventNotifier eventNotifier;
-  late StorageConfiguration config;
+  late RelayPool pool;
   late ProviderContainer container;
   late Bip340PrivateKeySigner signer;
 
-  const relayPort = 3337;
+  const relayPort = 3339;
   const relayUrl = 'ws://localhost:$relayPort';
 
   setUpAll(() async {
@@ -31,45 +25,29 @@ void main() {
     );
     final tempConfig = StorageConfiguration(
       skipVerification: true,
-      relayGroups: {
+      defaultRelays: {
         'temp': {'wss://temp.com'},
       },
-      defaultRelayGroup: 'temp',
+      defaultQuerySource: const LocalAndRemoteSource(
+        relays: 'temp',
+        stream: false,
+      ),
     );
     await tempContainer.read(initializationProvider(tempConfig).future);
 
-    relayProcess = await Process.start('test/support/test-relay', [
-      '-port',
-      relayPort.toString(),
-    ]);
-
-    relayProcess!.stdout.transform(utf8.decoder).listen((data) {});
-    relayProcess!.stderr.transform(utf8.decoder).listen((data) {});
-
-    await Future.delayed(Duration(milliseconds: 500));
+    // Start test relay once for all tests
+    relayProcess = await startTestRelay(relayPort);
   });
 
   setUp(() async {
     container = ProviderContainer();
 
-    config = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {relayUrl},
-      },
-      defaultRelayGroup: 'test',
-      responseTimeout: Duration(seconds: 5),
-    );
+    final config = testConfig(relayUrl);
 
-    stateNotifier = PoolStateNotifier(
-      throttleDuration: config.streamingBufferWindow,
-    );
-    eventNotifier = RelayEventNotifier();
-
-    pool = WebSocketPool(
+    pool = RelayPool(
       config: config,
-      stateNotifier: stateNotifier,
-      eventNotifier: eventNotifier,
+      onStateChange: (_) {},
+      onEvents: ({required req, required events, required relaysForIds}) {},
     );
 
     signer = Bip340PrivateKeySigner(
@@ -77,6 +55,9 @@ void main() {
       container.read(refProvider),
     );
     await signer.signIn();
+
+    // Clear relay state between tests
+    await relayProcess!.clear();
   });
 
   tearDown(() {
@@ -88,144 +69,73 @@ void main() {
     await relayProcess?.exitCode;
   });
 
-  test('should publish events and receive OK responses', () async {
-    final note = await PartialNote('Test publish').signWith(signer);
-    final event = note.toMap();
+  test('should publish event successfully with acceptance confirmation', () async {
+    final note = await PartialNote(
+      'test publish ${DateTime.now().millisecondsSinceEpoch}',
+    ).signWith(signer);
 
-    final response = await pool.publish([
-      event,
-    ], source: RemoteSource(relayUrls: {relayUrl}));
-
-    expect(response, isA<PublishRelayResponse>());
-    expect(
-      response.wrapped.results.containsKey(event['id']),
-      isTrue,
-      reason: 'Should have result for published event',
+    final response = await pool.publish(
+      [note.toMap()],
+      source: RemoteSource(relays: relayUrl),
     );
+
+    // Verify response contains the event ID
+    expect(response.wrapped.results, isNotEmpty, reason: 'Should have results');
+    expect(response.wrapped.results.containsKey(note.id), isTrue, reason: 'Should contain event ID');
+
+    // Verify event was accepted by the relay
+    final eventStates = response.wrapped.results[note.id]!;
+    expect(eventStates, isNotEmpty, reason: 'Should have relay responses');
+    expect(eventStates.first.accepted, isTrue, reason: 'Event should be accepted');
+    expect(eventStates.first.relayUrl, equals(relayUrl), reason: 'Should be from correct relay');
   });
 
-  test('should handle publish with empty events list', () async {
+  test('should return empty response for empty events', () async {
     final response = await pool.publish(
       [],
-      source: RemoteSource(relayUrls: {relayUrl}),
+      source: RemoteSource(relays: relayUrl),
     );
 
-    expect(response, isA<PublishRelayResponse>());
-    expect(
-      response.wrapped.results,
-      isEmpty,
-      reason: 'Empty events should return empty results',
-    );
+    expect(response.wrapped.results, isEmpty, reason: 'No events = no results');
   });
 
-  test('should handle publish with empty relay URLs', () async {
-    final note = await PartialNote('Test').signWith(signer);
-    final event = note.toMap();
-
-    final response = await pool.publish([
-      event,
-    ], source: RemoteSource(relayUrls: {}));
-
-    expect(response, isA<PublishRelayResponse>());
-    // When relayUrls is empty, it falls back to the default group
-    expect(
-      response.wrapped.results,
-      isNotEmpty,
-      reason: 'Empty relay URLs should fall back to default group',
-    );
-  });
-
-  test('should publish multiple events', () async {
-    final events = <Map<String, dynamic>>[];
-
-    for (int i = 0; i < 3; i++) {
-      final note = await PartialNote('Test event $i').signWith(signer);
-      events.add(note.toMap());
-    }
+  test('should use default relays when identifier is provided', () async {
+    final note = await PartialNote('test fallback ${DateTime.now().millisecondsSinceEpoch}').signWith(signer);
 
     final response = await pool.publish(
-      events,
-      source: RemoteSource(relayUrls: {relayUrl}),
+      [note.toMap()],
+      source: RemoteSource(relays: 'test'),
     );
 
-    expect(response.wrapped.results, hasLength(3));
-
-    for (final event in events) {
-      expect(
-        response.wrapped.results.containsKey(event['id']),
-        isTrue,
-        reason: 'Should have result for each event',
-      );
-    }
+    // Should use default relays (configured as 'test' with relayUrl)
+    expect(response.wrapped.results, isNotEmpty, reason: 'Should use default relay identifier');
+    expect(response.wrapped.results.containsKey(note.id), isTrue);
   });
 
-  test('should handle publish to offline relay', () async {
-    const offlineRelay = 'ws://localhost:65535';
-
-    final note = await PartialNote('Test').signWith(signer);
-    final event = note.toMap();
-
-    final response = await pool.publish([
-      event,
-    ], source: RemoteSource(relayUrls: {offlineRelay}));
-
-    expect(response, isA<PublishRelayResponse>());
-
-    // Should still return a response even if relay is offline
-    final result = response.wrapped.results[event['id']];
-    expect(result, isNotNull);
-  });
-
-  // Skip: Simplified pool no longer tracks in-progress publish operations
-  // The publish functionality still works, just doesn't expose internal state
-  test('should handle publish state tracking', () async {
-    final note = await PartialNote('Test state tracking').signWith(signer);
-    final event = note.toMap();
-
-    final response = await pool.publish([event], source: RemoteSource(relayUrls: {relayUrl}));
-
-    // Verify publish completes successfully
-    expect(
-      response.wrapped.results.containsKey(event['id']),
-      isTrue,
-      reason: 'Should complete publish operation',
-    );
-  }, skip: 'Simplified pool no longer tracks in-progress publishes');
-
-  test('should publish to multiple relays', () async {
-    // Start a second relay
-    const relay2Port = 3338;
-    const relay2Url = 'ws://localhost:$relay2Port';
-
-    final relay2Process = await Process.start('test/support/test-relay', [
-      '-port',
-      relay2Port.toString(),
+  test('should publish multiple events with all accepted', () async {
+    final notes = await Future.wait([
+      PartialNote('test 1').signWith(signer),
+      PartialNote('test 2').signWith(signer),
+      PartialNote('test 3').signWith(signer),
     ]);
 
-    relay2Process.stdout.transform(utf8.decoder).listen((data) {});
-    relay2Process.stderr.transform(utf8.decoder).listen((data) {});
+    final response = await pool.publish(
+      notes.map((n) => n.toMap()).toList(),
+      source: RemoteSource(relays: relayUrl),
+    );
 
-    await Future.delayed(Duration(milliseconds: 500));
+    // Verify all events have results
+    expect(response.wrapped.results.length, equals(3), reason: 'Should have 3 results');
 
-    try {
-      final note = await PartialNote('Multi-relay test').signWith(signer);
-      final event = note.toMap();
-
-      final response = await pool.publish([
-        event,
-      ], source: RemoteSource(relayUrls: {relayUrl, relay2Url}));
-
-      expect(response.wrapped.results.containsKey(event['id']), isTrue);
-
-      final eventStates = response.wrapped.results[event['id']]!;
+    // Verify each event was accepted
+    for (final note in notes) {
       expect(
-        eventStates.length,
-        greaterThanOrEqualTo(1),
-        reason: 'Should have at least one relay response',
+        response.wrapped.results.containsKey(note.id),
+        isTrue,
+        reason: 'Should contain event ID ${note.id}',
       );
-    } finally {
-      relay2Process.kill();
-      await relay2Process.exitCode;
+      final eventStates = response.wrapped.results[note.id]!;
+      expect(eventStates.first.accepted, isTrue, reason: 'Event ${note.id} should be accepted');
     }
   });
 }

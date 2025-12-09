@@ -1,12 +1,7 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
-import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
-import 'package:purplebase/src/pool/state/connection_phase.dart';
-import 'package:purplebase/src/pool/state/subscription_phase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -15,14 +10,12 @@ import '../helpers.dart';
 /// Tests for pool state management
 void main() {
   late Process? relayProcess;
-  late WebSocketPool pool;
-  late PoolStateNotifier stateNotifier;
-  late RelayEventNotifier eventNotifier;
-  late StorageConfiguration config;
+  late RelayPool pool;
+  late PoolStateCapture stateCapture;
   late ProviderContainer container;
   late Bip340PrivateKeySigner signer;
 
-  const relayPort = 3340;
+  const relayPort = 3337;
   const relayUrl = 'ws://localhost:$relayPort';
 
   setUpAll(() async {
@@ -33,45 +26,30 @@ void main() {
     );
     final tempConfig = StorageConfiguration(
       skipVerification: true,
-      relayGroups: {
+      defaultRelays: {
         'temp': {'wss://temp.com'},
       },
-      defaultRelayGroup: 'temp',
+      defaultQuerySource: const LocalAndRemoteSource(
+        relays: 'temp',
+        stream: false,
+      ),
     );
     await tempContainer.read(initializationProvider(tempConfig).future);
 
-    relayProcess = await Process.start('test/support/test-relay', [
-      '-port',
-      relayPort.toString(),
-    ]);
-
-    relayProcess!.stdout.transform(utf8.decoder).listen((data) {});
-    relayProcess!.stderr.transform(utf8.decoder).listen((data) {});
-
-    await Future.delayed(Duration(milliseconds: 500));
+    // Start test relay once for all tests
+    relayProcess = await startTestRelay(relayPort);
   });
 
   setUp(() async {
     container = ProviderContainer();
+    stateCapture = PoolStateCapture();
 
-    config = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {relayUrl},
-      },
-      defaultRelayGroup: 'test',
-      responseTimeout: Duration(seconds: 5),
-    );
+    final config = testConfig(relayUrl);
 
-    stateNotifier = PoolStateNotifier(
-      throttleDuration: config.streamingBufferWindow,
-    );
-    eventNotifier = RelayEventNotifier();
-
-    pool = WebSocketPool(
+    pool = RelayPool(
       config: config,
-      stateNotifier: stateNotifier,
-      eventNotifier: eventNotifier,
+      onStateChange: stateCapture.onState,
+      onEvents: ({required req, required events, required relaysForIds}) {},
     );
 
     signer = Bip340PrivateKeySigner(
@@ -79,6 +57,9 @@ void main() {
       container.read(refProvider),
     );
     await signer.signIn();
+
+    // Clear relay state between tests
+    await relayProcess!.clear();
   });
 
   tearDown(() {
@@ -90,254 +71,153 @@ void main() {
     await relayProcess?.exitCode;
   });
 
-  test('should have correct PoolState structure', () async {
+  test('should emit state with correct structure', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
+    // Wait for subscription to be established
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
 
-    // Verify state structure
-    expect(state.connections, isA<Map<String, RelayConnectionState>>());
-    expect(state.subscriptions, isA<Map<String, SubscriptionState>>());
-    expect(state.publishes, isA<Map<String, PublishOperation>>());
-    expect(state.health, isA<HealthMetrics>());
-    expect(state.timestamp, isA<DateTime>());
+    expect(state.relays, isA<Map<String, RelayState>>());
+    expect(state.requests, isA<Map<String, RequestState>>());
+    expect(state.timestamp, isNotNull);
 
     pool.unsubscribe(req);
   });
 
-  test('should track relay connection state properties', () async {
+  test('should track relay connection state', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
-    final connection = state.connections[relayUrl];
+    // Wait for connection
+    final state = await stateCapture.waitForConnected(relayUrl);
+    final connection = state.relays[relayUrl];
 
-    expect(connection, isNotNull);
+    expect(connection, isNotNull, reason: 'Connection should exist');
     expect(connection!.url, equals(relayUrl));
-    expect(connection.phase, isA<ConnectionPhase>());
-    expect(connection.phaseStartedAt, isA<DateTime>());
-    expect(connection.reconnectAttempts, isA<int>());
-    expect(connection.lastMessageAt, anyOf(isNull, isA<DateTime>()));
-    expect(connection.lastError, anyOf(isNull, isA<String>()));
+    expect(connection.status, equals(ConnectionStatus.connected));
+    expect(connection.statusChangedAt, isNotNull);
 
     pool.unsubscribe(req);
   });
 
-  test('should track subscription state properties', () async {
+  test('should track subscription state', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
+    // Wait for subscription
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
+    final subscription = state.requests[req.subscriptionId];
 
-    expect(subscription, isNotNull);
+    expect(subscription, isNotNull, reason: 'Subscription should exist');
     expect(subscription!.subscriptionId, equals(req.subscriptionId));
-    expect(subscription.phase, isA<SubscriptionPhase>());
-    expect(
-      subscription.relayStatus,
-      isA<Map<String, RelaySubscriptionStatus>>(),
-    );
-    expect(subscription.totalEventsReceived, isA<int>());
-    expect(subscription.startedAt, isA<DateTime>());
+    expect(subscription.filters, isNotEmpty);
+    expect(subscription.targetRelays, contains(relayUrl));
+    expect(subscription.startedAt, isNotNull);
 
     pool.unsubscribe(req);
   });
 
-  test('should track health metrics', () async {
-    final state = stateNotifier.currentState;
-
-    expect(state.health.totalConnections, isA<int>());
-    expect(state.health.connectedCount, isA<int>());
-    expect(state.health.disconnectedCount, isA<int>());
-    expect(state.health.connectingCount, isA<int>());
-    expect(state.health.totalSubscriptions, isA<int>());
-    expect(state.health.fullyActiveSubscriptions, isA<int>());
-    expect(state.health.partiallyActiveSubscriptions, isA<int>());
-    expect(state.health.failedSubscriptions, isA<int>());
-  });
-
-  test('should update health metrics correctly', () async {
-    final initialConnections =
-        stateNotifier.currentState.health.totalConnections;
-
-    // Create a connection by sending a request
+  test('should have correct convenience getters', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
-    await pool.send(req, relayUrls: {relayUrl});
 
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final updatedHealth = stateNotifier.currentState.health;
+    // Wait for connection
+    final state = await stateCapture.waitForConnected(relayUrl);
 
-    expect(
-      updatedHealth.totalConnections,
-      greaterThanOrEqualTo(initialConnections),
-      reason: 'Connection count should be tracked',
-    );
+    // Test convenience getters
+    expect(state.connectedCount, equals(1));
+    expect(state.disconnectedCount, greaterThanOrEqualTo(0));
+    expect(state.connectingCount, greaterThanOrEqualTo(0));
+    expect(state.isRelayConnected(relayUrl), isTrue);
 
     pool.unsubscribe(req);
   });
 
-  test('should track connection phases correctly', () async {
-    const offlineRelay = 'ws://localhost:65535';
+  test('should handle offline relay state', () async {
+    const offlineRelay = 'ws://localhost:65534';
 
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {offlineRelay});
-    await Future.delayed(Duration(milliseconds: 300));
+    // Start query (will fail)
+    pool.query(req, source: RemoteSource(relays: offlineRelay, stream: true)).catchError((_) => <Map<String, dynamic>>[]);
 
-    final state = stateNotifier.currentState;
-    final connection = state.connections[offlineRelay];
+    // Wait for state to include the offline relay
+    final state = await stateCapture.waitFor(
+      (s) => s.relays.containsKey(offlineRelay),
+    );
+    final connection = state.relays[offlineRelay];
 
-    // Offline relay should be in Disconnected or Connecting phase
     expect(connection, isNotNull);
     expect(
-      connection!.phase,
-      anyOf(isA<Disconnected>(), isA<Connecting>()),
-      reason: 'Offline relay should not be Connected',
+      connection!.status,
+      anyOf(ConnectionStatus.disconnected, ConnectionStatus.connecting),
     );
 
     pool.unsubscribe(req);
   });
 
-  test('should handle subscription phases', () async {
+  test('should track EOSE in subscription state', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
+    // Wait for EOSE
+    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
+    final subscription = state.requests[req.subscriptionId];
 
     expect(subscription, isNotNull);
-    expect(
-      subscription!.phase,
-      anyOf(SubscriptionPhase.eose, SubscriptionPhase.streaming),
-      reason: 'Subscription should be in valid phase',
-    );
+    expect(subscription!.eoseReceived, contains(relayUrl));
 
     pool.unsubscribe(req);
   });
 
-  test('should track per-relay subscription status', () async {
+  test('should include lastChange for debugging', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    final state = stateNotifier.currentState;
-    final subscription = state.subscriptions[req.subscriptionId];
+    // Wait for any state with lastChange
+    final state = await stateCapture.waitFor((s) => s.lastChange != null);
+    expect(state.lastChange, isNotNull);
+
+    pool.unsubscribe(req);
+  });
+
+  test('RequestState should have statusText', () async {
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+    // Wait for EOSE to get meaningful status
+    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
+    final subscription = state.requests[req.subscriptionId];
 
     expect(subscription, isNotNull);
-    expect(subscription!.relayStatus, isNotEmpty);
-
-    final relayStatus = subscription.relayStatus[relayUrl];
-    expect(relayStatus, isNotNull);
-    expect(relayStatus!.phase, isA<RelaySubscriptionPhase>());
+    expect(subscription!.statusText, isNotNull);
+    // Should be something like "1/1 EOSE" or "streaming"
+    expect(subscription.statusText, anyOf(contains('EOSE'), equals('streaming')));
 
     pool.unsubscribe(req);
-  });
-
-  test('should emit state updates with timestamps', () async {
-    final initialTimestamp = stateNotifier.currentState.timestamp;
-
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-    await pool.send(req, relayUrls: {relayUrl});
-    await Future.delayed(Duration(milliseconds: 500));
-
-    final updatedTimestamp = stateNotifier.currentState.timestamp;
-
-    expect(
-      updatedTimestamp.isAfter(initialTimestamp),
-      isTrue,
-      reason: 'State updates should have newer timestamps',
-    );
-
-    pool.unsubscribe(req);
-  });
-
-  test('should handle RelayEventNotifier events', () async {
-    final receivedEvents = <RelayEvent?>[];
-
-    eventNotifier.addListener((event) {
-      receivedEvents.add(event);
-    });
-
-    // Publish an event to trigger events
-    final note = await PartialNote('Event notifier test').signWith(signer);
-    await pool.publish([
-      note.toMap(),
-    ], source: RemoteSource(relayUrls: {relayUrl}));
-
-    await Future.delayed(Duration(milliseconds: 500));
-
-    // EventNotifier should emit events (could be EventsReceived or NoticeReceived)
-    expect(
-      receivedEvents.where((e) => e != null).length,
-      greaterThanOrEqualTo(0),
-      reason: 'Should emit relay events',
-    );
-  });
-
-  test('should throttle state updates', () async {
-    final throttleConfig = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {relayUrl},
-      },
-      defaultRelayGroup: 'test',
-      streamingBufferWindow: Duration(milliseconds: 200),
-    );
-
-    final throttledNotifier = PoolStateNotifier(
-      throttleDuration: throttleConfig.streamingBufferWindow,
-    );
-
-    final throttledPool = WebSocketPool(
-      config: throttleConfig,
-      stateNotifier: throttledNotifier,
-      eventNotifier: eventNotifier,
-    );
-
-    final timestamps = <DateTime>[];
-
-    throttledNotifier.addListener((state) {
-      timestamps.add(state.timestamp);
-    });
-
-    // Trigger multiple state updates
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-    await throttledPool.send(req, relayUrls: {relayUrl});
-
-    await Future.delayed(Duration(milliseconds: 500));
-
-    // With throttling, updates should be spaced out
-    expect(timestamps, isNotEmpty);
-
-    throttledPool.dispose();
   });
 }

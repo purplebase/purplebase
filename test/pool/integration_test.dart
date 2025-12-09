@@ -1,32 +1,25 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/pool/state/pool_state_notifier.dart';
-import 'package:purplebase/src/pool/state/relay_event_notifier.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
 import '../helpers.dart';
 
-/// Basic test for the new WebSocketPool implementation
-/// Tests against the test relay
+/// Integration tests for the pool
 void main() {
   late Process? relayProcess;
-  late WebSocketPool pool;
-  late PoolStateNotifier stateNotifier;
-  late RelayEventNotifier eventNotifier;
-  late StorageConfiguration config;
+  late RelayPool pool;
+  late PoolStateCapture stateCapture;
+  late List<Map<String, dynamic>> receivedEvents;
   late ProviderContainer container;
   late Bip340PrivateKeySigner signer;
 
-  const relayPort = 3335;
+  const relayPort = 3340;
   const relayUrl = 'ws://localhost:$relayPort';
 
   setUpAll(() async {
-    // Initialize models by initializing a temporary storage
-    // This registers all the model types
     final tempContainer = ProviderContainer(
       overrides: [
         storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
@@ -34,65 +27,43 @@ void main() {
     );
     final tempConfig = StorageConfiguration(
       skipVerification: true,
-      relayGroups: {
+      defaultRelays: {
         'temp': {'wss://temp.com'},
       },
-      defaultRelayGroup: 'temp',
+      defaultQuerySource: const LocalAndRemoteSource(
+        relays: 'temp',
+        stream: false,
+      ),
     );
     await tempContainer.read(initializationProvider(tempConfig).future);
 
-    // Start test relay
-    print('[test] Starting test relay on port $relayPort...');
-    relayProcess = await Process.start('test/support/test-relay', [
-      '-port',
-      relayPort.toString(),
-    ]);
-
-    // Listen to relay output for debugging
-    relayProcess!.stdout.transform(utf8.decoder).listen((data) {
-      print('[relay-stdout] $data');
-    });
-    relayProcess!.stderr.transform(utf8.decoder).listen((data) {
-      print('[relay-stderr] $data');
-    });
-
-    // Wait for relay to start
-    await Future.delayed(Duration(milliseconds: 500));
-    print('[test] Test relay started');
+    // Start test relay once for all tests
+    relayProcess = await startTestRelay(relayPort);
   });
 
   setUp(() async {
-    // Create provider container
     container = ProviderContainer();
+    stateCapture = PoolStateCapture();
+    receivedEvents = [];
 
-    // Create configuration
-    config = StorageConfiguration(
-      skipVerification: true,
-      relayGroups: {
-        'test': {relayUrl},
-      },
-      defaultRelayGroup: 'test',
-    );
+    final config = testConfig(relayUrl);
 
-    // Create notifiers
-    stateNotifier = PoolStateNotifier(
-      throttleDuration: config.streamingBufferWindow,
-    );
-    eventNotifier = RelayEventNotifier();
-
-    // Create pool
-    pool = WebSocketPool(
+    pool = RelayPool(
       config: config,
-      stateNotifier: stateNotifier,
-      eventNotifier: eventNotifier,
+      onStateChange: stateCapture.onState,
+      onEvents: ({required req, required events, required relaysForIds}) {
+        receivedEvents.addAll(events);
+      },
     );
 
-    // Create signer for test events
     signer = Bip340PrivateKeySigner(
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       container.read(refProvider),
     );
     await signer.signIn();
+
+    // Clear relay state between tests
+    await relayProcess!.clear();
   });
 
   tearDown(() {
@@ -100,92 +71,92 @@ void main() {
   });
 
   tearDownAll(() async {
-    // Stop test relay
     relayProcess?.kill();
     await relayProcess?.exitCode;
-    print('[test] Test relay stopped');
   });
 
-  test('should connect to relay and send subscription', () async {
+  test('should publish and query back event', () async {
+    // Publish an event
+    final note = await PartialNote(
+      'integration test ${DateTime.now().millisecondsSinceEpoch}',
+    ).signWith(signer);
+    final publishResponse =
+        await pool.publish([note.toMap()], source: RemoteSource(relays: relayUrl));
+
+    // Verify publish was accepted
+    expect(publishResponse.wrapped.results, isNotEmpty);
+    expect(publishResponse.wrapped.results[note.id]?.first.accepted, isTrue);
+
+    // Query for it
+    final req = Request([
+      RequestFilter(ids: {note.id}),
+    ]);
+    final result = await pool.query(req, source: RemoteSource(relays: relayUrl));
+
+    // Should find the event with correct content
+    expect(result, isNotEmpty, reason: 'Should find published event');
+    expect(result.first['id'], equals(note.id));
+    expect(result.first['content'], contains('integration test'));
+  });
+
+  test('should handle health check', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
 
-    // Send subscription
-    await pool.send(req, relayUrls: {relayUrl});
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    // Wait for connection and EOSE
-    await Future.delayed(Duration(seconds: 2));
+    // Wait for connection
+    await stateCapture.waitForConnected(relayUrl);
 
-    // Check state
-    final state = stateNotifier.currentState;
-    expect(
-      state.connections.containsKey(relayUrl),
-      isTrue,
-      reason: 'Should have connection state for relay',
-    );
+    // Perform health check
+    await pool.performHealthCheck();
 
-    // Check subscription state
-    expect(
-      state.subscriptions.containsKey(req.subscriptionId),
-      isTrue,
-      reason: 'Should have subscription state',
-    );
+    // Should still be connected
+    final state = stateCapture.lastState;
+    expect(state, isNotNull);
+    expect(state!.relays[relayUrl]?.status, equals(ConnectionStatus.connected));
 
-    print('[test] ✓ Connected and subscribed successfully');
-
-    // Clean up
     pool.unsubscribe(req);
   });
 
-  test('should publish event and receive OK', () async {
-    print('[test] Publishing event...');
-
-    // Create and sign event
-    final note = await PartialNote('Hello from new pool!').signWith(signer);
-    final event = note.toMap();
-
-    // Publish
-    final response = await pool.publish([
-      event,
-    ], source: RemoteSource(relayUrls: {relayUrl}));
-
-    print('[test] Publish response: ${response.wrapped.results}');
-
-    // Verify response
-    final eventId = event['id'] as String;
-    expect(
-      response.wrapped.results.containsKey(eventId),
-      isTrue,
-      reason: 'Should have result for published event',
-    );
-  });
-
-  test('should query events', () async {
-    print('[test] Querying events...');
-
-    // First publish an event
-    final note = await PartialNote('Test event for query').signWith(signer);
-    final event = note.toMap();
-
-    await pool.publish([event], source: RemoteSource(relayUrls: {relayUrl}));
-
-    // Wait a moment for relay to process
-    await Future.delayed(Duration(milliseconds: 200));
-
-    // Query for events
+  test('should handle forced health check', () async {
     final req = Request([
-      RequestFilter(kinds: {1}, authors: {signer.pubkey}),
+      RequestFilter(kinds: {1}),
     ]);
 
-    final events = await pool.query(
-      req,
-      source: RemoteSource(relayUrls: {relayUrl}),
-    );
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    print('[test] Received ${events.length} events');
+    // Wait for connection
+    await stateCapture.waitForConnected(relayUrl);
 
-    // Should receive the event we just published
-    expect(events, isNotEmpty, reason: 'Should receive events from relay');
+    // Force health check (sends ping)
+    await pool.performHealthCheck(force: true);
+
+    // Should still be connected
+    final state = stateCapture.lastState;
+    expect(state, isNotNull);
+    expect(state!.relays[relayUrl]?.status, equals(ConnectionStatus.connected));
+
+    pool.unsubscribe(req);
+  });
+
+  test('should clean up connections on dispose', () async {
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+    // Wait for connection
+    await stateCapture.waitForConnected(relayUrl);
+
+    // Verify connected before dispose
+    expect(stateCapture.lastState?.isRelayConnected(relayUrl), isTrue);
+
+    pool.dispose();
+
+    // After dispose, pool should be cleaned up (no way to verify externally,
+    // but at least no exceptions should be thrown)
   });
 }
