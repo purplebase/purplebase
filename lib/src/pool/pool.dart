@@ -46,11 +46,7 @@ class RelayPool {
       source = source.copyWith(background: false);
     }
 
-    final relayUrls = config
-        .getRelays(source: source)
-        .map(_normalizeUrl)
-        .toSet();
-
+    final relayUrls = source.relays as Set<String>;
     if (relayUrls.isEmpty) return [];
 
     final completer = source.background
@@ -160,11 +156,7 @@ class RelayPool {
   }) async {
     if (events.isEmpty) return PublishRelayResponse();
 
-    final relayUrls = config
-        .getRelays(source: source)
-        .map(_normalizeUrl)
-        .toSet();
-
+    final relayUrls = source.relays as Set<String>;
     if (relayUrls.isEmpty) return PublishRelayResponse();
 
     final response = PublishRelayResponse();
@@ -395,15 +387,6 @@ class RelayPool {
         lastChange: change,
       ),
     );
-  }
-
-  String _normalizeUrl(String url) {
-    if (url.isEmpty) return url;
-    var normalized = url;
-    while (normalized.endsWith('/')) {
-      normalized = normalized.substring(0, normalized.length - 1);
-    }
-    return normalized.toLowerCase();
   }
 
   void dispose() {

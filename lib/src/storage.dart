@@ -148,6 +148,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final maps = events.map((e) => e.toMap()).toList();
 
+    final relayUrls = await resolveRelays(source.relays);
+    source = source.copyWith(relays: relayUrls);
     final response = await _sendMessage(
       RemotePublishIsolateOperation(events: maps, source: source),
     );
@@ -214,6 +216,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (req.filters.isEmpty) return [];
 
     if (source case RemoteSource()) {
+      final relayUrls = await resolveRelays(source.relays);
+      source = source.copyWith(relays: relayUrls);
       final future = _sendMessage(
         RemoteQueryIsolateOperation(req: req, source: source),
       );
