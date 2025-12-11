@@ -83,12 +83,10 @@ void main() {
     // Wait for connection deterministically
     final state = await stateCapture.waitForConnected(relayUrl);
 
-    final connection = state.relays[relayUrl];
-    expect(connection, isNotNull, reason: 'Connection should exist');
     expect(
-      connection!.status,
-      equals(ConnectionStatus.connected),
-      reason: 'Connection status should be connected',
+      state.isRelayConnected(relayUrl),
+      isTrue,
+      reason: 'Connection should exist',
     );
 
     pool.unsubscribe(req);
@@ -111,7 +109,7 @@ void main() {
 
     // All URLs should be normalized to the same connection
     expect(
-      state.relays.containsKey(relayUrl),
+      state.isRelayConnected(relayUrl),
       isTrue,
       reason: 'Should normalize to standard URL',
     );
@@ -131,17 +129,22 @@ void main() {
         .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
         .catchError((_) => <Map<String, dynamic>>[]);
 
-    // Wait for state to show connection attempt
-    final state = await stateCapture.waitFor(
-      (s) => s.relays.containsKey(offlineRelay),
-    );
+    // Wait for subscription to be created
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
 
-    final connection = state.relays[offlineRelay];
-    expect(connection, isNotNull, reason: 'Connection state should exist');
+    final sub = state.subscriptions[req.subscriptionId];
+    expect(sub, isNotNull, reason: 'Subscription should exist');
+
+    final relay = sub!.relays[offlineRelay];
+    expect(relay, isNotNull, reason: 'Relay state should exist');
     expect(
-      connection!.status,
-      anyOf(ConnectionStatus.disconnected, ConnectionStatus.connecting),
-      reason: 'Should be in disconnected or connecting status',
+      relay!.phase,
+      anyOf(
+        RelaySubPhase.disconnected,
+        RelaySubPhase.connecting,
+        RelaySubPhase.waiting,
+      ),
+      reason: 'Should be in disconnected, connecting, or waiting phase',
     );
 
     pool.unsubscribe(req);
@@ -157,11 +160,11 @@ void main() {
 
     // Wait for successful connection
     final state = await stateCapture.waitForConnected(relayUrl);
-    final connection = state.relays[relayUrl];
+    final sub = state.subscriptions[req.subscriptionId];
+    final relay = sub?.relays[relayUrl];
 
-    expect(connection, isNotNull);
-    expect(connection!.reconnectAttempts, greaterThanOrEqualTo(0));
-    expect(connection.statusChangedAt, isNotNull);
+    expect(relay, isNotNull);
+    expect(relay!.reconnectAttempts, greaterThanOrEqualTo(0));
 
     pool.unsubscribe(req);
   });
@@ -201,28 +204,25 @@ void main() {
       pool.unsubscribe(req);
     });
 
-    test(
-      'should respond to forced ping (health check with force=true)',
-      () async {
-        final req = Request([
-          RequestFilter(kinds: {1}),
-        ]);
+    test('should respond to ensureConnected', () async {
+      final req = Request([
+        RequestFilter(kinds: {1}),
+      ]);
 
-        pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-        // Wait for connection
-        await stateCapture.waitForConnected(relayUrl);
+      // Wait for connection
+      await stateCapture.waitForConnected(relayUrl);
 
-        // Forced health check sends a ping (limit:0 request)
-        await pool.performHealthCheck(force: true);
+      // ensureConnected should work without error
+      pool.ensureConnected();
 
-        // Should still be connected after ping response
-        final state = stateCapture.lastState;
-        expect(state?.isRelayConnected(relayUrl), isTrue);
+      // Should still be connected after
+      final state = stateCapture.lastState;
+      expect(state?.isRelayConnected(relayUrl), isTrue);
 
-        pool.unsubscribe(req);
-      },
-    );
+      pool.unsubscribe(req);
+    });
 
     test('should track last activity time', () async {
       final req = Request([
@@ -235,14 +235,13 @@ void main() {
       await stateCapture.waitForEose(req.subscriptionId, relayUrl);
 
       final state = stateCapture.lastState;
-      final connection = state?.relays[relayUrl];
+      final sub = state?.subscriptions[req.subscriptionId];
+      final relay = sub?.relays[relayUrl];
 
-      expect(connection, isNotNull);
-      expect(connection!.lastActivityAt, isNotNull);
-
-      // Activity should be recent
-      final age = DateTime.now().difference(connection.lastActivityAt!);
-      expect(age.inSeconds, lessThan(5));
+      expect(relay, isNotNull);
+      // lastEventAt may be null if no events were received (only EOSE)
+      // but the relay should be streaming
+      expect(relay!.phase, equals(RelaySubPhase.streaming));
 
       pool.unsubscribe(req);
     });
@@ -260,17 +259,16 @@ void main() {
           .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
           .catchError((_) => <Map<String, dynamic>>[]);
 
-      // Wait for state with relay
-      final state = await stateCapture.waitFor(
-        (s) => s.relays.containsKey(offlineRelay),
-      );
+      // Wait for subscription state
+      final state = await stateCapture.waitForSubscription(req.subscriptionId);
 
-      final connection = state.relays[offlineRelay];
-      expect(connection, isNotNull);
+      final sub = state.subscriptions[req.subscriptionId];
+      final relay = sub?.relays[offlineRelay];
+      expect(relay, isNotNull);
 
       // After failed connection, there might be an error
       // (depends on timing, so we just check the structure exists)
-      expect(connection!.error, anyOf(isNull, isA<String>()));
+      expect(relay!.lastError, anyOf(isNull, isA<String>()));
 
       pool.unsubscribe(req);
     });
@@ -289,8 +287,9 @@ void main() {
       // Wait a bit for reconnect attempts
       try {
         await stateCapture.waitFor((s) {
-          final conn = s.relays[offlineRelay];
-          return conn != null && conn.reconnectAttempts > 0;
+          final sub = s.subscriptions[req.subscriptionId];
+          final relay = sub?.relays[offlineRelay];
+          return relay != null && relay.reconnectAttempts > 0;
         }, timeout: Duration(seconds: 10));
       } catch (_) {
         // May timeout if relay comes back too fast or never gets attempts
@@ -298,10 +297,11 @@ void main() {
       }
 
       final state = stateCapture.lastState;
-      final connection = state?.relays[offlineRelay];
+      final sub = state?.subscriptions[req.subscriptionId];
+      final relay = sub?.relays[offlineRelay];
 
       // Should have at least tracked the relay
-      expect(connection, isNotNull);
+      expect(relay, isNotNull);
 
       pool.unsubscribe(req);
     });

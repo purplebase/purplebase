@@ -80,16 +80,16 @@ void main() {
 
     // Wait for subscription to be created
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
-    final subscription = state.requests[req.subscriptionId];
+    final subscription = state.subscriptions[req.subscriptionId];
 
     expect(subscription, isNotNull, reason: 'Subscription should exist');
     expect(
-      subscription!.subscriptionId,
+      subscription!.id,
       equals(req.subscriptionId),
       reason: 'Subscription ID should match',
     );
     expect(
-      subscription.targetRelays.contains(relayUrl),
+      subscription.relays.containsKey(relayUrl),
       isTrue,
       reason: 'Should have target relay',
     );
@@ -113,7 +113,7 @@ void main() {
     // Wait for subscription to be created
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
     expect(
-      state.requests.containsKey(req.subscriptionId),
+      state.subscriptions.containsKey(req.subscriptionId),
       isTrue,
       reason: 'Background subscription should be created',
     );
@@ -144,10 +144,10 @@ void main() {
 
     // Wait for subscription
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
-    final subscription = state.requests[req.subscriptionId];
+    final subscription = state.subscriptions[req.subscriptionId];
 
     expect(subscription, isNotNull);
-    expect(subscription!.isStreaming, isTrue, reason: 'Should be streaming');
+    expect(subscription!.stream, isTrue, reason: 'Should be streaming');
 
     pool.unsubscribe(req);
   });
@@ -161,12 +161,12 @@ void main() {
 
     // Wait for EOSE to ensure subscription is fully established
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-    final subscription = state.requests[req.subscriptionId];
+    final subscription = state.subscriptions[req.subscriptionId];
 
     expect(subscription, isNotNull);
-    expect(subscription!.eventCount, greaterThanOrEqualTo(0));
-    expect(subscription.startedAt, isNotNull);
-    expect(subscription.targetRelays, isNotEmpty);
+    expect(subscription!.startedAt, isNotNull);
+    expect(subscription.relays, isNotEmpty);
+    expect(subscription.activeRelayCount, greaterThanOrEqualTo(1));
 
     pool.unsubscribe(req);
   });
@@ -196,12 +196,12 @@ void main() {
     final state = await stateCapture.waitForSubscription(req2.subscriptionId);
 
     expect(
-      state.requests.containsKey(req1.subscriptionId),
+      state.subscriptions.containsKey(req1.subscriptionId),
       isTrue,
       reason: 'First subscription should exist',
     );
     expect(
-      state.requests.containsKey(req2.subscriptionId),
+      state.subscriptions.containsKey(req2.subscriptionId),
       isTrue,
       reason: 'Second subscription should exist',
     );
@@ -226,14 +226,14 @@ void main() {
     final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
 
     expect(
-      state.requests.containsKey(req.subscriptionId),
+      state.subscriptions.containsKey(req.subscriptionId),
       isFalse,
       reason: 'Subscription should be removed after unsubscribe',
     );
   });
 
   group('EOSE Handling', () {
-    test('should track EOSE received from relay', () async {
+    test('should track EOSE received from relay (streaming phase)', () async {
       final req = Request([
         RequestFilter(kinds: {1}),
       ]);
@@ -245,10 +245,12 @@ void main() {
         req.subscriptionId,
         relayUrl,
       );
-      final subscription = state.requests[req.subscriptionId];
+      final subscription = state.subscriptions[req.subscriptionId];
+      final relay = subscription?.relays[relayUrl];
 
       expect(subscription, isNotNull);
-      expect(subscription!.eoseReceived, contains(relayUrl));
+      expect(relay, isNotNull);
+      expect(relay!.phase, equals(RelaySubPhase.streaming));
 
       pool.unsubscribe(req);
     });
@@ -265,15 +267,11 @@ void main() {
         req.subscriptionId,
         relayUrl,
       );
-      final subscription = state.requests[req.subscriptionId];
+      final subscription = state.subscriptions[req.subscriptionId];
 
       expect(subscription, isNotNull);
-      // When streaming and all EOSE received, statusText is 'streaming'
-      // Otherwise it shows 'N/M EOSE'
-      expect(
-        subscription!.statusText,
-        anyOf(equals('streaming'), contains('EOSE')),
-      );
+      // statusText should show relay count
+      expect(subscription!.statusText, contains('relay'));
 
       pool.unsubscribe(req);
     });
@@ -298,7 +296,7 @@ void main() {
       // Wait for the unsubscribe state to be emitted
       final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
       expect(
-        state.requests.containsKey(req.subscriptionId),
+        state.subscriptions.containsKey(req.subscriptionId),
         isFalse,
         reason: 'Foreground subscription should be cleaned up after completion',
       );
@@ -318,7 +316,7 @@ void main() {
       // Subscription should still exist
       final state = stateCapture.lastState;
       expect(
-        state?.requests.containsKey(req.subscriptionId),
+        state?.subscriptions.containsKey(req.subscriptionId),
         isTrue,
         reason: 'Streaming subscription should persist after EOSE',
       );
@@ -342,7 +340,7 @@ void main() {
 
       // Should clean up
       final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
-      expect(state.requests.containsKey(req.subscriptionId), isFalse);
+      expect(state.subscriptions.containsKey(req.subscriptionId), isFalse);
     });
 
     test('should properly dispose all subscriptions on pool dispose', () async {
@@ -367,32 +365,24 @@ void main() {
     });
   });
 
-  group('Event Count Tracking', () {
-    test('should track event count in subscription state', () async {
-      // First publish an event so we can receive it
-      final note = await PartialNote(
-        'Event count test ${DateTime.now().millisecondsSinceEpoch}',
-      ).signWith(signer);
-      await pool.publish([
-        note.toMap(),
-      ], source: RemoteSource(relays: relayUrl));
-
+  group('Relay State in Subscription', () {
+    test('should track activeRelayCount and totalRelayCount', () async {
       final req = Request([
-        RequestFilter(kinds: {1}, ids: {note.id}),
+        RequestFilter(kinds: {1}),
       ]);
 
       pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-      // Wait for EOSE (events should be received before EOSE)
+      // Wait for EOSE (streaming phase)
       final state = await stateCapture.waitForEose(
         req.subscriptionId,
         relayUrl,
       );
-      final subscription = state.requests[req.subscriptionId];
+      final subscription = state.subscriptions[req.subscriptionId];
 
       expect(subscription, isNotNull);
-      // Event count should be at least 1 (the event we published)
-      expect(subscription!.eventCount, greaterThanOrEqualTo(1));
+      expect(subscription!.totalRelayCount, equals(1));
+      expect(subscription.activeRelayCount, equals(1));
 
       pool.unsubscribe(req);
     });

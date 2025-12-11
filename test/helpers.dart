@@ -54,26 +54,51 @@ class PoolStateCapture {
     );
   }
 
-  /// Wait for relay to be connected
+  /// Wait for relay in a subscription to be streaming (connected + EOSE received)
+  Future<PoolState> waitForRelayStreaming(
+    String subscriptionId,
+    String relayUrl,
+  ) {
+    return waitFor((s) {
+      final sub = s.subscriptions[subscriptionId];
+      if (sub == null) return false;
+      final relay = sub.relays[relayUrl];
+      return relay?.phase == RelaySubPhase.streaming;
+    });
+  }
+
+  /// Wait for relay in any subscription to be connected (loading or streaming)
   Future<PoolState> waitForConnected(String relayUrl) {
-    return waitFor((s) => s.isRelayConnected(relayUrl));
+    return waitFor((s) {
+      for (final sub in s.subscriptions.values) {
+        final relay = sub.relays[relayUrl];
+        if (relay != null &&
+            (relay.phase == RelaySubPhase.loading ||
+                relay.phase == RelaySubPhase.streaming)) {
+          return true;
+        }
+      }
+      return false;
+    });
   }
 
   /// Wait for subscription to exist
   Future<PoolState> waitForSubscription(String subscriptionId) {
-    return waitFor((s) => s.requests.containsKey(subscriptionId));
+    return waitFor((s) => s.subscriptions.containsKey(subscriptionId));
   }
 
   /// Wait for subscription to be removed
   Future<PoolState> waitForUnsubscribed(String subscriptionId) {
-    return waitFor((s) => !s.requests.containsKey(subscriptionId));
+    return waitFor((s) => !s.subscriptions.containsKey(subscriptionId));
   }
 
   /// Wait for EOSE on a subscription from specific relay
   Future<PoolState> waitForEose(String subscriptionId, String relayUrl) {
     return waitFor((s) {
-      final req = s.requests[subscriptionId];
-      return req != null && req.eoseReceived.contains(relayUrl);
+      final sub = s.subscriptions[subscriptionId];
+      if (sub == null) return false;
+      final relay = sub.relays[relayUrl];
+      return relay?.phase == RelaySubPhase.streaming;
     });
   }
 
@@ -183,5 +208,35 @@ extension ProviderContainerExt on ProviderContainer {
       read(provider.notifier),
       fireImmediately: fireImmediately,
     );
+  }
+}
+
+// Helper extensions for new PoolState structure
+extension PoolStateTestExtensions on PoolState {
+  /// Check if a relay is connected (loading or streaming) in any subscription
+  bool isRelayConnected(String relayUrl) {
+    for (final sub in subscriptions.values) {
+      final relay = sub.relays[relayUrl];
+      if (relay != null &&
+          (relay.phase == RelaySubPhase.loading ||
+              relay.phase == RelaySubPhase.streaming)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Get the number of connected relays across all subscriptions
+  int get connectedCount {
+    final connectedUrls = <String>{};
+    for (final sub in subscriptions.values) {
+      for (final entry in sub.relays.entries) {
+        if (entry.value.phase == RelaySubPhase.loading ||
+            entry.value.phase == RelaySubPhase.streaming) {
+          connectedUrls.add(entry.key);
+        }
+      }
+    }
+    return connectedUrls.length;
   }
 }

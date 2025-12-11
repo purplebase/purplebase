@@ -113,7 +113,7 @@ void main() {
     // Wait for subscription to be created
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
 
-    expect(state.requests.containsKey(req.subscriptionId), isTrue);
+    expect(state.subscriptions.containsKey(req.subscriptionId), isTrue);
 
     pool.unsubscribe(req);
   });
@@ -129,9 +129,9 @@ void main() {
     // Wait for subscription and EOSE
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
 
-    final subscription = state.requests[req.subscriptionId];
+    final subscription = state.subscriptions[req.subscriptionId];
     expect(subscription, isNotNull);
-    expect(subscription!.isStreaming, isTrue);
+    expect(subscription!.stream, isTrue);
 
     pool.unsubscribe(req);
   });

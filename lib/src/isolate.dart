@@ -35,7 +35,7 @@ void isolateEntryPoint(List args) {
     }
     db.initialize();
   } catch (e) {
-    mainSendPort.send(DebugMessage('ERROR: Failed to open database - $e'));
+    // Can't send state yet, just fail silently
     // Don't send SendPort if initialization failed
     return;
   }
@@ -70,7 +70,15 @@ void isolateEntryPoint(List args) {
   sub = receivePort.listen((message) async {
     // Handle heartbeat messages (no reply needed)
     if (message is HeartbeatMessage) {
-      await pool.performHealthCheck(force: message.forceReconnect);
+      try {
+        if (message.forceReconnect) {
+          pool.ensureConnected();
+        } else {
+          await pool.performHealthCheck();
+        }
+      } catch (_) {
+        // Errors are logged in pool state
+      }
       return;
     }
 
@@ -97,21 +105,14 @@ void isolateEntryPoint(List args) {
             response = IsolateResponse(success: true, result: ids);
           } catch (e) {
             response = IsolateResponse(success: false, error: e.toString());
-            mainSendPort.send(DebugMessage('ERROR: Local save failed - $e'));
           }
 
         case LocalClearIsolateOperation():
           try {
             db!.initialize(clear: true);
             response = IsolateResponse(success: true);
-            mainSendPort.send(
-              DebugMessage('Database cleared and reinitialized'),
-            );
           } catch (e) {
             response = IsolateResponse(success: false, error: e.toString());
-            mainSendPort.send(
-              DebugMessage('ERROR: Database clear failed - $e'),
-            );
           }
 
         // REMOTE
@@ -177,33 +178,10 @@ final class QueryResultMessage extends IsolateMessage {
   QueryResultMessage({required this.request, required this.savedIds});
 }
 
-/// Message containing debug information from the background isolate.
-///
-/// These messages are emitted for debugging, logging, and monitoring purposes.
-/// Each message includes a component tag ([pool], [coordinator], etc.) in the text.
-///
-/// Note: Timestamp is automatically added by the IsolateMessage base class.
-final class DebugMessage extends IsolateMessage {
-  final String message;
-  DebugMessage(this.message);
-}
-
 /// Message containing pool state information
 final class PoolStateMessage extends IsolateMessage {
   final PoolState poolState;
   PoolStateMessage(this.poolState);
-}
-
-/// Message containing informational notices from the background isolate
-final class InfoMessage extends IsolateMessage {
-  final String message;
-  InfoMessage(this.message);
-}
-
-/// Message containing relay status information (legacy, kept for compatibility)
-final class RelayStatusMessage extends IsolateMessage {
-  final PoolState statusData;
-  RelayStatusMessage(this.statusData);
 }
 
 /// Heartbeat message from main isolate to trigger health checks

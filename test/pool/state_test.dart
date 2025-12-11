@@ -81,14 +81,13 @@ void main() {
     // Wait for subscription to be established
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
 
-    expect(state.relays, isA<Map<String, RelayState>>());
-    expect(state.requests, isA<Map<String, RequestState>>());
-    expect(state.timestamp, isNotNull);
+    expect(state.subscriptions, isA<Map<String, Subscription>>());
+    expect(state.logs, isA<List<LogEntry>>());
 
     pool.unsubscribe(req);
   });
 
-  test('should track relay connection state', () async {
+  test('should track relay connection state within subscription', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
@@ -97,12 +96,16 @@ void main() {
 
     // Wait for connection
     final state = await stateCapture.waitForConnected(relayUrl);
-    final connection = state.relays[relayUrl];
+    final sub = state.subscriptions[req.subscriptionId];
+    final relay = sub?.relays[relayUrl];
 
-    expect(connection, isNotNull, reason: 'Connection should exist');
-    expect(connection!.url, equals(relayUrl));
-    expect(connection.status, equals(ConnectionStatus.connected));
-    expect(connection.statusChangedAt, isNotNull);
+    expect(sub, isNotNull, reason: 'Subscription should exist');
+    expect(relay, isNotNull, reason: 'Relay state should exist');
+    expect(
+      relay!.phase,
+      anyOf(RelaySubPhase.loading, RelaySubPhase.streaming),
+      reason: 'Should be loading or streaming',
+    );
 
     pool.unsubscribe(req);
   });
@@ -116,12 +119,12 @@ void main() {
 
     // Wait for subscription
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
-    final subscription = state.requests[req.subscriptionId];
+    final subscription = state.subscriptions[req.subscriptionId];
 
     expect(subscription, isNotNull, reason: 'Subscription should exist');
-    expect(subscription!.subscriptionId, equals(req.subscriptionId));
-    expect(subscription.filters, isNotEmpty);
-    expect(subscription.targetRelays, contains(relayUrl));
+    expect(subscription!.id, equals(req.subscriptionId));
+    expect(subscription.request, isNotNull);
+    expect(subscription.relays, contains(relayUrl));
     expect(subscription.startedAt, isNotNull);
 
     pool.unsubscribe(req);
@@ -134,13 +137,11 @@ void main() {
 
     pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
-    // Wait for connection
-    final state = await stateCapture.waitForConnected(relayUrl);
+    // Wait for EOSE (streaming phase)
+    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
 
     // Test convenience getters
     expect(state.connectedCount, equals(1));
-    expect(state.disconnectedCount, greaterThanOrEqualTo(0));
-    expect(state.connectingCount, greaterThanOrEqualTo(0));
     expect(state.isRelayConnected(relayUrl), isTrue);
 
     pool.unsubscribe(req);
@@ -154,24 +155,48 @@ void main() {
     ]);
 
     // Start query (will fail)
-    pool.query(req, source: RemoteSource(relays: offlineRelay, stream: true)).catchError((_) => <Map<String, dynamic>>[]);
+    pool
+        .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
+        .catchError((_) => <Map<String, dynamic>>[]);
 
-    // Wait for state to include the offline relay
-    final state = await stateCapture.waitFor(
-      (s) => s.relays.containsKey(offlineRelay),
-    );
-    final connection = state.relays[offlineRelay];
+    // Wait for state to include the subscription
+    final state = await stateCapture.waitForSubscription(req.subscriptionId);
+    final sub = state.subscriptions[req.subscriptionId];
+    final relay = sub?.relays[offlineRelay];
 
-    expect(connection, isNotNull);
+    expect(sub, isNotNull);
+    expect(relay, isNotNull);
     expect(
-      connection!.status,
-      anyOf(ConnectionStatus.disconnected, ConnectionStatus.connecting),
+      relay!.phase,
+      anyOf(
+        RelaySubPhase.disconnected,
+        RelaySubPhase.connecting,
+        RelaySubPhase.waiting,
+      ),
     );
 
     pool.unsubscribe(req);
   });
 
-  test('should track EOSE in subscription state', () async {
+  test('should track EOSE via streaming phase', () async {
+    final req = Request([
+      RequestFilter(kinds: {1}),
+    ]);
+
+    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+
+    // Wait for EOSE (relay enters streaming phase)
+    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
+    final sub = state.subscriptions[req.subscriptionId];
+    final relay = sub?.relays[relayUrl];
+
+    expect(relay, isNotNull);
+    expect(relay!.phase, equals(RelaySubPhase.streaming));
+
+    pool.unsubscribe(req);
+  });
+
+  test('should include logs in state', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
@@ -179,30 +204,18 @@ void main() {
     pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
 
     // Wait for EOSE
-    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-    final subscription = state.requests[req.subscriptionId];
-
-    expect(subscription, isNotNull);
-    expect(subscription!.eoseReceived, contains(relayUrl));
+    await stateCapture.waitForEose(req.subscriptionId, relayUrl);
 
     pool.unsubscribe(req);
+
+    // Wait for unsubscription (should log completion)
+    final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
+
+    // Logs should exist (completion is logged)
+    expect(state.logs, isA<List<LogEntry>>());
   });
 
-  test('should include lastChange for debugging', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
-
-    // Wait for any state with lastChange
-    final state = await stateCapture.waitFor((s) => s.lastChange != null);
-    expect(state.lastChange, isNotNull);
-
-    pool.unsubscribe(req);
-  });
-
-  test('RequestState should have statusText', () async {
+  test('Subscription should have statusText', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
@@ -211,12 +224,12 @@ void main() {
 
     // Wait for EOSE to get meaningful status
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-    final subscription = state.requests[req.subscriptionId];
+    final subscription = state.subscriptions[req.subscriptionId];
 
     expect(subscription, isNotNull);
     expect(subscription!.statusText, isNotNull);
-    // Should be something like "1/1 EOSE" or "streaming"
-    expect(subscription.statusText, anyOf(contains('EOSE'), equals('streaming')));
+    // Should be something like "1/1 relays"
+    expect(subscription.statusText, contains('relay'));
 
     pool.unsubscribe(req);
   });

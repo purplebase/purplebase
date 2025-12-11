@@ -64,11 +64,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
           state = InternalStorageData(updatedIds: savedIds, req: request);
         case PoolStateMessage poolStateMessage:
           ref.read(poolStateProvider.notifier).emit(poolStateMessage.poolState);
-        case RelayStatusMessage relayStatusMessage:
-          // Legacy support
-          ref
-              .read(relayStatusProvider.notifier)
-              .emit(relayStatusMessage.statusData);
       }
     });
 
@@ -82,15 +77,16 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   /// Start heartbeat to trigger health checks in background isolate
   void _startHeartbeat() {
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    _heartbeatTimer = Timer.periodic(PoolConstants.healthCheckInterval, (_) {
       _sendPort?.send(HeartbeatMessage(DateTime.now()));
     });
   }
 
-  /// Force immediate health check on all connections.
+  /// Force immediate reconnection on all disconnected relays.
   ///
   /// Call this when your app resumes from background to detect and recover
   /// from stale connections caused by system sleep or network changes.
+  /// This resets backoff timers and attempts immediate reconnection.
   ///
   /// Example (Flutter):
   /// ```dart
@@ -104,7 +100,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   void ensureConnected() {
     if (!isInitialized) return;
 
-    // Send immediate heartbeat to trigger health check
+    // Send heartbeat with forceReconnect to trigger ensureConnected in pool
     _sendPort?.send(HeartbeatMessage(DateTime.now(), forceReconnect: true));
   }
 

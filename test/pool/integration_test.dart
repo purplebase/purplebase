@@ -115,12 +115,12 @@ void main() {
     // Should still be connected
     final state = stateCapture.lastState;
     expect(state, isNotNull);
-    expect(state!.relays[relayUrl]?.status, equals(ConnectionStatus.connected));
+    expect(state!.isRelayConnected(relayUrl), isTrue);
 
     pool.unsubscribe(req);
   });
 
-  test('should handle forced health check', () async {
+  test('should handle ensureConnected', () async {
     final req = Request([
       RequestFilter(kinds: {1}),
     ]);
@@ -130,13 +130,13 @@ void main() {
     // Wait for connection
     await stateCapture.waitForConnected(relayUrl);
 
-    // Force health check (sends ping)
-    await pool.performHealthCheck(force: true);
+    // ensureConnected should work
+    pool.ensureConnected();
 
     // Should still be connected
     final state = stateCapture.lastState;
     expect(state, isNotNull);
-    expect(state!.relays[relayUrl]?.status, equals(ConnectionStatus.connected));
+    expect(state!.isRelayConnected(relayUrl), isTrue);
 
     pool.unsubscribe(req);
   });
