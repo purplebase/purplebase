@@ -78,7 +78,7 @@ void main() {
     ]);
 
     // Start streaming query - this will connect to the relay
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for connection deterministically
     final state = await stateCapture.waitForConnected(relayUrl);
@@ -156,7 +156,7 @@ void main() {
     ]);
 
     // Start streaming query
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for successful connection
     final state = await stateCapture.waitForConnected(relayUrl);
@@ -175,7 +175,10 @@ void main() {
     ]);
 
     // Should not throw when given empty relay URLs
-    final result = await pool.query(req, source: RemoteSource());
+    final result = await pool.query(
+      req,
+      source: RemoteSource(relays: <String>{}),
+    );
     expect(
       result,
       isEmpty,
@@ -189,7 +192,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
@@ -209,7 +212,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
@@ -229,7 +232,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for EOSE which triggers activity
       await stateCapture.waitForEose(req.subscriptionId, relayUrl);

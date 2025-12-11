@@ -80,7 +80,7 @@ void main() {
     final note = await PartialNote(
       'foreground query test ${DateTime.now().millisecondsSinceEpoch}',
     ).signWith(signer);
-    await pool.publish([note.toMap()], source: RemoteSource(relays: relayUrl));
+    await pool.publish([note.toMap()], source: RemoteSource(relays: {relayUrl}));
 
     final req = Request([
       RequestFilter(kinds: {1}, ids: {note.id}),
@@ -88,7 +88,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relays: relayUrl),
+      source: RemoteSource(relays: {relayUrl}),
     );
 
     // Verify we got the specific event back
@@ -104,7 +104,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relays: relayUrl, background: true),
+      source: RemoteSource(relays: {relayUrl}, background: true),
     );
 
     // Background queries return empty immediately
@@ -124,7 +124,7 @@ void main() {
     ]);
 
     // Start streaming query
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for subscription and EOSE
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
@@ -141,7 +141,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relays: relayUrl),
+      source: RemoteSource(relays: {relayUrl}),
     );
 
     expect(result, isEmpty);
@@ -154,7 +154,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(),
+      source: RemoteSource(relays: <String>{}),
     );
 
     expect(result, isEmpty);
@@ -165,14 +165,14 @@ void main() {
     final note = await PartialNote(
       'callback test ${DateTime.now().millisecondsSinceEpoch}',
     ).signWith(signer);
-    await pool.publish([note.toMap()], source: RemoteSource(relays: relayUrl));
+    await pool.publish([note.toMap()], source: RemoteSource(relays: {relayUrl}));
 
     // Then query for it
     final req = Request([
       RequestFilter(kinds: {1}, ids: {note.id}),
     ]);
 
-    await pool.query(req, source: RemoteSource(relays: relayUrl));
+    await pool.query(req, source: RemoteSource(relays: {relayUrl}));
 
     // Verify callback received the event with correct data
     expect(receivedEvents, isNotEmpty, reason: 'onEvents should be called');

@@ -76,7 +76,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for subscription to be established
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
@@ -92,7 +92,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for connection
     final state = await stateCapture.waitForConnected(relayUrl);
@@ -115,7 +115,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for subscription
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
@@ -135,7 +135,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for EOSE (streaming phase)
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
@@ -183,7 +183,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for EOSE (relay enters streaming phase)
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
@@ -201,7 +201,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for EOSE
     await stateCapture.waitForEose(req.subscriptionId, relayUrl);
@@ -220,7 +220,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for EOSE to get meaningful status
     final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);

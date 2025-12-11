@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:models/models.dart';
-import 'package:purplebase/src/utils.dart';
 
 import 'connection.dart';
 import 'state.dart';
@@ -89,36 +88,6 @@ class RelayPool {
     required this.onEvents,
   });
 
-  /// Resolve relays from various input types and normalize URLs
-  Set<String> _resolveRelays(dynamic relays) {
-    Set<String> urls;
-    if (relays == null) {
-      return {};
-    } else if (relays is Set<String>) {
-      urls = relays;
-    } else if (relays is String) {
-      // Could be a relay URL or a config identifier
-      if (relays.startsWith('ws://') || relays.startsWith('wss://')) {
-        urls = {relays};
-      } else {
-        // Try to resolve from config
-        final configured = config.defaultRelays[relays];
-        if (configured != null) {
-          urls = configured;
-        } else {
-          return {};
-        }
-      }
-    } else if (relays is Iterable<String>) {
-      urls = relays.toSet();
-    } else {
-      return {};
-    }
-
-    // Normalize all URLs
-    return urls.map(normalizeRelayUrl).toSet();
-  }
-
   // ============================================================
   // PUBLIC API
   // ============================================================
@@ -133,8 +102,7 @@ class RelayPool {
       source = source.copyWith(background: false);
     }
 
-    final relayUrls = _resolveRelays(source.relays);
-    if (relayUrls.isEmpty) return [];
+    if ((source.relays as Iterable).isEmpty) return [];
 
     final completer = source.background
         ? null
@@ -142,7 +110,7 @@ class RelayPool {
 
     _createSubscription(
       req,
-      relayUrls: relayUrls,
+      relayUrls: source.relays,
       stream: source.stream,
       queryCompleter: completer,
     );
@@ -199,13 +167,13 @@ class RelayPool {
   }) async {
     if (events.isEmpty) return PublishRelayResponse();
 
-    final relayUrls = _resolveRelays(source.relays);
-    if (relayUrls.isEmpty) return PublishRelayResponse();
+    source.relays as Iterable;
+    if (source.relays.isEmpty) return PublishRelayResponse();
 
     final response = PublishRelayResponse();
     final futures = <Future<PublishResult>>[];
 
-    for (final url in relayUrls) {
+    for (final url in source.relays) {
       for (final event in events) {
         final eventId = event['id'] as String?;
         if (eventId == null) continue;
@@ -365,6 +333,7 @@ class RelayPool {
       subscriptionId: subId,
       batchWindow: config.streamingBufferWindow,
       isStreaming: stream,
+      totalRelayCount: relayUrls.length,
       queryCompleter: queryCompleter,
       onFlush: (events, relaysForIds) {
         if (events.isNotEmpty) {
@@ -987,6 +956,7 @@ class _EventBuffer {
   final String subscriptionId;
   final Duration batchWindow;
   final bool isStreaming;
+  final int totalRelayCount;
   final void Function(
     List<Map<String, dynamic>> events,
     Map<String, Set<String>> relaysForIds,
@@ -1005,6 +975,7 @@ class _EventBuffer {
     required this.subscriptionId,
     required this.batchWindow,
     required this.isStreaming,
+    required this.totalRelayCount,
     required this.onFlush,
     this.queryCompleter,
   });
@@ -1030,9 +1001,16 @@ class _EventBuffer {
   void markEose(String relayUrl) {
     _eoseReceived.add(relayUrl);
 
-    // Flush on first EOSE for non-streaming, or when streaming and buffer has events,
-    // or when a query completer is waiting (stream: true, background: false)
-    if (!isStreaming || _eventsById.isNotEmpty || queryCompleter != null) {
+    final allEoseReceived = _eoseReceived.length >= totalRelayCount;
+
+    if (isStreaming) {
+      // Streaming: flush when we have events
+      if (_eventsById.isNotEmpty) {
+        flush();
+      }
+    } else if (allEoseReceived) {
+      // Non-streaming: wait for all relays before completing
+      // Timeout handler will flush if some relays are slow
       flush();
     }
   }

@@ -76,7 +76,7 @@ void main() {
 
     final response = await pool.publish(
       [note.toMap()],
-      source: RemoteSource(relays: relayUrl),
+      source: RemoteSource(relays: {relayUrl}),
     );
 
     // Verify response contains the event ID
@@ -93,22 +93,22 @@ void main() {
   test('should return empty response for empty events', () async {
     final response = await pool.publish(
       [],
-      source: RemoteSource(relays: relayUrl),
+      source: RemoteSource(relays: {relayUrl}),
     );
 
     expect(response.wrapped.results, isEmpty, reason: 'No events = no results');
   });
 
-  test('should use default relays when identifier is provided', () async {
+  test('should use resolved relay URLs', () async {
     final note = await PartialNote('test fallback ${DateTime.now().millisecondsSinceEpoch}').signWith(signer);
 
+    // Pool receives already-resolved relay URLs from storage layer
     final response = await pool.publish(
       [note.toMap()],
-      source: RemoteSource(relays: 'test'),
+      source: RemoteSource(relays: {relayUrl}),
     );
 
-    // Should use default relays (configured as 'test' with relayUrl)
-    expect(response.wrapped.results, isNotEmpty, reason: 'Should use default relay identifier');
+    expect(response.wrapped.results, isNotEmpty, reason: 'Should publish to resolved relay');
     expect(response.wrapped.results.containsKey(note.id), isTrue);
   });
 
@@ -121,7 +121,7 @@ void main() {
 
     final response = await pool.publish(
       notes.map((n) => n.toMap()).toList(),
-      source: RemoteSource(relays: relayUrl),
+      source: RemoteSource(relays: {relayUrl}),
     );
 
     // Verify all events have results

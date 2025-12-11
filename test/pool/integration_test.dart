@@ -81,7 +81,7 @@ void main() {
       'integration test ${DateTime.now().millisecondsSinceEpoch}',
     ).signWith(signer);
     final publishResponse =
-        await pool.publish([note.toMap()], source: RemoteSource(relays: relayUrl));
+        await pool.publish([note.toMap()], source: RemoteSource(relays: {relayUrl}));
 
     // Verify publish was accepted
     expect(publishResponse.wrapped.results, isNotEmpty);
@@ -91,7 +91,7 @@ void main() {
     final req = Request([
       RequestFilter(ids: {note.id}),
     ]);
-    final result = await pool.query(req, source: RemoteSource(relays: relayUrl));
+    final result = await pool.query(req, source: RemoteSource(relays: {relayUrl}));
 
     // Should find the event with correct content
     expect(result, isNotEmpty, reason: 'Should find published event');
@@ -104,7 +104,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for connection
     await stateCapture.waitForConnected(relayUrl);
@@ -125,7 +125,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for connection
     await stateCapture.waitForConnected(relayUrl);
@@ -146,7 +146,7 @@ void main() {
       RequestFilter(kinds: {1}),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
     // Wait for connection
     await stateCapture.waitForConnected(relayUrl);

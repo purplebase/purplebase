@@ -78,7 +78,7 @@ void main() {
       ]);
 
       // Start streaming query
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       final connectedState = await stateCapture.waitForConnected(relayUrl);
@@ -126,7 +126,7 @@ void main() {
       ]);
 
       // Start streaming query
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
@@ -149,7 +149,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
       final sub = state.subscriptions[req.subscriptionId];
@@ -168,7 +168,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
@@ -189,7 +189,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
@@ -212,7 +212,7 @@ void main() {
         RequestFilter(kinds: {1}),
       ]);
 
-      pool.query(req, source: RemoteSource(relays: relayUrl, stream: true));
+      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
 
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
