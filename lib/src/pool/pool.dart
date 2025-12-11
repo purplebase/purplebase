@@ -1030,8 +1030,9 @@ class _EventBuffer {
   void markEose(String relayUrl) {
     _eoseReceived.add(relayUrl);
 
-    // Flush on first EOSE for non-streaming, or when streaming and buffer has events
-    if (!isStreaming || _eventsById.isNotEmpty) {
+    // Flush on first EOSE for non-streaming, or when streaming and buffer has events,
+    // or when a query completer is waiting (stream: true, background: false)
+    if (!isStreaming || _eventsById.isNotEmpty || queryCompleter != null) {
       flush();
     }
   }
