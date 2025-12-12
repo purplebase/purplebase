@@ -102,28 +102,33 @@ class RelayPool {
       source = source.copyWith(background: false);
     }
 
-    if ((source.relays as Iterable).isEmpty) return [];
+    if (source.relays is! Iterable<String>) return [];
+    final relayUrls = (source.relays as Iterable<String>).toSet();
+    if (relayUrls.isEmpty) return [];
 
-    final completer = source.background
-        ? null
-        : Completer<List<Map<String, dynamic>>>();
+    // Background queries that are non-stream should still clean up once done.
+    final needsCompleter = !source.stream || !source.background;
+    final completer = needsCompleter
+        ? Completer<List<Map<String, dynamic>>>()
+        : null;
 
     _createSubscription(
       req,
-      relayUrls: source.relays,
+      relayUrls: relayUrls,
       stream: source.stream,
       queryCompleter: completer,
     );
 
-    if (source.background) return [];
-
-    List<Map<String, dynamic>> events;
-    try {
-      events = await completer!.future;
-    } finally {
-      if (!source.stream) {
-        unsubscribe(req);
+    if (source.background) {
+      if (!source.stream && completer != null) {
+        completer.future.whenComplete(() => unsubscribe(req));
       }
+      return [];
+    }
+
+    final events = await completer!.future;
+    if (!source.stream) {
+      unsubscribe(req);
     }
 
     return events;

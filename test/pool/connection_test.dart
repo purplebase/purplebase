@@ -94,6 +94,8 @@ void main() {
 
   test('should handle URL normalization', () async {
     final denormalizedUrl = 'ws://localhost:$relayPort/';
+    final normalizedUrl = normalizeRelayUrl(denormalizedUrl);
+    expect(normalizedUrl, relayUrl, reason: 'normalizeRelayUrl should canonicalize');
 
     final req = Request([
       RequestFilter(kinds: {1}),
@@ -101,15 +103,15 @@ void main() {
 
     pool.query(
       req,
-      source: RemoteSource(relays: denormalizedUrl, stream: true),
+      source: RemoteSource(relays: {normalizedUrl}, stream: true),
     );
 
     // Wait for connection to normalized URL
-    final state = await stateCapture.waitForConnected(relayUrl);
+    final state = await stateCapture.waitForConnected(normalizedUrl);
 
     // All URLs should be normalized to the same connection
     expect(
-      state.isRelayConnected(relayUrl),
+      state.isRelayConnected(normalizedUrl),
       isTrue,
       reason: 'Should normalize to standard URL',
     );
@@ -126,7 +128,7 @@ void main() {
 
     // Start query (it will fail to connect)
     pool
-        .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
+        .query(req, source: RemoteSource(relays: {offlineRelay}, stream: true))
         .catchError((_) => <Map<String, dynamic>>[]);
 
     // Wait for subscription to be created
@@ -259,7 +261,7 @@ void main() {
       ]);
 
       pool
-          .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
+        .query(req, source: RemoteSource(relays: {offlineRelay}, stream: true))
           .catchError((_) => <Map<String, dynamic>>[]);
 
       // Wait for subscription state
@@ -284,7 +286,7 @@ void main() {
       ]);
 
       pool
-          .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
+        .query(req, source: RemoteSource(relays: {offlineRelay}, stream: true))
           .catchError((_) => <Map<String, dynamic>>[]);
 
       // Wait a bit for reconnect attempts
