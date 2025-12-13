@@ -196,6 +196,9 @@ class RelayPool {
       );
     }
 
+    // Clean up sockets that have no active subscriptions
+    _cleanupIdleSockets();
+
     return response;
   }
 
