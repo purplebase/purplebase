@@ -168,14 +168,14 @@ The pool uses these timing constants (not configurable):
 | `initialReconnectDelay` | 100ms | First retry delay |
 | `pingIdleThreshold` | 55s | Ping if idle this long |
 | `healthCheckInterval` | 60s | Heartbeat frequency |
-| `maxRetries` | 20 | Before marking relay as failed |
+| `maxRetries` | 5 | Before marking relay as failed |
 
 ## Architecture
 
 - **Background Isolate** - SQLite + WebSocket pool run off the UI thread
 - **Single Source of Truth** - `PoolState` contains all subscription and relay state
 - **Per-Subscription Relay Tracking** - Each subscription tracks its relays independently
-- **Auto-Reconnect** - Exponential backoff with 20 retry limit per relay
+- **Auto-Reconnect** - Exponential backoff with 5 retry limit per relay
 - **ensureConnected()** - Immediate reconnection for app lifecycle events
 - **Ping Health Checks** - `limit:0` requests detect zombie connections (55s idle threshold)
 - **Event Batching** - Cross-relay deduplication with configurable flush window

@@ -22,7 +22,7 @@ abstract class PoolConstants {
   static const healthCheckInterval = Duration(minutes: 1);
 
   /// Maximum reconnection attempts before marking relay as failed
-  static const maxRetries = 20;
+  static const maxRetries = 5;
 
   /// Maximum log entries to keep
   static const maxLogEntries = 200;
