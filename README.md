@@ -145,6 +145,29 @@ class LogEntry {
 }
 ```
 
+## Query Caching
+
+For replaceable events (profiles, contact lists, relay lists, etc.), you can enable caching to avoid redundant remote fetches:
+
+```dart
+final profiles = await storage.query<Profile>(
+  RequestFilter(authors: {'pubkey1', 'pubkey2'}).toRequest(),
+  source: LocalAndRemoteSource(
+    relays: 'default',
+    cachedFor: Duration(hours: 2),  // Use local if fetched within 2 hours
+  ),
+);
+```
+
+**Cacheable queries** must be author+kind only (no tags, ids, search, or until filters) for replaceable event kinds:
+- Kind 0 (Profile), Kind 3 (ContactList)
+- Kinds 10000-19999 (Replaceable)
+- Kinds 30000-39999 (Parameterized Replaceable)
+
+When `cachedFor` is set, `stream` is automatically forced to `false`.
+
+For multi-author queries, each author is checked individually - fresh authors use cache, stale authors hit remote.
+
 ## Configuration
 
 ```dart
