@@ -211,36 +211,19 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     String? subscriptionPrefix,
   }) async {
     source ??= config.defaultQuerySource;
-    
-    print('[query] Called for type ${E.toString()}');
-    print('[query] Source type: ${source.runtimeType}');
-    print('[query] Filters count: ${req.filters.length}');
-    for (final f in req.filters) {
-      print('[query]   Filter: kinds=${f.kinds}, authors=${f.authors.length} authors');
-    }
 
     if (req.filters.isEmpty) return [];
 
     if (source case RemoteSource()) {
-      print('[query] Original source.relays: ${source.relays}');
       final relayUrls = await resolveRelays(source.relays);
-      print('[query] Resolved relayUrls: $relayUrls');
       source = source.copyWith(relays: relayUrls);
-      
-      print('[query] Source is RemoteSource');
-      print('[query] source is LocalAndRemoteSource: ${source is LocalAndRemoteSource}');
-      if (source is LocalAndRemoteSource) {
-        print('[query] cachedFor: ${source.cachedFor}');
-      }
 
       // Check for cache-eligible LocalAndRemoteSource queries
       if (source is LocalAndRemoteSource && source.cachedFor != null) {
-        print('[query] Taking CACHED path');
         await _queryCached(req, source);
         // For LocalAndRemoteSource, always query local at the end
         // (covers both fresh and stale, since remote saves to local)
       } else {
-        print('[query] Taking NON-CACHED path');
         // Original non-cached path
         final future = _sendMessage(
           RemoteQueryIsolateOperation(req: req, source: source),
@@ -264,26 +247,18 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       }
     }
 
-    print('[query] Querying LOCAL storage for ${E.toString()}');
     final pairs = req.filters.map((f) => f.toSQL()).toList();
-    print('[query] SQL pairs count: ${pairs.length}');
     final queries = LocalQueryArgs.fromPairs(pairs);
     final response = await _sendMessage(
       LocalQueryIsolateOperation({req: queries}),
     );
     if (!response.success) {
-      print('[query] LOCAL query FAILED: ${response.error}');
       throw IsolateException(response.error);
     }
 
     final result =
         response.result as Map<Request, Iterable<Map<String, dynamic>>>;
-    final models = result[req]!.toModels<E>(ref).toSet().sortByCreatedAt();
-    print('[query] LOCAL query returned ${models.length} ${E.toString()} models');
-    if (models.isNotEmpty) {
-      print('[query] First model: ${models.first}');
-    }
-    return models;
+    return result[req]!.toModels<E>(ref).toSet().sortByCreatedAt();
   }
 
   /// Handle cached query: split filters into fresh/stale, query remote for stale only
@@ -291,19 +266,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Request<E> req,
     LocalAndRemoteSource source,
   ) async {
-    print('[_queryCached] Starting for ${E.toString()}, cachedFor: ${source.cachedFor}');
-    print('[_queryCached] Request filters count: ${req.filters.length}');
-    
     final staleFilters = <RequestFilter<E>>[];
     final now = DateTime.now();
 
     for (final filter in req.filters) {
-      print('[_queryCached] Filter: kinds=${filter.kinds}, authors=${filter.authors.length} authors');
-      print('[_queryCached] Filter isCacheable: ${_isCacheableFilter(filter)}');
-      
       if (!_isCacheableFilter(filter)) {
         // Not cacheable - always query remote
-        print('[_queryCached] Filter NOT cacheable, adding to stale');
         staleFilters.add(filter);
         continue;
       }
@@ -316,33 +284,21 @@ class PurplebaseStorageNotifier extends StorageNotifier {
           final cacheKey = '$kind:$author';
           final lastFetch = _authorKindCache[cacheKey];
 
-          print('[_queryCached] Checking cache key: $cacheKey, lastFetch: $lastFetch');
-          
           if (lastFetch == null ||
               now.difference(lastFetch) >= source.cachedFor!) {
-            print('[_queryCached] Author $author is STALE for kind $kind');
             staleAuthors.add(author);
-          } else {
-            print('[_queryCached] Author $author is FRESH for kind $kind (age: ${now.difference(lastFetch)})');
           }
         }
       }
 
       if (staleAuthors.isNotEmpty) {
-        print('[_queryCached] Adding ${staleAuthors.length} stale authors to query');
         staleFilters.add(filter.copyWith(authors: staleAuthors));
-      } else {
-        print('[_queryCached] All authors are fresh, skipping remote query');
       }
     }
 
     // Query remote only for stale filters
-    if (staleFilters.isEmpty) {
-      print('[_queryCached] No stale filters, returning early');
-      return;
-    }
+    if (staleFilters.isEmpty) return;
 
-    print('[_queryCached] Querying remote for ${staleFilters.length} stale filters');
     final staleReq = Request<E>(staleFilters);
     final future = _sendMessage(
       RemoteQueryIsolateOperation(req: staleReq, source: source),
@@ -351,22 +307,12 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (!source.background) {
       final response = await future;
       if (!response.success) {
-        print('[_queryCached] Remote query FAILED: ${response.error}');
         throw IsolateException(response.error);
       }
-      final remoteResult = response.result as List<Map<String, dynamic>>?;
-      print('[_queryCached] Remote query returned ${remoteResult?.length ?? 0} events');
-      if (remoteResult != null && remoteResult.isNotEmpty) {
-        print('[_queryCached] First remote event kind: ${remoteResult.first['kind']}, pubkey: ${remoteResult.first['pubkey']}');
-      }
-      print('[_queryCached] Remote query complete, updating cache timestamps');
       _updateCacheTimestamps(staleFilters, now);
     } else {
       unawaited(
-        future.then((response) {
-          final remoteResult = response.result as List<Map<String, dynamic>>?;
-          print('[_queryCached] Background remote query returned ${remoteResult?.length ?? 0} events');
-          print('[_queryCached] Background remote query complete, updating cache timestamps');
+        future.then((_) {
           _updateCacheTimestamps(staleFilters, DateTime.now());
         }),
       );
@@ -430,54 +376,21 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   /// Check if a filter is cacheable (author+kind only, replaceable kinds)
   bool _isCacheableFilter(RequestFilter filter) {
-    print('[_isCacheableFilter] Checking filter:');
-    print('[_isCacheableFilter]   authors: ${filter.authors} (empty: ${filter.authors.isEmpty})');
-    print('[_isCacheableFilter]   kinds: ${filter.kinds} (empty: ${filter.kinds.isEmpty})');
-    print('[_isCacheableFilter]   ids: ${filter.ids} (empty: ${filter.ids.isEmpty})');
-    print('[_isCacheableFilter]   tags: ${filter.tags} (empty: ${filter.tags.isEmpty})');
-    print('[_isCacheableFilter]   search: ${filter.search}');
-    print('[_isCacheableFilter]   until: ${filter.until}');
-    
     // Must have authors
-    if (filter.authors.isEmpty) {
-      print('[_isCacheableFilter] FAIL: no authors');
-      return false;
-    }
+    if (filter.authors.isEmpty) return false;
 
     // Must have kinds
-    if (filter.kinds.isEmpty) {
-      print('[_isCacheableFilter] FAIL: no kinds');
-      return false;
-    }
+    if (filter.kinds.isEmpty) return false;
 
     // All kinds must be replaceable
-    for (final kind in filter.kinds) {
-      print('[_isCacheableFilter]   kind $kind isReplaceable: ${Utils.isEventReplaceable(kind)}');
-    }
-    if (!filter.kinds.every(Utils.isEventReplaceable)) {
-      print('[_isCacheableFilter] FAIL: not all kinds are replaceable');
-      return false;
-    }
+    if (!filter.kinds.every(Utils.isEventReplaceable)) return false;
 
     // Must NOT have: ids, tags, search, until
-    if (filter.ids.isNotEmpty) {
-      print('[_isCacheableFilter] FAIL: has ids');
-      return false;
-    }
-    if (filter.tags.isNotEmpty) {
-      print('[_isCacheableFilter] FAIL: has tags');
-      return false;
-    }
-    if (filter.search != null) {
-      print('[_isCacheableFilter] FAIL: has search');
-      return false;
-    }
-    if (filter.until != null) {
-      print('[_isCacheableFilter] FAIL: has until');
-      return false;
-    }
+    if (filter.ids.isNotEmpty) return false;
+    if (filter.tags.isNotEmpty) return false;
+    if (filter.search != null) return false;
+    if (filter.until != null) return false;
 
-    print('[_isCacheableFilter] SUCCESS: filter is cacheable');
     return true;
   }
 
