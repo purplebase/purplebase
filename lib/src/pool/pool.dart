@@ -15,6 +15,12 @@ class _ManagedSocket {
   /// Which subscriptions use this socket
   final Set<String> subscriptionIds = {};
 
+  /// Reconnection attempts for this relay (shared across all subscriptions)
+  int reconnectAttempts = 0;
+
+  /// Last error message for this relay
+  String? lastError;
+
   /// Pending ping completer for zombie detection
   Completer<void>? pingCompleter;
   static const pingSubId = '__ping__';
@@ -264,8 +270,13 @@ class RelayPool {
         if (relayState.phase == RelaySubPhase.disconnected ||
             relayState.phase == RelaySubPhase.waiting ||
             relayState.phase == RelaySubPhase.failed) {
-          // Cancel any backoff timer
-          _sockets[url]?.reconnectTimer?.cancel();
+          // Cancel any backoff timer and reset relay-level attempts
+          final managed = _sockets[url];
+          if (managed != null) {
+            managed.reconnectTimer?.cancel();
+            managed.reconnectAttempts = 0;
+            managed.lastError = null;
+          }
 
           // Reset attempts and connect immediately
           _updateRelayState(
@@ -517,7 +528,14 @@ class RelayPool {
     final managed = _sockets[url];
     if (managed == null) return;
 
-    // Update all subscriptions using this socket
+    // Increment attempts ONCE at relay level
+    managed.reconnectAttempts++;
+    managed.lastError = error;
+
+    final shouldFail = managed.reconnectAttempts >= PoolConstants.maxRetries;
+    final newPhase = shouldFail ? RelaySubPhase.failed : RelaySubPhase.waiting;
+
+    // Update ALL subscriptions to same phase
     for (final subId in managed.subscriptionIds.toList()) {
       final sub = _subscriptions[subId];
       if (sub == null) continue;
@@ -528,39 +546,28 @@ class RelayPool {
       // Don't update if already failed
       if (relayState.phase == RelaySubPhase.failed) continue;
 
-      final newAttempts = relayState.reconnectAttempts + 1;
+      _updateRelayState(
+        subId,
+        url,
+        relayState.copyWith(
+          phase: newPhase,
+          reconnectAttempts: managed.reconnectAttempts,
+          lastError: error ?? (shouldFail ? 'Max retries exceeded' : null),
+          clearStreamingSince: true,
+        ),
+        emit: false, // Batch - emit once at end
+      );
+    }
 
-      if (newAttempts >= PoolConstants.maxRetries) {
-        // Max retries exceeded
-        _updateRelayState(
-          subId,
-          url,
-          relayState.copyWith(
-            phase: RelaySubPhase.failed,
-            reconnectAttempts: newAttempts,
-            lastError: error ?? 'Max retries exceeded',
-          ),
-        );
-        _log(
-          LogLevel.error,
-          'Relay failed after $newAttempts attempts',
-          subscriptionId: subId,
-          relayUrl: url,
-        );
-      } else {
-        // Schedule reconnect with backoff
-        _updateRelayState(
-          subId,
-          url,
-          relayState.copyWith(
-            phase: RelaySubPhase.waiting,
-            reconnectAttempts: newAttempts,
-            lastError: error,
-            clearStreamingSince: true,
-          ),
-        );
-        _scheduleReconnect(subId, url, newAttempts);
-      }
+    if (shouldFail) {
+      _log(
+        LogLevel.error,
+        'Relay failed after ${managed.reconnectAttempts} attempts',
+        relayUrl: url,
+      );
+    } else {
+      // Schedule ONE reconnect for the relay
+      _scheduleReconnect(url);
     }
 
     _emit();
@@ -576,7 +583,7 @@ class RelayPool {
     _onSocketDisconnected(url, error);
   }
 
-  void _scheduleReconnect(String subId, String url, int attempts) {
+  void _scheduleReconnect(String url) {
     final managed = _sockets[url];
     if (managed == null) return;
 
@@ -584,14 +591,45 @@ class RelayPool {
     managed.reconnectTimer?.cancel();
 
     // Get backoff delay from schedule
-    final delay = PoolConstants.getBackoffDelay(attempts);
+    final delay = PoolConstants.getBackoffDelay(managed.reconnectAttempts);
     if (delay == null) return; // Should not happen, but safety check
 
     managed.reconnectTimer = Timer(delay, () {
       if (!_disposed) {
-        _connectRelay(subId, url);
+        _reconnectRelay(url);
       }
     });
+  }
+
+  /// Reconnect all subscriptions for a relay
+  void _reconnectRelay(String url) {
+    final managed = _sockets[url];
+    if (managed == null) return;
+
+    // Update all subscriptions to connecting phase
+    for (final subId in managed.subscriptionIds) {
+      final sub = _subscriptions[subId];
+      if (sub == null) continue;
+
+      final relayState = sub.relays[url];
+      if (relayState == null) continue;
+      if (relayState.phase == RelaySubPhase.failed) continue;
+
+      _updateRelayState(
+        subId,
+        url,
+        relayState.copyWith(phase: RelaySubPhase.connecting),
+        emit: false,
+      );
+    }
+
+    _emit();
+
+    // Connect socket once - _onSocketConnected will send all REQs
+    managed.socket
+        .connect()
+        .then((_) => _onSocketConnected(url))
+        .catchError((e) => _onSocketError(url, e.toString()));
   }
 
   // ============================================================
@@ -689,6 +727,13 @@ class RelayPool {
     final relayState = sub.relays[url];
     if (relayState == null) return;
 
+    // Reset relay-level attempts on success
+    final managed = _sockets[url];
+    if (managed != null) {
+      managed.reconnectAttempts = 0;
+      managed.lastError = null;
+    }
+
     // Update to streaming phase - clear error and reset attempts on success
     _updateRelayState(
       subId,
@@ -764,13 +809,9 @@ class RelayPool {
     final buffer = _eventBuffers[subId];
     if (buffer == null) return;
 
-    // Find relays that didn't send EOSE
+    // Find relays that connected but didn't send EOSE
     final slowRelays = sub.relays.entries
-        .where(
-          (e) =>
-              e.value.phase != RelaySubPhase.streaming &&
-              e.value.phase != RelaySubPhase.failed,
-        )
+        .where((e) => e.value.phase == RelaySubPhase.loading)
         .map((e) => e.key)
         .toList();
 
