@@ -210,6 +210,48 @@ for (final log in poolState?.logs ?? []) {
 }
 ```
 
+### Event Filtering
+
+Events can be filtered before they reach storage using `RemoteSource.eventFilter`. This allows discarding unwanted events at the earliest point in the pipeline.
+
+**Usage:**
+```dart
+// Filter by content length
+final source = RemoteSource(
+  relays: {relayUrl},
+  stream: true,
+  eventFilter: (event) {
+    final content = event['content'] as String?;
+    return content != null && content.length > 10;
+  },
+);
+
+// Filter by kind
+final source = RemoteSource(
+  relays: {relayUrl},
+  eventFilter: (event) => event['kind'] == 1,
+);
+
+// Complex filtering
+final source = RemoteSource(
+  relays: {relayUrl},
+  eventFilter: (event) =>
+    event['kind'] == 1 &&
+    !(event['content'] as String?)?.contains('spam') == true,
+);
+```
+
+**How it works:**
+1. Filter is stored per-subscription in `_subscriptionFilters` map
+2. Applied in `_handleEvent()` before adding to buffer
+3. Events that don't pass (`filter(event) == false`) are silently discarded
+4. Filter is cleaned up on `unsubscribe()` and `dispose()`
+
+**Benefits:**
+- Reduces storage writes for unwanted events
+- Works with both blocking and streaming queries
+- Filter logic stays with the query definition
+
 ### Design Principles
 
 1. **Single Source of Truth:** `RelayPool` owns all state, emits via `onStateChange`
@@ -219,6 +261,7 @@ for (final log in poolState?.logs ?? []) {
 3. **No Resource Leaks:** Timeout always cleans up blocking queries
 4. **Progressive Delivery:** Streaming queries get events as they arrive
 5. **Deduplication:** Events deduplicated by ID across all relays
+6. **Early Filtering:** Event filters applied before buffering to minimize wasted work
 
 ### Package Dependencies
 
@@ -238,6 +281,7 @@ The test suite covers:
 - Publish operations and OK responses
 - Subscription lifecycle
 - Pool state tracking
+- Event filtering (content, kind, complex predicates)
 - Integration tests with local relay server
 
 ### Configuration
