@@ -209,7 +209,7 @@ void main() {
       pool.unsubscribe(req);
     });
 
-    test('should respond to ensureConnected', () async {
+    test('should respond to connect', () async {
       final req = Request([
         RequestFilter(kinds: {1}),
       ]);
@@ -219,8 +219,8 @@ void main() {
       // Wait for connection
       await stateCapture.waitForConnected(relayUrl);
 
-      // ensureConnected should work without error
-      pool.ensureConnected();
+      // connect should work without error
+      pool.connect();
 
       // Should still be connected after
       final state = stateCapture.lastState;

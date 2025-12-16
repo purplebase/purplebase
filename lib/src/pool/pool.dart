@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:models/models.dart';
 
@@ -249,7 +248,8 @@ class RelayPool {
   }
 
   /// Force immediate reconnection - called on app resume
-  void ensureConnected() {
+  /// Restarts all non-connected relays including failed ones
+  void connect() {
     if (_disposed) return;
 
     for (final entry in _subscriptions.entries) {
@@ -260,9 +260,10 @@ class RelayPool {
         final url = relayEntry.key;
         final relayState = relayEntry.value;
 
-        // Only affect disconnected or waiting relays
+        // Restart disconnected, waiting, or failed relays
         if (relayState.phase == RelaySubPhase.disconnected ||
-            relayState.phase == RelaySubPhase.waiting) {
+            relayState.phase == RelaySubPhase.waiting ||
+            relayState.phase == RelaySubPhase.failed) {
           // Cancel any backoff timer
           _sockets[url]?.reconnectTimer?.cancel();
 
@@ -270,12 +271,60 @@ class RelayPool {
           _updateRelayState(
             subId,
             url,
-            relayState.copyWith(reconnectAttempts: 0, clearError: true),
+            relayState.copyWith(
+              phase: RelaySubPhase.disconnected,
+              reconnectAttempts: 0,
+              clearError: true,
+            ),
           );
           _connectRelay(subId, url);
         }
       }
     }
+  }
+
+  /// Disconnect all relays and cancel all subscriptions - called on app pause
+  void disconnect() {
+    if (_disposed) return;
+
+    // Cancel all backoff timers
+    for (final managed in _sockets.values) {
+      managed.reconnectTimer?.cancel();
+    }
+
+    // Send CLOSE for all subscriptions and disconnect sockets
+    for (final entry in _subscriptions.entries) {
+      final subId = entry.key;
+      final sub = entry.value;
+
+      for (final url in sub.relays.keys) {
+        final managed = _sockets[url];
+        if (managed?.socket.isConnected == true) {
+          managed!.socket.sendClose(subId);
+        }
+
+        // Update relay state to disconnected
+        final relayState = sub.relays[url];
+        if (relayState != null) {
+          _updateRelayState(
+            subId,
+            url,
+            relayState.copyWith(
+              phase: RelaySubPhase.disconnected,
+              clearStreamingSince: true,
+            ),
+            emit: false,
+          );
+        }
+      }
+    }
+
+    // Disconnect all sockets
+    for (final managed in _sockets.values) {
+      managed.socket.disconnect();
+    }
+
+    _emit();
   }
 
   void dispose() {
@@ -534,14 +583,11 @@ class RelayPool {
     // Cancel existing timer
     managed.reconnectTimer?.cancel();
 
-    // Calculate backoff delay
-    final delayMs = min(
-      PoolConstants.initialReconnectDelay.inMilliseconds *
-          pow(2, attempts - 1).toInt(),
-      PoolConstants.maxReconnectDelay.inMilliseconds,
-    );
+    // Get backoff delay from schedule
+    final delay = PoolConstants.getBackoffDelay(attempts);
+    if (delay == null) return; // Should not happen, but safety check
 
-    managed.reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
+    managed.reconnectTimer = Timer(delay, () {
       if (!_disposed) {
         _connectRelay(subId, url);
       }

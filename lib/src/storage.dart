@@ -85,26 +85,50 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     });
   }
 
-  /// Force immediate reconnection on all disconnected relays.
+  /// Force immediate reconnection on all disconnected or failed relays.
   ///
   /// Call this when your app resumes from background to detect and recover
   /// from stale connections caused by system sleep or network changes.
   /// This resets backoff timers and attempts immediate reconnection.
+  /// Also restarts relays that have exceeded max retries (failed state).
   ///
   /// Example (Flutter):
   /// ```dart
   /// @override
   /// void didChangeAppLifecycleState(AppLifecycleState state) {
   ///   if (state == AppLifecycleState.resumed) {
-  ///     ref.read(storageNotifierProvider.notifier).ensureConnected();
+  ///     ref.read(storageNotifierProvider.notifier).connect();
   ///   }
   /// }
   /// ```
-  void ensureConnected() {
+  void connect() {
     if (!isInitialized) return;
 
-    // Send heartbeat with forceReconnect to trigger ensureConnected in pool
-    _sendPort?.send(HeartbeatMessage(DateTime.now(), forceReconnect: true));
+    _sendPort?.send(
+      HeartbeatMessage(DateTime.now(), action: HeartbeatAction.connect),
+    );
+  }
+
+  /// Disconnect all relays and cancel active subscriptions.
+  ///
+  /// Call this when your app goes to background to cleanly close connections.
+  /// Subscriptions remain registered and will be resumed when connect() is called.
+  ///
+  /// Example (Flutter):
+  /// ```dart
+  /// @override
+  /// void didChangeAppLifecycleState(AppLifecycleState state) {
+  ///   if (state == AppLifecycleState.paused) {
+  ///     ref.read(storageNotifierProvider.notifier).disconnect();
+  ///   }
+  /// }
+  /// ```
+  void disconnect() {
+    if (!isInitialized) return;
+
+    _sendPort?.send(
+      HeartbeatMessage(DateTime.now(), action: HeartbeatAction.disconnect),
+    );
   }
 
   /// Public save method

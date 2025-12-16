@@ -3,7 +3,7 @@ import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
-/// Tests for storage lifecycle methods (ensureConnected, etc.)
+/// Tests for storage lifecycle methods (connect, disconnect, etc.)
 void main() {
   group('Storage Lifecycle', () {
     late ProviderContainer container;
@@ -32,18 +32,18 @@ void main() {
       container.dispose();
     });
 
-    test('ensureConnected should be callable when initialized', () {
+    test('connect should be callable when initialized', () {
       expect(storage.isInitialized, isTrue);
       
       // Should not throw
       expect(
-        () => storage.ensureConnected(),
+        () => storage.connect(),
         returnsNormally,
-        reason: 'ensureConnected should be safe to call',
+        reason: 'connect should be safe to call',
       );
     });
 
-    test('ensureConnected should not throw when called before initialization', () {
+    test('connect should not throw when called before initialization', () {
       final uninitializedContainer = ProviderContainer(
         overrides: [
           storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
@@ -55,7 +55,7 @@ void main() {
       
       // Should not throw, just return early
       expect(
-        () => uninitializedStorage.ensureConnected(),
+        () => uninitializedStorage.connect(),
         returnsNormally,
         reason: 'Should handle being called before initialization',
       );
@@ -63,14 +63,45 @@ void main() {
       uninitializedContainer.dispose();
     });
 
-    test('ensureConnected can be called multiple times', () {
+    test('connect can be called multiple times', () {
       // Should be idempotent
-      storage.ensureConnected();
-      storage.ensureConnected();
-      storage.ensureConnected();
+      storage.connect();
+      storage.connect();
+      storage.connect();
       
       // No errors, storage still functional
       expect(storage.isInitialized, isTrue);
+    });
+
+    test('disconnect should be callable when initialized', () {
+      expect(storage.isInitialized, isTrue);
+      
+      // Should not throw
+      expect(
+        () => storage.disconnect(),
+        returnsNormally,
+        reason: 'disconnect should be safe to call',
+      );
+    });
+
+    test('disconnect should not throw when called before initialization', () {
+      final uninitializedContainer = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+      
+      final uninitializedStorage = 
+          uninitializedContainer.read(storageNotifierProvider.notifier) as PurplebaseStorageNotifier;
+      
+      // Should not throw, just return early
+      expect(
+        () => uninitializedStorage.disconnect(),
+        returnsNormally,
+        reason: 'Should handle being called before initialization',
+      );
+      
+      uninitializedContainer.dispose();
     });
   });
 }

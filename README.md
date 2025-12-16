@@ -44,18 +44,22 @@ final notes = await container.read(storageNotifierProvider.notifier).query<Note>
 
 ## App Lifecycle (Recommended)
 
-Call `ensureConnected()` when your app resumes to immediately reconnect:
+Call `connect()` when your app resumes and `disconnect()` when paused:
 
 ```dart
 @override
 void didChangeAppLifecycleState(AppLifecycleState state) {
+  final storage = ref.read(storageNotifierProvider.notifier);
   if (state == AppLifecycleState.resumed) {
-    ref.read(storageNotifierProvider.notifier).ensureConnected();
+    storage.connect();
+  } else if (state == AppLifecycleState.paused) {
+    storage.disconnect();
   }
 }
 ```
 
-This resets backoff timers and triggers immediate reconnection for disconnected relays.
+- `connect()` resets backoff timers and triggers immediate reconnection for all non-connected relays (including failed ones)
+- `disconnect()` cleanly closes all connections and stops retry timers
 
 ## Configuration
 
@@ -76,11 +80,23 @@ The pool uses these timing constants (not configurable):
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `relayTimeout` | 5s | Connection and ping timeout |
-| `maxReconnectDelay` | 30s | Maximum backoff delay |
-| `initialReconnectDelay` | 100ms | First retry delay |
 | `pingIdleThreshold` | 55s | Ping if idle this long |
 | `healthCheckInterval` | 60s | Heartbeat frequency |
-| `maxRetries` | 20 | Before marking relay as failed |
+| `maxRetries` | 31 | Total attempts before marking relay as failed |
+
+### Backoff Schedule
+
+Reconnection uses a tiered backoff: delay = 2^n seconds, repeated 2^n times:
+
+| Level | Delay | Attempts | Cumulative |
+|-------|-------|----------|------------|
+| n=0 | 1s | 1 | 1 |
+| n=1 | 2s | 2 | 3 |
+| n=2 | 4s | 4 | 7 |
+| n=3 | 8s | 8 | 15 |
+| n=4 | 16s | 16 | 31 |
+
+After 31 attempts, the relay is marked as `failed`. Call `connect()` to restart failed relays.
 
 ## Query Modes
 
@@ -114,8 +130,8 @@ When relays don't respond within `responseTimeout`:
 - **Background Isolate** - SQLite + WebSocket pool run off the UI thread
 - **Single Source of Truth** - `PoolState` contains all subscription and relay state
 - **Per-Subscription Relay Tracking** - Each subscription tracks its relays independently
-- **Auto-Reconnect** - Exponential backoff with retry limit per relay
-- **ensureConnected()** - Immediate reconnection for app lifecycle events
+- **Auto-Reconnect** - Tiered backoff (1s, 2s×2, 4s×4, 8s×8, 16s×16) with 31 total attempts
+- **connect() / disconnect()** - App lifecycle management for reconnection and clean shutdown
 - **Ping Health Checks** - `limit:0` requests detect zombie connections (55s idle threshold)
 - **Event Batching** - Cross-relay deduplication with configurable flush window
 - **No Resource Leaks** - Timeouts always clean up blocking subscriptions

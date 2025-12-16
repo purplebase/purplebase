@@ -71,10 +71,13 @@ void isolateEntryPoint(List args) {
     // Handle heartbeat messages (no reply needed)
     if (message is HeartbeatMessage) {
       try {
-        if (message.forceReconnect) {
-          pool.ensureConnected();
-        } else {
-          await pool.performHealthCheck();
+        switch (message.action) {
+          case HeartbeatAction.connect:
+            pool.connect();
+          case HeartbeatAction.disconnect:
+            pool.disconnect();
+          case HeartbeatAction.healthCheck:
+            await pool.performHealthCheck();
         }
       } catch (_) {
         // Errors are logged in pool state
@@ -172,11 +175,14 @@ final class PoolStateMessage extends IsolateMessage {
   PoolStateMessage(this.poolState);
 }
 
-/// Heartbeat message from main isolate to trigger health checks
+/// Action type for heartbeat messages
+enum HeartbeatAction { healthCheck, connect, disconnect }
+
+/// Heartbeat message from main isolate to trigger health checks or connection changes
 final class HeartbeatMessage {
   final DateTime timestamp;
-  final bool forceReconnect;
-  HeartbeatMessage(this.timestamp, {this.forceReconnect = false});
+  final HeartbeatAction action;
+  HeartbeatMessage(this.timestamp, {this.action = HeartbeatAction.healthCheck});
 }
 
 sealed class IsolateOperation {}

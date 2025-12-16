@@ -8,12 +8,6 @@ abstract class PoolConstants {
   /// Timeout for WebSocket connection and ping operations
   static const relayTimeout = Duration(seconds: 5);
 
-  /// Maximum delay between reconnection attempts
-  static const maxReconnectDelay = Duration(seconds: 30);
-
-  /// Initial delay for first reconnection attempt
-  static const initialReconnectDelay = Duration(milliseconds: 100);
-
   /// Only ping if no activity for this duration
   /// Set to 55s (under 60s) to avoid silent closure by NAT gateways and cellular networks
   static const pingIdleThreshold = Duration(seconds: 55);
@@ -21,11 +15,39 @@ abstract class PoolConstants {
   /// Interval between health checks from main isolate
   static const healthCheckInterval = Duration(minutes: 1);
 
-  /// Maximum reconnection attempts before marking relay as failed
-  static const maxRetries = 20;
-
   /// Maximum log entries to keep
   static const maxLogEntries = 200;
+
+  /// Backoff schedule: delay = 2^n seconds, repeated 2^n times
+  /// n=0: 1s × 1, n=1: 2s × 2, n=2: 4s × 4, n=3: 8s × 8, n=4: 16s × 16
+  /// Total: 1 + 2 + 4 + 8 + 16 = 31 attempts, then fail
+  static const _maxBackoffLevel = 4; // max delay = 2^4 = 16 seconds
+
+  /// Total attempts before failure: sum of 2^n for n=0..4 = 31
+  static const maxRetries = 31;
+
+  /// Get the backoff delay for a given attempt number (1-based)
+  /// Returns null if attempts exceed maxRetries (should fail)
+  static Duration? getBackoffDelay(int attempt) {
+    if (attempt < 1 || attempt > maxRetries) return null;
+
+    // Find which level this attempt belongs to
+    // Level 0: attempts 1 (1 attempt)
+    // Level 1: attempts 2-3 (2 attempts)
+    // Level 2: attempts 4-7 (4 attempts)
+    // Level 3: attempts 8-15 (8 attempts)
+    // Level 4: attempts 16-31 (16 attempts)
+    var cumulativeAttempts = 0;
+    for (var n = 0; n <= _maxBackoffLevel; n++) {
+      final attemptsAtLevel = 1 << n; // 2^n
+      cumulativeAttempts += attemptsAtLevel;
+      if (attempt <= cumulativeAttempts) {
+        final delaySeconds = 1 << n; // 2^n seconds
+        return Duration(seconds: delaySeconds);
+      }
+    }
+    return null; // Should not reach here
+  }
 }
 
 /// Unified phase for a relay-subscription pair
