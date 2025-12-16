@@ -93,45 +93,40 @@ class RelayPool {
   // ============================================================
 
   /// Query relays
+  ///
+  /// For `stream=false`: blocks until all EOSEs, returns events, auto-unsubscribes.
+  /// For `stream=true`: returns [] immediately, events flow via onEvents callback.
   Future<List<Map<String, dynamic>>> query(
     Request req, {
     RemoteSource source = const RemoteSource(),
   }) async {
-    // If stream is false and background is true, force background=false to prevent hangs
-    if (!source.stream && source.background == true) {
-      source = source.copyWith(background: false);
-    }
-
     if (source.relays is! Iterable<String>) return [];
     final relayUrls = (source.relays as Iterable<String>).toSet();
     if (relayUrls.isEmpty) return [];
 
-    // Background queries that are non-stream should still clean up once done.
-    final needsCompleter = !source.stream || !source.background;
-    final completer = needsCompleter
-        ? Completer<List<Map<String, dynamic>>>()
-        : null;
+    if (source.stream) {
+      // Streaming: no completer, events via callback, stays open until cancel
+      _createSubscription(
+        req,
+        relayUrls: relayUrls,
+        stream: true,
+        queryCompleter: null,
+      );
+      return [];
+    }
+
+    // One-shot query: create completer to get results
+    final completer = Completer<List<Map<String, dynamic>>>();
 
     _createSubscription(
       req,
       relayUrls: relayUrls,
-      stream: source.stream,
+      stream: false,
       queryCompleter: completer,
     );
 
-    if (source.background) {
-      if (!source.stream && completer != null) {
-        completer.future.whenComplete(() => unsubscribe(req));
-      }
-      return [];
-    }
-
-    final events = await completer!.future;
-    if (!source.stream) {
-      unsubscribe(req);
-    }
-
-    return events;
+    // Pool auto-unsubscribes after all EOSEs for stream=false
+    return completer.future;
   }
 
   /// Unsubscribe from a request
@@ -340,7 +335,6 @@ class RelayPool {
     _eventBuffers[subId] = _EventBuffer(
       subscriptionId: subId,
       batchWindow: config.streamingBufferWindow,
-      isStreaming: stream,
       totalRelayCount: relayUrls.length,
       queryCompleter: queryCompleter,
       onFlush: (events, relaysForIds) {
@@ -661,13 +655,17 @@ class RelayPool {
       ),
     );
 
-    // Mark EOSE in buffer
+    // Mark EOSE in buffer (triggers flush based on queryCompleter presence)
     buffer.markEose(url);
 
-    // Check if all relays have EOSE
-    final newSub = _subscriptions[subId]!;
-    if (newSub.allEoseReceived) {
+    // Check if all relays have sent EOSE
+    if (buffer.allEoseReceived) {
       buffer.eoseTimeoutTimer?.cancel();
+
+      // Auto-unsubscribe for one-shot subscriptions (stream=false)
+      if (!sub.stream) {
+        unsubscribe(sub.request);
+      }
     }
   }
 
@@ -740,6 +738,12 @@ class RelayPool {
 
     // Flush whatever we have
     buffer.flush();
+
+    // Auto-unsubscribe for one-shot subscriptions after timeout
+    // This prevents resource leaks when not all relays respond
+    if (!sub.stream) {
+      unsubscribe(sub.request);
+    }
   }
 
   // ============================================================
@@ -963,7 +967,6 @@ class PublishRelayResponse {
 class _EventBuffer {
   final String subscriptionId;
   final Duration batchWindow;
-  final bool isStreaming;
   final int totalRelayCount;
   final void Function(
     List<Map<String, dynamic>> events,
@@ -982,11 +985,13 @@ class _EventBuffer {
   _EventBuffer({
     required this.subscriptionId,
     required this.batchWindow,
-    required this.isStreaming,
     required this.totalRelayCount,
     required this.onFlush,
     this.queryCompleter,
   });
+
+  /// Whether this buffer has a blocking query waiting for results
+  bool get _isBlocking => queryCompleter != null;
 
   void addEvent(String relayUrl, Map<String, dynamic> event) {
     final eventId = event['id'] as String?;
@@ -999,8 +1004,8 @@ class _EventBuffer {
     if (!_eventsById.containsKey(eventId)) {
       _eventsById[eventId] = event;
 
-      // Schedule batch flush for streaming subscriptions
-      if (isStreaming) {
+      // Schedule batch flush for non-blocking subscriptions (streaming or _fetch)
+      if (!_isBlocking) {
         _scheduleBatchFlush();
       }
     }
@@ -1009,19 +1014,21 @@ class _EventBuffer {
   void markEose(String relayUrl) {
     _eoseReceived.add(relayUrl);
 
-    final allEoseReceived = _eoseReceived.length >= totalRelayCount;
-
-    if (isStreaming) {
-      // Streaming: flush when we have events
+    if (_isBlocking) {
+      // Blocking query: wait for all relays before completing the Future
+      if (_eoseReceived.length >= totalRelayCount) {
+        flush();
+      }
+    } else {
+      // Streaming or _fetch: flush progressively on each EOSE
       if (_eventsById.isNotEmpty) {
         flush();
       }
-    } else if (allEoseReceived) {
-      // Non-streaming: wait for all relays before completing
-      // Timeout handler will flush if some relays are slow
-      flush();
     }
   }
+
+  /// Whether all relays have sent EOSE
+  bool get allEoseReceived => _eoseReceived.length >= totalRelayCount;
 
   void _scheduleBatchFlush() {
     if (_batchTimer?.isActive == true) return;
@@ -1035,18 +1042,19 @@ class _EventBuffer {
     final events = _eventsById.values.toList();
     final relaysForIds = Map<String, Set<String>>.from(_relaysForEventId);
 
-    // Emit events
+    // Emit events via callback
     if (events.isNotEmpty) {
       onFlush(events, relaysForIds);
     }
 
-    // Complete query completer if waiting
+    // Complete query completer if blocking query is waiting
     if (queryCompleter != null && !queryCompleter!.isCompleted) {
       queryCompleter!.complete(List.from(events));
     }
 
-    // Clear buffer for streaming subscriptions
-    if (isStreaming) {
+    // Clear buffer for non-blocking subscriptions (streaming or _fetch)
+    // Blocking queries keep buffer until unsubscribe for the Future return
+    if (!_isBlocking) {
       _eventsById.clear();
       _relaysForEventId.clear();
     }

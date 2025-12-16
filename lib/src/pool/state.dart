@@ -22,7 +22,7 @@ abstract class PoolConstants {
   static const healthCheckInterval = Duration(minutes: 1);
 
   /// Maximum reconnection attempts before marking relay as failed
-  static const maxRetries = 5;
+  static const maxRetries = 20;
 
   /// Maximum log entries to keep
   static const maxLogEntries = 200;
@@ -112,8 +112,9 @@ class RelaySubState {
     return RelaySubState(
       phase: phase ?? this.phase,
       lastEventAt: lastEventAt ?? this.lastEventAt,
-      streamingSince:
-          clearStreamingSince ? null : (streamingSince ?? this.streamingSince),
+      streamingSince: clearStreamingSince
+          ? null
+          : (streamingSince ?? this.streamingSince),
       reconnectAttempts: reconnectAttempts ?? this.reconnectAttempts,
       lastError: clearError ? null : (lastError ?? this.lastError),
     );
@@ -152,12 +153,10 @@ class Subscription {
   bool get hasActiveRelay => activeRelayCount > 0;
 
   /// Whether all relays have received EOSE (streaming or failed)
-  bool get allEoseReceived =>
-      relays.values.every(
-        (r) =>
-            r.phase == RelaySubPhase.streaming ||
-            r.phase == RelaySubPhase.failed,
-      );
+  bool get allEoseReceived => relays.values.every(
+    (r) =>
+        r.phase == RelaySubPhase.streaming || r.phase == RelaySubPhase.failed,
+  );
 
   /// Status text for UI display
   String get statusText {
@@ -190,10 +189,7 @@ class PoolState {
   final Map<String, Subscription> subscriptions;
   final List<LogEntry> logs;
 
-  PoolState({
-    this.subscriptions = const {},
-    this.logs = const [],
-  });
+  PoolState({this.subscriptions = const {}, this.logs = const []});
 
   /// Get subscription by ID
   Subscription? operator [](String id) => subscriptions[id];

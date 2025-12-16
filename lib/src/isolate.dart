@@ -21,8 +21,8 @@ void isolateEntryPoint(List args) {
   StreamSubscription? sub;
 
   // Track which subscriptions should send QueryResultMessage
-  // Only streaming and background queries need this
-  final Set<String> streamingSubscriptions = {};
+  // Streaming queries and fetch() need this (blocking queries return via IsolateResponse)
+  final Set<String> callbackSubscriptions = {};
 
   // Initialize database first
   Database? db;
@@ -55,9 +55,9 @@ void isolateEntryPoint(List args) {
 
       final ids = db!.save(events.toSet(), relaysForIds, config, verifier);
 
-      // Only send QueryResultMessage for streaming/background queries
-      // Non-streaming foreground queries return data directly via IsolateResponse
-      if (streamingSubscriptions.contains(req.subscriptionId)) {
+      // Only send QueryResultMessage for subscriptions that use callbacks
+      // Blocking queries return data directly via IsolateResponse
+      if (callbackSubscriptions.contains(req.subscriptionId)) {
         mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
       }
     },
@@ -118,27 +118,15 @@ void isolateEntryPoint(List args) {
         // REMOTE
 
         case RemoteQueryIsolateOperation(:final req, :final source):
-          // Track streaming and background queries
-          if (source.stream || source.background) {
-            streamingSubscriptions.add(req.subscriptionId);
+          // Streaming queries need callback tracking
+          if (source.stream) {
+            callbackSubscriptions.add(req.subscriptionId);
           }
 
-          final future = pool.query(req, source: source);
-          if (source.background) {
-            response = IsolateResponse(
-              success: true,
-              result: <Map<String, dynamic>>[],
-            );
-          } else {
-            final result = await future;
-            // No saving here, events are saved in the callback as query also emits
-            response = IsolateResponse(success: true, result: result.decoded());
-
-            // Remove from tracking if not streaming (one-time query completed)
-            if (!source.stream) {
-              streamingSubscriptions.remove(req.subscriptionId);
-            }
-          }
+          final result = await pool.query(req, source: source);
+          // For stream=true, pool returns [] immediately
+          // For stream=false, pool waits for all EOSEs and returns data
+          response = IsolateResponse(success: true, result: result.decoded());
 
         case RemotePublishIsolateOperation(:final events, :final source):
           final result = await pool.publish(events, source: source);
@@ -146,7 +134,7 @@ void isolateEntryPoint(List args) {
 
         case RemoteCancelIsolateOperation(:final req):
           pool.unsubscribe(req);
-          streamingSubscriptions.remove(req.subscriptionId);
+          callbackSubscriptions.remove(req.subscriptionId);
           response = IsolateResponse(success: true);
 
         // ISOLATE

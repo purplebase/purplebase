@@ -4,122 +4,221 @@
 
 ### Overview
 
-The WebSocket pool uses self-managing relay agents with clean separation of concerns. Each relay connection is independent and handles its own lifecycle automatically.
+The WebSocket pool (`RelayPool`) is the single source of truth for all relay state. It handles connections, subscriptions, events, and publishes with clean separation between blocking and streaming queries.
 
 ### Core Components
 
-#### 1. RelayAgent (`lib/src/pool/connection/relay_agent.dart`)
+#### 1. RelayPool (`lib/src/pool/pool.dart`)
 
-**Purpose:** Self-contained connection manager for a single relay
+**Purpose:** Central coordinator for all relay operations
 
 **Responsibilities:**
-- Manages WebSocket connection lifecycle (connect, reconnect, disconnect)
-- Auto-reconnects with exponential backoff (100ms → 30s)
-- Handles subscriptions and publishes for this relay
-- Notifies coordinator via strongly-typed callbacks (no shared mutable state)
+- Manages WebSocket connections via `RelaySocket` wrappers
+- Routes subscriptions to appropriate relays
+- Buffers and deduplicates events via `_EventBuffer`
+- Handles EOSE (End of Stored Events) timing and timeouts
+- Auto-reconnects with exponential backoff
+- Emits unified `PoolState` for UI / health metrics
 
-**Key Features:**
-- **Self-managing:** Runs own reconnection loop when subscriptions exist
-- **Explicit state machine:** `Connecting → Connected → Disconnected`
-- **Backoff aware:** Maintains `nextReconnectAt`, `reconnectAttempts`, `lastError`
-- **Force reconnect hook:** `checkAndReconnect(force: true)` ignores backoff windows, used by `ensureConnected()`
+**Query Modes:**
+
+| Mode | `stream` | Returns | EOSE Behavior | Lifecycle |
+|------|----------|---------|---------------|-----------|
+| Blocking | `false` | `Future<List<Event>>` | Wait for all relays, then complete | Auto-unsubscribe after EOSE/timeout |
+| Streaming | `true` | `[]` immediately | Flush progressively on each EOSE | Stays open until manual cancel |
 
 **API:**
 ```dart
-await agent.subscribe(subId, filters);  // Starts connection if needed
-await agent.publish(event);              // Returns PublishResult
-agent.unsubscribe(subId);                // Stops reconnection if no subs remain
+// Blocking query - waits for all EOSEs, returns events
+final events = await pool.query(req, source: RemoteSource(stream: false));
+
+// Streaming query - returns immediately, events via callback
+pool.query(req, source: RemoteSource(stream: true));
+
+// Unsubscribe
+pool.unsubscribe(req);
+
+// Publish
+final response = await pool.publish(events, source: source);
 ```
 
-#### 2. SubscriptionBuffer (`lib/src/pool/subscription/subscription_buffer.dart`)
+#### 2. _EventBuffer (internal)
 
-**Purpose:** Event batching and deduplication for a subscription
-
-**Responsibilities:**
-- Deduplicates events across relays (by event ID)
-- Batches events with configurable window (50ms default)
-- Tracks EOSE from all target relays
-- Provides Future for one-shot queries, flushes for streaming
-
-**Two Modes:**
-- **One-shot queries:** Buffers until all EOSE received, returns full list
-- **Streaming subscriptions:** Flushes batches periodically as events arrive
-
-#### 3. WebSocketPool (`lib/src/pool/websocket_pool.dart`)
-
-**Purpose:** Thin coordinator that routes requests to agents
+**Purpose:** Per-subscription event batching and deduplication
 
 **Responsibilities:**
-- Creates RelayAgents lazily (one per normalized URL)
-- Routes subscription/publish requests to appropriate agents
-- Manages SubscriptionBuffers for cross-relay deduplication
-- Aggregates agent states into PoolState for UI / health metrics
-- Exposes `performHealthCheck({bool force = false})` for both scheduled heartbeats and foreground `ensureConnected()` sweeps
+- Deduplicates events by ID across relays
+- Tracks which relays sent each event
+- Handles EOSE reception and flush triggers
+- Completes `queryCompleter` for blocking queries
+
+**Two Behaviors Based on `queryCompleter`:**
+
+| `queryCompleter` | Flush Behavior | Use Case |
+|------------------|----------------|----------|
+| Present | Wait for ALL EOSEs, then flush once | Blocking queries (`stream=false`) |
+| Null | Flush progressively on each EOSE | Streaming or fire-and-forget |
+
+#### 3. RelaySocket (`lib/src/pool/connection.dart`)
+
+**Purpose:** Thin WebSocket wrapper with no reconnection logic
+
+**Responsibilities:**
+- Connect/disconnect to a single relay
+- Send REQ, CLOSE, EVENT messages
+- Parse incoming messages and call handlers
+- Track last activity time for idle detection
 
 ### Data Flow
 
-#### Query Operation
+#### Query Operation (Blocking)
 
 ```
-User calls pool.query(req, relayUrls)
+User calls pool.query(req, source: RemoteSource(stream: false))
   ↓
-Pool creates SubscriptionBuffer
+Pool creates _EventBuffer with queryCompleter
   ↓
-Pool gets/creates RelayAgent for each URL
+Pool creates Subscription with stream=false
   ↓
-Pool calls agent.subscribe(subId, filters)
+Pool connects to each relay and sends REQ
   ↓
-Agent connects (if not connected) and sends REQ
+Relays send EVENT messages
   ↓
-Agent receives EVENT messages
+Pool adds events to _EventBuffer (deduplicates)
   ↓
-Agent calls onEvent(relayUrl, subId, event) callback
+Relays send EOSE
   ↓
-Pool adds events to SubscriptionBuffer (deduplicates)
+Buffer tracks EOSE count
   ↓
-Agent receives EOSE
+When all EOSEs received (or timeout), buffer flushes
   ↓
-Agent calls onEose(relayUrl, subId) callback
+queryCompleter.complete(events)
   ↓
-Buffer marks EOSE for this relay
+Pool auto-unsubscribes (closes subscription)
   ↓
-When all EOSEs received, buffer flushes
-  ↓
-Events emitted via RelayEventNotifier
-  ↓
-Query completes and returns events
+Future completes with event list
 ```
 
-#### Publish Operation
+#### Query Operation (Streaming)
 
 ```
-User calls pool.publish(events, relayUrls)
+User calls pool.query(req, source: RemoteSource(stream: true))
   ↓
-Pool gets/creates RelayAgent for each URL
+Pool creates _EventBuffer WITHOUT queryCompleter
   ↓
-Pool calls agent.publish(event) for each event
+Pool creates Subscription with stream=true
   ↓
-Agent connects (if not connected)
+Pool connects to each relay and sends REQ
   ↓
-Agent sends EVENT message
+Relays send EVENT messages
   ↓
-Agent receives OK response
+Pool adds events to _EventBuffer
   ↓
-Agent completes PublishResult future
+Buffer schedules batch flush (configurable window)
   ↓
-Pool aggregates results from all agents
+Events emitted via onEvents callback
   ↓
-Returns PublishRelayResponse
+Relays send EOSE
+  ↓
+Buffer flushes any remaining events on each EOSE
+  ↓
+Subscription stays open for live events
+  ↓
+User must call pool.unsubscribe(req) to close
 ```
 
-### Design Benefits
+#### Partial EOSE / Timeout Handling
 
-- **Self-managing:** Each agent handles its own connection lifecycle independently
-- **Simple coordination:** Callbacks instead of shared mutable state
-- **Automatic reconnection:** Exponential backoff built into each agent
-- **Explicit reconnect control:** Foreground apps can call `ensureConnected()` to cancel backoff delays instantly
-- **Clean batching:** SubscriptionBuffer handles deduplication and timing
-- **Testable:** Agents can be tested in isolation from the coordinator
+When not all relays respond with EOSE within `responseTimeout`:
+
+| Query Type | Behavior |
+|------------|----------|
+| Blocking (`stream=false`) | Timeout → flush partial results → complete Future → auto-unsubscribe |
+| Streaming (`stream=true`) | Timeout → flush buffer → log warning → subscription stays open |
+
+This ensures no resource leaks for blocking queries even when relays are unresponsive.
+
+### State Model
+
+```dart
+// Pool-level state
+PoolState {
+  subscriptions: Map<String, Subscription>
+  logs: List<LogEntry>  // Rolling log, max 200 entries
+}
+
+// Per-subscription state
+Subscription {
+  id: String
+  request: Request
+  stream: bool
+  startedAt: DateTime
+  relays: Map<String, RelaySubState>
+  
+  // Computed properties
+  activeRelayCount → int
+  totalRelayCount → int
+  allEoseReceived → bool
+  hasActiveRelay → bool
+  allFailed → bool
+  statusText → String  // "2/3 relays" or "failed"
+}
+
+// Per-relay state within subscription
+RelaySubState {
+  phase: RelaySubPhase
+  lastEventAt: DateTime?
+  reconnectAttempts: int
+  lastError: String?
+  streamingSince: DateTime?  // When EOSE was received
+}
+
+// Relay phases
+enum RelaySubPhase {
+  disconnected  // Not connected
+  connecting    // Attempting connection
+  loading       // Connected, waiting for EOSE
+  streaming     // EOSE received, receiving live events
+  waiting       // Backing off before retry
+  failed        // Max retries exceeded
+}
+```
+
+### Accessing Pool State
+
+Access subscription and relay state through `poolStateProvider`:
+
+```dart
+final poolState = ref.watch(poolStateProvider);
+
+// Check subscription status
+final sub = poolState?.subscriptions[subscriptionId];
+print('Active relays: ${sub?.activeRelayCount}/${sub?.totalRelayCount}');
+print('Status: ${sub?.statusText}');  // "2/3 relays" or "failed"
+print('Stream mode: ${sub?.stream}');
+
+// Check per-relay state within a subscription
+final relay = sub?.relays['wss://relay.damus.io'];
+print('Phase: ${relay?.phase}');        // disconnected, connecting, loading, streaming, waiting, failed
+print('Attempts: ${relay?.reconnectAttempts}');
+print('Last event: ${relay?.lastEventAt}');
+print('Error: ${relay?.lastError}');
+
+// View logs (max 200 entries)
+for (final log in poolState?.logs ?? []) {
+  print('[${log.level}] ${log.message}');
+}
+```
+
+### Design Principles
+
+1. **Single Source of Truth:** `RelayPool` owns all state, emits via `onStateChange`
+2. **Discriminate by Intent:**
+   - `queryCompleter` → flush behavior (batched vs progressive)
+   - `stream` → lifecycle (auto-close vs stay-open)
+3. **No Resource Leaks:** Timeout always cleans up blocking queries
+4. **Progressive Delivery:** Streaming queries get events as they arrive
+5. **Deduplication:** Events deduplicated by ID across all relays
 
 ### Package Dependencies
 
@@ -134,24 +233,30 @@ Uses the official `web_socket` package:
 The test suite covers:
 - Connection management and reconnection
 - Event deduplication across relays
-- EOSE handling and batching
+- EOSE handling (blocking vs streaming)
+- Timeout behavior and cleanup
 - Publish operations and OK responses
 - Subscription lifecycle
 - Pool state tracking
 - Integration tests with local relay server
 
-### Performance Characteristics
+### Configuration
 
-- **Efficient memory:** Single source of truth per agent, no redundant state tracking
-- **Lazy connection:** Agents created on-demand, only when needed
-- **Low latency:** Direct callback path from agents to coordinator
-- **Smart batching:** Two-level batching (per-agent + cross-relay deduplication)
+```dart
+StorageConfiguration(
+  responseTimeout: Duration(seconds: 15),      // EOSE and publish timeout
+  streamingBufferWindow: Duration(milliseconds: 100),  // Event batch window
+)
+```
 
-### Future Improvements
+### Pool Constants
 
-1. **Connection pooling:** Reuse agents across subscription lifecycles
-2. **Smart relay selection:** Prioritize responsive relays
-3. **Event caching:** Avoid re-fetching seen events
-4. **Adaptive backoff:** Learn relay response times / failure rates
-5. **Health scoring:** Track relay reliability metrics for UI
-
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `relayTimeout` | 5s | WebSocket connection timeout |
+| `maxReconnectDelay` | 30s | Maximum backoff delay |
+| `initialReconnectDelay` | 100ms | First retry delay |
+| `pingIdleThreshold` | 55s | Ping if no activity |
+| `healthCheckInterval` | 60s | Background heartbeat |
+| `maxRetries` | 20 | Before marking relay as failed |
+| `maxLogEntries` | 200 | Rolling log size |

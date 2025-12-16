@@ -91,7 +91,7 @@ void main() {
     final req = Request([
       RequestFilter(ids: {note.id}),
     ]);
-    final result = await pool.query(req, source: RemoteSource(relays: {relayUrl}));
+    final result = await pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: false));
 
     // Should find the event with correct content
     expect(result, isNotEmpty, reason: 'Should find published event');

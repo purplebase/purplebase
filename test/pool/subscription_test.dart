@@ -104,7 +104,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relays: {relayUrl}, background: true),
+      source: RemoteSource(relays: {relayUrl}, stream: true),
     );
 
     // Background queries return empty immediately

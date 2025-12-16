@@ -220,29 +220,23 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
       // Check for cache-eligible LocalAndRemoteSource queries
       if (source is LocalAndRemoteSource && source.cachedFor != null) {
-        await _queryCached(req, source);
+        await _queryCached(req, source, relayUrls);
         // For LocalAndRemoteSource, always query local at the end
         // (covers both fresh and stale, since remote saves to local)
       } else {
-        // Original non-cached path
-        final future = _sendMessage(
+        // Blocking query path
+        final response = await _sendMessage(
           RemoteQueryIsolateOperation(req: req, source: source),
         );
 
-        if (source.background) {
-          unawaited(future);
-        } else {
-          final response = await future;
+        if (!response.success) {
+          throw IsolateException(response.error);
+        }
 
-          if (!response.success) {
-            throw IsolateException(response.error);
-          }
-
-          // ONLY return here if source has no local
-          if (source is! LocalAndRemoteSource) {
-            final result = response.result as List<Map<String, dynamic>>;
-            return result.toModels<E>(ref).toSet().sortByCreatedAt();
-          }
+        // ONLY return here if source has no local
+        if (source is! LocalAndRemoteSource) {
+          final result = response.result as List<Map<String, dynamic>>;
+          return result.toModels<E>(ref).toSet().sortByCreatedAt();
         }
       }
     }
@@ -265,6 +259,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   Future<void> _queryCached<E extends Model<dynamic>>(
     Request<E> req,
     LocalAndRemoteSource source,
+    Set<String> relayUrls,
   ) async {
     final staleFilters = <RequestFilter<E>>[];
     final now = DateTime.now();
@@ -300,23 +295,14 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (staleFilters.isEmpty) return;
 
     final staleReq = Request<E>(staleFilters);
-    final future = _sendMessage(
+    final response = await _sendMessage(
       RemoteQueryIsolateOperation(req: staleReq, source: source),
     );
 
-    if (!source.background) {
-      final response = await future;
-      if (!response.success) {
-        throw IsolateException(response.error);
-      }
-      _updateCacheTimestamps(staleFilters, now);
-    } else {
-      unawaited(
-        future.then((_) {
-          _updateCacheTimestamps(staleFilters, DateTime.now());
-        }),
-      );
+    if (!response.success) {
+      throw IsolateException(response.error);
     }
+    _updateCacheTimestamps(staleFilters, now);
   }
 
   /// Update cache timestamps for cacheable filters

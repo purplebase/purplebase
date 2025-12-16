@@ -309,7 +309,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       // Events should be saved automatically from the remote query
@@ -329,7 +329,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       expect(result, isNotEmpty);
@@ -341,7 +341,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       expect(result, isNotEmpty);
@@ -357,7 +357,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       expect(result, isNotEmpty);
@@ -368,7 +368,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'both'),
+        source: RemoteSource(relays: 'both', stream: false),
       );
 
       expect(result, isNotEmpty);
@@ -386,7 +386,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       expect(result.length, lessThanOrEqualTo(10));
@@ -398,7 +398,7 @@ Future<void> main() async {
       // Should not throw when querying offline relay
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'offline'),
+        source: RemoteSource(relays: 'offline', stream: false),
       );
 
       // Result might be empty or contain cached data
@@ -410,7 +410,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       expect(result, isA<List>());
@@ -430,7 +430,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
 
       expect(result.length, lessThanOrEqualTo(5));
@@ -456,7 +456,7 @@ Future<void> main() async {
 
       final result = await storage.query(
         request,
-        source: RemoteSource(relays: 'both'),
+        source: RemoteSource(relays: 'both', stream: false),
       );
 
       // Should get only one copy despite querying both relays
@@ -480,7 +480,7 @@ Future<void> main() async {
       // Query from remote - this should save to local storage
       final remoteResult = await storage.query(
         RequestFilter(ids: {uniqueNote.id}).toRequest(),
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
       expect(remoteResult, isNotEmpty, reason: 'Should find event on remote');
       expect(remoteResult.first.id, equals(uniqueNote.id));
@@ -566,7 +566,7 @@ Future<void> main() async {
       final newRequest = RequestFilter(kinds: {1}).toRequest();
       final result = await storage.query(
         newRequest,
-        source: RemoteSource(relays: 'primary'),
+        source: RemoteSource(relays: 'primary', stream: false),
       );
       expect(result, isA<List>(), reason: 'Storage should still be functional after cancel');
 

@@ -88,7 +88,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relays: {relayUrl}),
+      source: RemoteSource(relays: {relayUrl}, stream: false),
     );
 
     // Verify we got the specific event back
@@ -104,7 +104,7 @@ void main() {
 
     final result = await pool.query(
       req,
-      source: RemoteSource(relays: {relayUrl}, background: true),
+      source: RemoteSource(relays: {relayUrl}, stream: true),
     );
 
     // Background queries return empty immediately
@@ -172,7 +172,7 @@ void main() {
       RequestFilter(kinds: {1}, ids: {note.id}),
     ]);
 
-    await pool.query(req, source: RemoteSource(relays: {relayUrl}));
+    await pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: false));
 
     // Verify callback received the event with correct data
     expect(receivedEvents, isNotEmpty, reason: 'onEvents should be called');
