@@ -144,19 +144,23 @@ class RelaySubState {
 }
 
 /// A subscription with per-relay state
-class Subscription {
+class RelaySubscription {
   final String id;
   final Request request;
   final bool stream;
   final DateTime startedAt;
   final Map<String, RelaySubState> relays;
 
-  Subscription({
+  /// Count of unique events received (after deduplication)
+  final int eventCount;
+
+  RelaySubscription({
     required this.id,
     required this.request,
     required this.stream,
     required this.startedAt,
     required this.relays,
+    this.eventCount = 0,
   });
 
   /// Number of relays currently streaming (connected + EOSE received)
@@ -186,35 +190,37 @@ class Subscription {
     return '$activeRelayCount/$totalRelayCount relays';
   }
 
-  Subscription copyWith({
+  RelaySubscription copyWith({
     Request? request,
     bool? stream,
     Map<String, RelaySubState>? relays,
+    int? eventCount,
   }) {
-    return Subscription(
+    return RelaySubscription(
       id: id,
       request: request ?? this.request,
       stream: stream ?? this.stream,
       startedAt: startedAt,
       relays: relays ?? this.relays,
+      eventCount: eventCount ?? this.eventCount,
     );
   }
 
   /// Update a single relay's state
-  Subscription updateRelay(String url, RelaySubState state) {
+  RelaySubscription updateRelay(String url, RelaySubState state) {
     return copyWith(relays: {...relays, url: state});
   }
 }
 
 /// Pool state - single source of truth
 class PoolState {
-  final Map<String, Subscription> subscriptions;
+  final Map<String, RelaySubscription> subscriptions;
   final List<LogEntry> logs;
 
   PoolState({this.subscriptions = const {}, this.logs = const []});
 
   /// Get subscription by ID
-  Subscription? operator [](String id) => subscriptions[id];
+  RelaySubscription? operator [](String id) => subscriptions[id];
 
   /// Check if a subscription exists
   bool hasSubscription(String id) => subscriptions.containsKey(id);

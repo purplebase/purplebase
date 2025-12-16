@@ -81,7 +81,7 @@ void main() {
     // Wait for subscription to be established
     final state = await stateCapture.waitForSubscription(req.subscriptionId);
 
-    expect(state.subscriptions, isA<Map<String, Subscription>>());
+    expect(state.subscriptions, isA<Map<String, RelaySubscription>>());
     expect(state.logs, isA<List<LogEntry>>());
 
     pool.unsubscribe(req);

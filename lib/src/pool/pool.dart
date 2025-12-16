@@ -75,7 +75,7 @@ class RelayPool {
   onEvents;
 
   // === THE STATE (single source of truth) ===
-  final Map<String, Subscription> _subscriptions = {};
+  final Map<String, RelaySubscription> _subscriptions = {};
   final List<LogEntry> _logs = [];
 
   // === INTERNAL (not in state) ===
@@ -392,7 +392,7 @@ class RelayPool {
     }
 
     // Create subscription
-    final sub = Subscription(
+    final sub = RelaySubscription(
       id: subId,
       request: req,
       stream: stream,
@@ -716,8 +716,10 @@ class RelayPool {
       );
     }
 
-    // Add to buffer (handles deduplication)
-    buffer.addEvent(url, event);
+    // Add to buffer (handles deduplication) and track unique event count
+    if (buffer.addEvent(url, event)) {
+      _subscriptions[subId] = sub.copyWith(eventCount: sub.eventCount + 1);
+    }
   }
 
   void _handleEose(String url, String subId) {
@@ -1090,9 +1092,10 @@ class _EventBuffer {
   /// Whether this buffer has a blocking query waiting for results
   bool get _isBlocking => queryCompleter != null;
 
-  void addEvent(String relayUrl, Map<String, dynamic> event) {
+  /// Returns true if this was a new unique event (not a duplicate)
+  bool addEvent(String relayUrl, Map<String, dynamic> event) {
     final eventId = event['id'] as String?;
-    if (eventId == null) return;
+    if (eventId == null) return false;
 
     // Track which relay sent this event
     _relaysForEventId.putIfAbsent(eventId, () => {}).add(relayUrl);
@@ -1105,7 +1108,9 @@ class _EventBuffer {
       if (!_isBlocking) {
         _scheduleBatchFlush();
       }
+      return true;
     }
+    return false;
   }
 
   void markEose(String relayUrl) {
