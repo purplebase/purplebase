@@ -601,12 +601,6 @@ class RelayPool {
   }
 
   void _onSocketError(String url, String error) {
-    _log(
-      LogLevel.error,
-      'Socket error',
-      relayUrl: url,
-      exception: Exception(error),
-    );
     _onSocketDisconnected(url, error);
   }
 
