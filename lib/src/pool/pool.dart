@@ -140,12 +140,22 @@ class RelayPool {
     final sub = _subscriptions[subId];
     if (sub == null) return;
 
-    // Send CLOSE to all connected relays
+    // Clean up for all relays (connected or not)
     for (final url in sub.relays.keys) {
       final managed = _sockets[url];
-      if (managed?.socket.isConnected == true) {
-        managed!.socket.sendClose(subId);
+      if (managed != null) {
+        // Send CLOSE if connected
+        if (managed.socket.isConnected) {
+          managed.socket.sendClose(subId);
+        }
+
+        // ALWAYS remove from subscriptionIds, regardless of connection state
         managed.subscriptionIds.remove(subId);
+
+        // Cancel reconnect timer if no more subscriptions for this socket
+        if (managed.subscriptionIds.isEmpty) {
+          managed.reconnectTimer?.cancel();
+        }
       }
     }
 
