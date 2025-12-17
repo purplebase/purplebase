@@ -64,6 +64,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
           _initCompleter!.complete();
         case QueryResultMessage(:final request, :final savedIds)
             when savedIds.isNotEmpty:
+          invalidateQueryCache();
           state = InternalStorageData(updatedIds: savedIds, req: request);
         case PoolStateMessage poolStateMessage:
           ref.read(poolStateProvider.notifier).emit(poolStateMessage.poolState);
@@ -137,6 +138,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   Future<bool> save(Set<Model<dynamic>> events) async {
     if (events.isEmpty) return true;
 
+    invalidateQueryCache();
+
     final maps = events.map((e) => e.toMap()).toSet();
 
     final response = await _sendMessage(
@@ -186,6 +189,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<void> clear([Request? req]) async {
+    invalidateQueryCache();
+
     final response = await _sendMessage(LocalClearIsolateOperation());
 
     if (!response.success) {
