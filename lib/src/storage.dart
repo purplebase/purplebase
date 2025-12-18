@@ -208,17 +208,29 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       throw IsolateException('Storage has been disposed');
     }
 
-    final events = <Map<String, dynamic>>[];
+    final results = <E>[];
 
     final tuples = req.filters.map((f) => f.toSQL()).toList();
     final statements = db!.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
     try {
       for (final statement in statements) {
         final i = statements.indexOf(statement);
+        final filter = req.filters[i];
         final result = statement.selectWith(
           StatementParameters.named(tuples[i].$2),
         );
-        events.addAll(result.decoded());
+        var events = result.decoded();
+
+        // Apply schemaFilter before model construction
+        if (filter.schemaFilter != null) {
+          events = events.where(filter.schemaFilter!).toList();
+        }
+
+        results.addAll(
+          events
+              .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
+              .cast<E>(),
+        );
       }
     } finally {
       for (final statement in statements) {
@@ -226,10 +238,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       }
     }
 
-    return events
-        .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
-        .toList()
-        .cast();
+    return results;
   }
 
   @override
@@ -264,7 +273,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
         // ONLY return here if source has no local
         if (source is! LocalAndRemoteSource) {
-          final result = response.result as List<Map<String, dynamic>>;
+          var result = response.result as List<Map<String, dynamic>>;
+          // Apply schemaFilters before model construction
+          result = _applySchemaFilters(result, req.filters);
           return result.toModels<E>(ref).toSet().sortByCreatedAt();
         }
       }
@@ -281,7 +292,27 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final result =
         response.result as Map<Request, Iterable<Map<String, dynamic>>>;
-    return result[req]!.toModels<E>(ref).toSet().sortByCreatedAt();
+    // Apply schemaFilters before model construction
+    final filtered = _applySchemaFilters(result[req]!.toList(), req.filters);
+    return filtered.toModels<E>(ref).toSet().sortByCreatedAt();
+  }
+
+  /// Apply schemaFilters from all filters to a list of events.
+  /// Events must pass ALL non-null schemaFilters to be included.
+  List<Map<String, dynamic>> _applySchemaFilters(
+    List<Map<String, dynamic>> events,
+    List<RequestFilter> filters,
+  ) {
+    final schemaFilters = filters
+        .map((f) => f.schemaFilter)
+        .whereType<SchemaFilter>()
+        .toList();
+
+    if (schemaFilters.isEmpty) return events;
+
+    return events.where((event) {
+      return schemaFilters.every((filter) => filter(event));
+    }).toList();
   }
 
   /// Handle cached query: split filters into fresh/stale, query remote for stale only

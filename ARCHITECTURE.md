@@ -210,46 +210,45 @@ for (final log in poolState?.logs ?? []) {
 }
 ```
 
-### Event Filtering
+### Schema Filtering
 
-Events can be filtered before they reach storage using `RemoteSource.eventFilter`. This allows discarding unwanted events at the earliest point in the pipeline.
+Events can be filtered before model construction using `RequestFilter.schemaFilter`. This applies to both local and remote data sources.
 
 **Usage:**
 ```dart
 // Filter by content length
-final source = RemoteSource(
-  relays: {relayUrl},
-  stream: true,
-  eventFilter: (event) {
+query<Note>(
+  authors: {pubkey},
+  schemaFilter: (event) {
     final content = event['content'] as String?;
     return content != null && content.length > 10;
   },
 );
 
 // Filter by kind
-final source = RemoteSource(
-  relays: {relayUrl},
-  eventFilter: (event) => event['kind'] == 1,
+query<Note>(
+  authors: {pubkey},
+  schemaFilter: (event) => event['kind'] == 1,
 );
 
 // Complex filtering
-final source = RemoteSource(
-  relays: {relayUrl},
-  eventFilter: (event) =>
+query<Note>(
+  authors: {pubkey},
+  schemaFilter: (event) =>
     event['kind'] == 1 &&
     !(event['content'] as String?)?.contains('spam') == true,
 );
 ```
 
 **How it works:**
-1. Filter is stored per-subscription in `_subscriptionFilters` map
-2. Applied in `_handleEvent()` before adding to buffer
-3. Events that don't pass (`filter(event) == false`) are silently discarded
-4. Filter is cleaned up on `unsubscribe()` and `dispose()`
+1. Filter is defined on `RequestFilter`
+2. Applied in storage layer before model construction
+3. Events that don't pass (`filter(event) == false`) are discarded
+4. Applies to both local storage queries and remote relay queries
 
 **Benefits:**
-- Reduces storage writes for unwanted events
-- Works with both blocking and streaming queries
+- Unified filtering for local and remote data
+- Filters raw event data before model construction
 - Filter logic stays with the query definition
 
 ### Design Principles

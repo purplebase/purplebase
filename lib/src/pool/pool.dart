@@ -85,8 +85,6 @@ class RelayPool {
   // Event buffering for deduplication
   final Map<String, _EventBuffer> _eventBuffers = {};
 
-  // Per-subscription event filters
-  final Map<String, EventFilter> _subscriptionFilters = {};
 
   bool _disposed = false;
 
@@ -105,7 +103,6 @@ class RelayPool {
   /// For `stream=false`: blocks until all EOSEs, returns events, auto-unsubscribes.
   /// For `stream=true`: returns [] immediately, events flow via onEvents callback.
   ///
-  /// Use [RemoteSource.eventFilter] to discard events before storage.
   Future<List<Map<String, dynamic>>> query(
     Request req, {
     RemoteSource source = const RemoteSource(),
@@ -121,7 +118,6 @@ class RelayPool {
         relayUrls: relayUrls,
         stream: true,
         queryCompleter: null,
-        eventFilter: source.eventFilter,
       );
       return [];
     }
@@ -134,7 +130,6 @@ class RelayPool {
       relayUrls: relayUrls,
       stream: false,
       queryCompleter: completer,
-      eventFilter: source.eventFilter,
     );
 
     // Pool auto-unsubscribes after all EOSEs for stream=false
@@ -170,8 +165,6 @@ class RelayPool {
     _eventBuffers[subId]?.dispose();
     _eventBuffers.remove(subId);
 
-    // Clean up event filter
-    _subscriptionFilters.remove(subId);
 
     // Remove subscription
     _subscriptions.remove(subId);
@@ -380,7 +373,6 @@ class RelayPool {
     }
     _sockets.clear();
 
-    _subscriptionFilters.clear();
     _subscriptions.clear();
   }
 
@@ -393,14 +385,9 @@ class RelayPool {
     required Set<String> relayUrls,
     required bool stream,
     Completer<List<Map<String, dynamic>>>? queryCompleter,
-    EventFilter? eventFilter,
   }) {
     final subId = req.subscriptionId;
 
-    // Store event filter if provided
-    if (eventFilter != null) {
-      _subscriptionFilters[subId] = eventFilter;
-    }
 
     // Create relay states
     final relays = <String, RelaySubState>{};
@@ -735,11 +722,6 @@ class RelayPool {
     final buffer = _eventBuffers[subId];
     if (buffer == null) return;
 
-    // Apply event filter if present - discard events that don't pass
-    final filter = _subscriptionFilters[subId];
-    if (filter != null && !filter(event)) {
-      return; // Silently discard filtered events
-    }
 
     // Update lastEventAt for this relay
     final relayState = sub.relays[url];
