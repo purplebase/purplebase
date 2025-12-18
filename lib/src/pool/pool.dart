@@ -431,11 +431,8 @@ class RelayPool {
       },
     );
 
-    // Set up EOSE timeout
-    _eventBuffers[subId]!.eoseTimeoutTimer = Timer(
-      config.responseTimeout,
-      () => _handleEoseTimeout(subId),
-    );
+    // Note: EOSE timeout is started in _sendSubscription() when first REQ is sent
+    // This ensures we don't timeout while still trying to establish connection
 
     // Start connecting to all relays
     for (final url in relayUrls) {
@@ -548,7 +545,29 @@ class RelayPool {
       }).toList();
     }
 
-    managed.socket.sendReq(subId, filters);
+    final sent = managed.socket.sendReq(subId, filters);
+    if (!sent) {
+      _log(
+        LogLevel.warning,
+        'Failed to send REQ (socket broken)',
+        subscriptionId: subId,
+        relayUrl: url,
+      );
+      // Socket is in bad state - trigger reconnection via existing machinery
+      managed.socket.disconnect();
+      _onSocketDisconnected(url, 'Send failed');
+      return;
+    }
+
+    // Start EOSE timeout only after first successful REQ send
+    // This ensures we don't timeout while still trying to establish connection
+    final buffer = _eventBuffers[subId];
+    if (buffer != null && buffer.eoseTimeoutTimer == null) {
+      buffer.eoseTimeoutTimer = Timer(
+        config.responseTimeout,
+        () => _handleEoseTimeout(subId),
+      );
+    }
   }
 
   void _onSocketDisconnected(String url, String? error) {
