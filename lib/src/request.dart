@@ -47,18 +47,28 @@ extension RequestFilterExt on RequestFilter {
 
     // Handle Tags
     if (tags.isNotEmpty) {
-      final tagsParams = <String>[];
+      // Tags semantics must be:
+      // - OR within the same tag key (e.g. #t: {a,b})
+      // - AND across different tag keys (e.g. #d AND #f)
+      //
+      // The previous implementation collapsed all tag pairs into a single
+      // IN (...) clause, which incorrectly turned multi-tag filters into OR.
       for (final e in tags.entries) {
+        if (e.value.isEmpty) continue;
+
+        final tagParams = <String>[];
+        final tagKey = e.key.startsWith('#') ? e.key.substring(1) : e.key;
+
         for (final tagValue in e.value) {
           final paramName = nextParamName('tag');
-          tagsParams.add(paramName);
-          params[paramName] =
-              '${e.key.startsWith('#') ? e.key.substring(1) : e.key}:$tagValue';
+          tagParams.add(paramName);
+          params[paramName] = '$tagKey:$tagValue';
         }
+
+        whereClauses.add(
+          'id IN (SELECT event_id FROM event_tags WHERE value IN (${tagParams.join(', ')}))',
+        );
       }
-      whereClauses.add(
-        'id IN (SELECT event_id FROM event_tags WHERE value IN (${tagsParams.join(', ')}))',
-      );
     }
 
     // Handle Since (created_at > since)
