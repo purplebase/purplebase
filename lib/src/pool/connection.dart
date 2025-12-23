@@ -5,6 +5,10 @@ import 'package:web_socket/web_socket.dart';
 
 import 'state.dart';
 
+/// Exception thrown when trying to use a closed WebSocket connection.
+/// We catch this from the web_socket package to handle gracefully.
+typedef _WebSocketClosed = WebSocketConnectionClosed;
+
 /// Dumb WebSocket wrapper - no reconnection logic, no subscription tracking.
 /// Just connect, send, receive, disconnect.
 class RelaySocket {
@@ -52,21 +56,34 @@ class RelaySocket {
     _subscription?.cancel();
     _subscription = null;
 
-    if (_socket != null) {
+    // Clear reference before calling close to prevent re-entry issues
+    // and to handle the case where the socket is already closed
+    final socket = _socket;
+    _socket = null;
+
+    if (socket != null) {
       try {
-        _socket!.close();
-      } catch (_) {}
-      _socket = null;
+        socket.close();
+      } on _WebSocketClosed catch (_) {
+        // Socket was already closed - this is fine
+      } catch (_) {
+        // Ignore other errors during close
+      }
     }
   }
 
   /// Send a text message
   /// Returns true if send succeeded, false if failed
   bool send(String message) {
-    if (_socket == null) return false;
+    final socket = _socket;
+    if (socket == null) return false;
     try {
-      _socket!.sendText(message);
+      socket.sendText(message);
       return true;
+    } on _WebSocketClosed catch (_) {
+      // Socket was closed - clear our reference
+      _socket = null;
+      return false;
     } catch (_) {
       return false;
     }
@@ -101,6 +118,13 @@ class RelaySocket {
 
     if (event is TextDataReceived) {
       onMessage(event.text);
+    } else if (event is CloseReceived) {
+      // Server initiated close - mark socket as closed immediately
+      // to prevent any further operations on it
+      _socket = null;
+      _subscription?.cancel();
+      _subscription = null;
+      // Don't call onDisconnect here - onDone will be called next
     }
   }
 
