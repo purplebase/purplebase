@@ -199,10 +199,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
-  List<E> querySync<E extends Model<dynamic>>(
-    Request<E> req, {
-    Set<String>? onIds,
-  }) {
+  List<E> querySync<E extends Model<dynamic>>(Request<E> req) {
     // Check if the database has been disposed
     if (db == null) {
       throw IsolateException('Storage has been disposed');
@@ -245,7 +242,6 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   Future<List<E>> query<E extends Model<dynamic>>(
     Request<E> req, {
     Source? source,
-    Set<String>? onIds,
     String? subscriptionPrefix,
   }) async {
     source ??= config.defaultQuerySource;
@@ -332,19 +328,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       }
 
       // Check each (kind, author) pair individually
-      final staleAuthors = <String>{};
-
-      for (final author in filter.authors) {
-        for (final kind in filter.kinds) {
-          final cacheKey = '$kind:$author';
-          final lastFetch = _authorKindCache[cacheKey];
-
-          if (lastFetch == null ||
-              now.difference(lastFetch) >= source.cachedFor!) {
-            staleAuthors.add(author);
-          }
-        }
-      }
+      final staleAuthors = filter.authors.where((author) {
+        return filter.kinds.any((kind) {
+          final lastFetch = _authorKindCache['$kind:$author'];
+          return lastFetch == null ||
+              now.difference(lastFetch) >= source.cachedFor!;
+        });
+      }).toSet();
 
       if (staleAuthors.isNotEmpty) {
         staleFilters.add(filter.copyWith(authors: staleAuthors));
@@ -369,11 +359,18 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   void _updateCacheTimestamps(List<RequestFilter> filters, DateTime timestamp) {
     for (final filter in filters) {
       if (_isCacheableFilter(filter)) {
-        for (final author in filter.authors) {
-          for (final kind in filter.kinds) {
-            _authorKindCache['$kind:$author'] = timestamp;
-          }
+        for (final cacheKey in _cacheKeysFor(filter)) {
+          _authorKindCache[cacheKey] = timestamp;
         }
+      }
+    }
+  }
+
+  /// Generate cache keys for all (kind, author) pairs in a filter
+  Iterable<String> _cacheKeysFor(RequestFilter filter) sync* {
+    for (final author in filter.authors) {
+      for (final kind in filter.kinds) {
+        yield '$kind:$author';
       }
     }
   }
