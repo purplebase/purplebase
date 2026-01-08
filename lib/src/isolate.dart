@@ -55,6 +55,32 @@ void isolateEntryPoint(List args) {
 
       final ids = db!.save(events.toSet(), relaysForIds, config, verifier);
 
+      // Delete events rejected by schemaFilter from local storage
+      final schemaFilters = req.filters
+          .map((f) => f.schemaFilter)
+          .whereType<SchemaFilter>()
+          .toList();
+
+      if (schemaFilters.isNotEmpty && ids.isNotEmpty) {
+        final rejectedIds = <String>{};
+
+        for (final event in events) {
+          final eventId = event['id'] as String?;
+          if (eventId == null || !ids.contains(eventId)) continue;
+
+          // Event must pass ALL schemaFilters to be kept
+          final passesAll = schemaFilters.every((filter) => filter(event));
+          if (!passesAll) {
+            rejectedIds.add(eventId);
+          }
+        }
+
+        if (rejectedIds.isNotEmpty) {
+          db!.delete(rejectedIds);
+          ids.removeAll(rejectedIds);
+        }
+      }
+
       // Only send QueryResultMessage for subscriptions that use callbacks
       // Blocking queries return data directly via IsolateResponse
       if (callbackSubscriptions.contains(req.subscriptionId)) {

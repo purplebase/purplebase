@@ -719,4 +719,172 @@ Future<void> main() async {
       expect(response.results.containsKey(note.id), isTrue);
     });
   });
+
+  group('SchemaFilter Deletion', () {
+    late ProviderContainer container;
+    late StorageNotifier storage;
+    late Bip340PrivateKeySigner localSigner;
+
+    setUpAll(() async {
+      container = ProviderContainer(
+        overrides: [
+          storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+        ],
+      );
+
+      final config = StorageConfiguration(
+        skipVerification: true,
+        defaultRelays: {
+          'primary': {relayUrl},
+        },
+        defaultQuerySource: const LocalAndRemoteSource(
+          relays: 'primary',
+          stream: false,
+        ),
+        responseTimeout: Duration(seconds: 5),
+      );
+
+      await container.read(initializationProvider(config).future);
+      storage = container.read(storageNotifierProvider.notifier);
+
+      localSigner = Bip340PrivateKeySigner(
+        Utils.generateRandomHex64(),
+        container.read(refProvider),
+      );
+      await localSigner.signIn();
+    });
+
+    tearDown(() async {
+      await storage.clear();
+    });
+
+    tearDownAll(() async {
+      storage.dispose();
+      container.dispose();
+    });
+
+    test('should delete events rejected by schemaFilter from local storage', () async {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      // Create events with different content lengths
+      final shortNote = await PartialNote(
+        'short $timestamp',
+        tags: {'schema_test'},
+      ).signWith(localSigner);
+
+      final longNote = await PartialNote(
+        'This is a much longer note content that should pass the filter $timestamp',
+        tags: {'schema_test'},
+      ).signWith(localSigner);
+
+      // Publish both events to relay
+      await storage.publish(
+        {shortNote, longNote},
+        source: RemoteSource(relays: 'primary'),
+      );
+
+      // Query with schemaFilter that rejects short content (< 30 chars)
+      final result = await storage.query(
+        RequestFilter(
+          authors: {localSigner.pubkey},
+          tags: {'#t': {'schema_test'}},
+          schemaFilter: (event) {
+            final content = event['content'] as String?;
+            return content != null && content.length > 30;
+          },
+        ).toRequest(),
+        source: RemoteSource(relays: 'primary', stream: false),
+      );
+
+      // Should only return the long note
+      expect(result.length, equals(1));
+      expect(result.first.id, equals(longNote.id));
+
+      // Verify short note was deleted from local storage
+      final localShort = await storage.query(
+        RequestFilter(ids: {shortNote.id}).toRequest(),
+        source: LocalSource(),
+      );
+      expect(localShort, isEmpty, reason: 'Short note should be deleted from local storage');
+
+      // Verify long note is still in local storage
+      final localLong = await storage.query(
+        RequestFilter(ids: {longNote.id}).toRequest(),
+        source: LocalSource(),
+      );
+      expect(localLong.length, equals(1), reason: 'Long note should remain in local storage');
+      expect(localLong.first.id, equals(longNote.id));
+    });
+
+    test('should keep all events when no schemaFilter is provided', () async {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final note1 = await PartialNote(
+        'note one $timestamp',
+        tags: {'no_filter_test'},
+      ).signWith(localSigner);
+
+      final note2 = await PartialNote(
+        'note two $timestamp',
+        tags: {'no_filter_test'},
+      ).signWith(localSigner);
+
+      // Publish both events
+      await storage.publish(
+        {note1, note2},
+        source: RemoteSource(relays: 'primary'),
+      );
+
+      // Query without schemaFilter
+      await storage.query(
+        RequestFilter(
+          authors: {localSigner.pubkey},
+          tags: {'#t': {'no_filter_test'}},
+        ).toRequest(),
+        source: RemoteSource(relays: 'primary', stream: false),
+      );
+
+      // Both should be in local storage
+      final local = await storage.query(
+        RequestFilter(ids: {note1.id, note2.id}).toRequest(),
+        source: LocalSource(),
+      );
+      expect(local.length, equals(2), reason: 'Both notes should be in local storage');
+    });
+
+    test('should handle schemaFilter that rejects all events', () async {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final note = await PartialNote(
+        'will be rejected $timestamp',
+        tags: {'reject_all_test'},
+      ).signWith(localSigner);
+
+      // Publish event
+      await storage.publish(
+        {note},
+        source: RemoteSource(relays: 'primary'),
+      );
+
+      // Query with schemaFilter that rejects everything
+      final result = await storage.query(
+        RequestFilter(
+          authors: {localSigner.pubkey},
+          tags: {'#t': {'reject_all_test'}},
+          schemaFilter: (event) => false, // Reject all
+        ).toRequest(),
+        source: RemoteSource(relays: 'primary', stream: false),
+      );
+
+      // Should return empty
+      expect(result, isEmpty);
+
+      // Verify event was deleted from local storage
+      final local = await storage.query(
+        RequestFilter(ids: {note.id}).toRequest(),
+        source: LocalSource(),
+      );
+      expect(local, isEmpty, reason: 'Rejected event should be deleted from local storage');
+    });
+  });
 }

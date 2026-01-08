@@ -152,6 +152,27 @@ extension DbExt on Database {
     }
     execute(_setUpSql);
   }
+
+  /// Delete events by IDs.
+  /// Tags are automatically deleted via ON DELETE CASCADE.
+  void delete(Set<String> ids) {
+    if (ids.isEmpty) return;
+
+    final sql =
+        'DELETE FROM events WHERE id IN (${ids.map((_) => '?').join(', ')})';
+    final statement = prepare(sql);
+
+    try {
+      execute('BEGIN');
+      statement.execute(ids.toList());
+      execute('COMMIT');
+    } catch (e) {
+      execute('ROLLBACK');
+      rethrow;
+    } finally {
+      statement.dispose();
+    }
+  }
 }
 
 // 512 MB memory-mapped
