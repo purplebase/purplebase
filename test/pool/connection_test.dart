@@ -1,314 +1,204 @@
-import 'dart:io';
-
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
 import '../helpers.dart';
 
-/// Tests for connection management and lifecycle
+/// Tests for WebSocket connection management and lifecycle.
+///
+/// These tests verify the pool's ability to:
+/// - Establish connections to relays
+/// - Handle URL normalization
+/// - Gracefully handle offline/unreachable relays
+/// - Track connection metrics and health
 void main() {
-  late Process? relayProcess;
-  late RelayPool pool;
-  late PoolStateCapture stateCapture;
-  late ProviderContainer container;
-  late Bip340PrivateKeySigner signer;
-
-  const relayPort = 3335;
-  const relayUrl = 'ws://localhost:$relayPort';
+  late PoolTestFixture fixture;
 
   setUpAll(() async {
-    // Initialize models
-    final tempContainer = ProviderContainer(
-      overrides: [
-        storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
-      ],
-    );
-    final tempConfig = StorageConfiguration(
-      skipVerification: true,
-      defaultRelays: {
-        'temp': {'wss://temp.com'},
-      },
-      defaultQuerySource: const LocalAndRemoteSource(
-        relays: 'temp',
-        stream: false,
-      ),
-    );
-    await tempContainer.read(initializationProvider(tempConfig).future);
-
-    // Start test relay once for all tests
-    relayProcess = await startTestRelay(relayPort);
+    fixture = await createPoolFixture(port: TestPorts.connection);
   });
 
-  setUp(() async {
-    container = ProviderContainer();
-    stateCapture = PoolStateCapture();
+  tearDownAll(() => fixture.dispose());
 
-    final config = testConfig(relayUrl);
+  setUp(() => fixture.clear());
 
-    pool = RelayPool(
-      config: config,
-      onStateChange: stateCapture.onState,
-      onEvents: ({required req, required events, required relaysForIds}) {},
-    );
-
-    signer = Bip340PrivateKeySigner(
-      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      container.read(refProvider),
-    );
-    await signer.signIn();
-
-    // Clear relay state between tests
-    await relayProcess!.clear();
-  });
-
-  tearDown(() {
-    pool.dispose();
-  });
-
-  tearDownAll(() async {
-    relayProcess?.kill();
-    await relayProcess?.exitCode;
-  });
-
-  test('should connect to relay successfully', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    // Start streaming query - this will connect to the relay
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for connection deterministically
-    final state = await stateCapture.waitForConnected(relayUrl);
-
-    expect(
-      state.isRelayConnected(relayUrl),
-      isTrue,
-      reason: 'Connection should exist',
-    );
-
-    pool.unsubscribe(req);
-  });
-
-  test('should handle URL normalization', () async {
-    final denormalizedUrl = 'ws://localhost:$relayPort/';
-    final normalizedUrl = normalizeRelayUrl(denormalizedUrl);
-    expect(normalizedUrl, relayUrl, reason: 'normalizeRelayUrl should canonicalize');
-
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(
-      req,
-      source: RemoteSource(relays: {normalizedUrl}, stream: true),
-    );
-
-    // Wait for connection to normalized URL
-    final state = await stateCapture.waitForConnected(normalizedUrl);
-
-    // All URLs should be normalized to the same connection
-    expect(
-      state.isRelayConnected(normalizedUrl),
-      isTrue,
-      reason: 'Should normalize to standard URL',
-    );
-
-    pool.unsubscribe(req);
-  });
-
-  test('should handle connection to offline relay gracefully', () async {
-    const offlineRelay = 'ws://localhost:65534';
-
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    // Start query (it will fail to connect)
-    pool
-        .query(req, source: RemoteSource(relays: {offlineRelay}, stream: true))
-        .catchError((_) => <Map<String, dynamic>>[]);
-
-    // Wait for subscription to be created
-    final state = await stateCapture.waitForSubscription(req.subscriptionId);
-
-    final sub = state.subscriptions[req.subscriptionId];
-    expect(sub, isNotNull, reason: 'Subscription should exist');
-
-    final relay = sub!.relays[offlineRelay];
-    expect(relay, isNotNull, reason: 'Relay state should exist');
-    expect(
-      relay!.phase,
-      anyOf(
-        RelaySubPhase.disconnected,
-        RelaySubPhase.connecting,
-        RelaySubPhase.waiting,
-      ),
-      reason: 'Should be in disconnected, connecting, or waiting phase',
-    );
-
-    pool.unsubscribe(req);
-  });
-
-  test('should track connection metrics', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    // Start streaming query
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for successful connection
-    final state = await stateCapture.waitForConnected(relayUrl);
-    final sub = state.subscriptions[req.subscriptionId];
-    final relay = sub?.relays[relayUrl];
-
-    expect(relay, isNotNull);
-    expect(relay!.reconnectAttempts, greaterThanOrEqualTo(0));
-
-    pool.unsubscribe(req);
-  });
-
-  test('should handle empty relay URLs gracefully', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    // Should not throw when given empty relay URLs
-    final result = await pool.query(
-      req,
-      source: RemoteSource(relays: <String>{}),
-    );
-    expect(
-      result,
-      isEmpty,
-      reason: 'Should return empty list for empty relay URLs',
-    );
-  });
-
-  group('Health Check and Ping', () {
-    test('should respond to health check while connected', () async {
-      final req = Request([
-        RequestFilter(kinds: {1}),
-      ]);
-
-      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-      // Wait for connection
-      await stateCapture.waitForConnected(relayUrl);
-
-      // Health check should complete without disconnecting
-      await pool.performHealthCheck();
-
-      // Should still be connected
-      final state = stateCapture.lastState;
-      expect(state?.isRelayConnected(relayUrl), isTrue);
-
-      pool.unsubscribe(req);
+  group('Connection establishment', () {
+    test('connects to relay successfully', () async {
+      await fixture.withSubscription(
+        test: (state, sub) {
+          expect(state.isRelayConnected(fixture.relayUrl), isTrue);
+        },
+      );
     });
 
-    test('should respond to connect', () async {
-      final req = Request([
-        RequestFilter(kinds: {1}),
-      ]);
+    test('normalizes relay URLs', () async {
+      final denormalizedUrl = '${fixture.relayUrl}/';
+      final normalizedUrl = normalizeRelayUrl(denormalizedUrl);
 
-      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
+      expect(normalizedUrl, fixture.relayUrl);
 
-      // Wait for connection
-      await stateCapture.waitForConnected(relayUrl);
+      final req = Request([RequestFilter(kinds: {1})]);
+      fixture.pool.query(
+        req,
+        source: RemoteSource(relays: {normalizedUrl}, stream: true),
+      );
 
-      // connect should work without error
-      pool.connect();
+      final state = await fixture.stateCapture.waitForConnected(normalizedUrl);
+      expect(state.isRelayConnected(normalizedUrl), isTrue);
 
-      // Should still be connected after
-      final state = stateCapture.lastState;
-      expect(state?.isRelayConnected(relayUrl), isTrue);
-
-      pool.unsubscribe(req);
+      fixture.pool.unsubscribe(req);
     });
 
-    test('should track last activity time', () async {
-      final req = Request([
-        RequestFilter(kinds: {1}),
-      ]);
+    test('handles empty relay URLs gracefully', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
 
-      pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
+      final result = await fixture.pool.query(
+        req,
+        source: RemoteSource(relays: <String>{}),
+      );
 
-      // Wait for EOSE which triggers activity
-      await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-
-      final state = stateCapture.lastState;
-      final sub = state?.subscriptions[req.subscriptionId];
-      final relay = sub?.relays[relayUrl];
-
-      expect(relay, isNotNull);
-      // lastEventAt may be null if no events were received (only EOSE)
-      // but the relay should be streaming
-      expect(relay!.phase, equals(RelaySubPhase.streaming));
-
-      pool.unsubscribe(req);
+      expect(result, isEmpty);
     });
   });
 
-  group('Error Recovery', () {
-    test('should store error message on connection failure', () async {
-      const offlineRelay = 'ws://localhost:65534';
+  group('Offline relay handling', () {
+    test('handles connection to offline relay gracefully', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
 
-      final req = Request([
-        RequestFilter(kinds: {1}),
-      ]);
-
-      pool
-        .query(req, source: RemoteSource(relays: {offlineRelay}, stream: true))
+      fixture.pool
+          .query(
+            req,
+            source: RemoteSource(relays: {TestRelays.offline}, stream: true),
+          )
           .catchError((_) => <Map<String, dynamic>>[]);
 
-      // Wait for subscription state
-      final state = await stateCapture.waitForSubscription(req.subscriptionId);
+      final state = await fixture.stateCapture.waitForSubscription(
+        req.subscriptionId,
+      );
 
       final sub = state.subscriptions[req.subscriptionId];
-      final relay = sub?.relays[offlineRelay];
+      expect(sub, isNotNull);
+
+      final relay = sub!.relays[TestRelays.offline];
       expect(relay, isNotNull);
+      expect(
+        relay!.phase,
+        anyOf(
+          RelaySubPhase.disconnected,
+          RelaySubPhase.connecting,
+          RelaySubPhase.waiting,
+        ),
+      );
 
-      // After failed connection, there might be an error
-      // (depends on timing, so we just check the structure exists)
-      expect(relay!.lastError, anyOf(isNull, isA<String>()));
-
-      pool.unsubscribe(req);
+      fixture.pool.unsubscribe(req);
     });
 
-    test('should increment reconnect attempts on failure', () async {
-      const offlineRelay = 'ws://localhost:65534';
+    test('stores error message on connection failure', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
 
-      final req = Request([
-        RequestFilter(kinds: {1}),
-      ]);
-
-      pool
-        .query(req, source: RemoteSource(relays: {offlineRelay}, stream: true))
+      fixture.pool
+          .query(
+            req,
+            source: RemoteSource(relays: {TestRelays.offline}, stream: true),
+          )
           .catchError((_) => <Map<String, dynamic>>[]);
 
-      // Wait a bit for reconnect attempts
+      final state = await fixture.stateCapture.waitForSubscription(
+        req.subscriptionId,
+      );
+
+      final relay = state.subscriptions[req.subscriptionId]?.relays[TestRelays.offline];
+      expect(relay, isNotNull);
+      expect(relay!.lastError, anyOf(isNull, isA<String>()));
+
+      fixture.pool.unsubscribe(req);
+    });
+
+    test('increments reconnect attempts on failure', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
+
+      fixture.pool
+          .query(
+            req,
+            source: RemoteSource(relays: {TestRelays.offline}, stream: true),
+          )
+          .catchError((_) => <Map<String, dynamic>>[]);
+
       try {
-        await stateCapture.waitFor((s) {
-          final sub = s.subscriptions[req.subscriptionId];
-          final relay = sub?.relays[offlineRelay];
-          return relay != null && relay.reconnectAttempts > 0;
-        }, timeout: Duration(seconds: 10));
+        await fixture.stateCapture.waitFor(
+          (s) {
+            final relay =
+                s.subscriptions[req.subscriptionId]?.relays[TestRelays.offline];
+            return relay != null && relay.reconnectAttempts > 0;
+          },
+          timeout: Duration(seconds: 10),
+        );
       } catch (_) {
-        // May timeout if relay comes back too fast or never gets attempts
-        // That's OK for this test
+        // May timeout - acceptable for this test
       }
 
-      final state = stateCapture.lastState;
-      final sub = state?.subscriptions[req.subscriptionId];
-      final relay = sub?.relays[offlineRelay];
-
-      // Should have at least tracked the relay
+      final relay = fixture.stateCapture.lastState
+          ?.subscriptions[req.subscriptionId]
+          ?.relays[TestRelays.offline];
       expect(relay, isNotNull);
 
-      pool.unsubscribe(req);
+      fixture.pool.unsubscribe(req);
+    });
+  });
+
+  group('Connection metrics', () {
+    test('tracks connection metrics', () async {
+      await fixture.withSubscription(
+        test: (state, sub) {
+          final relay = sub.relays[fixture.relayUrl];
+          expect(relay, isNotNull);
+          expect(relay!.reconnectAttempts, greaterThanOrEqualTo(0));
+        },
+      );
+    });
+
+    test('tracks last activity time', () async {
+      await fixture.withStreamingSubscription(
+        test: (state, sub) {
+          final relay = sub.relays[fixture.relayUrl];
+          expect(relay, isNotNull);
+          expect(relay!.phase, equals(RelaySubPhase.streaming));
+        },
+      );
+    });
+  });
+
+  group('Health check', () {
+    test('responds to health check while connected', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
+      fixture.pool.query(
+        req,
+        source: RemoteSource(relays: {fixture.relayUrl}, stream: true),
+      );
+
+      await fixture.stateCapture.waitForConnected(fixture.relayUrl);
+
+      await fixture.pool.performHealthCheck();
+
+      expect(fixture.stateCapture.lastState?.isRelayConnected(fixture.relayUrl), isTrue);
+
+      fixture.pool.unsubscribe(req);
+    });
+
+    test('connect method works without error', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
+      fixture.pool.query(
+        req,
+        source: RemoteSource(relays: {fixture.relayUrl}, stream: true),
+      );
+
+      await fixture.stateCapture.waitForConnected(fixture.relayUrl);
+
+      fixture.pool.connect();
+
+      expect(fixture.stateCapture.lastState?.isRelayConnected(fixture.relayUrl), isTrue);
+
+      fixture.pool.unsubscribe(req);
     });
   });
 }

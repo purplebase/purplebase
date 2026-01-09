@@ -3,9 +3,13 @@ import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
-/// Tests for storage lifecycle methods (connect, disconnect, etc.)
+/// Tests for storage lifecycle methods.
+///
+/// These tests verify purplebase-specific lifecycle behavior:
+/// - connect/disconnect methods on PurplebaseStorageNotifier
+/// - Behavior before/after initialization
 void main() {
-  group('Storage Lifecycle', () {
+  group('Storage lifecycle', () {
     late ProviderContainer container;
     late PurplebaseStorageNotifier storage;
 
@@ -18,13 +22,12 @@ void main() {
 
       final config = StorageConfiguration(
         skipVerification: true,
-        defaultRelays: {
-          'test': {'wss://relay.test.com'},
-        },
+        defaultRelays: {'test': {'wss://relay.test.com'}},
       );
 
       await container.read(initializationProvider(config).future);
-      storage = container.read(storageNotifierProvider.notifier) as PurplebaseStorageNotifier;
+      storage = container.read(storageNotifierProvider.notifier)
+          as PurplebaseStorageNotifier;
     });
 
     tearDown(() {
@@ -32,77 +35,66 @@ void main() {
       container.dispose();
     });
 
-    test('connect should be callable when initialized', () {
+    test('connect is safe when initialized', () {
       expect(storage.isInitialized, isTrue);
-      
-      // Should not throw
+
       expect(
         () => storage.connect(),
         returnsNormally,
-        reason: 'connect should be safe to call',
       );
     });
 
-    test('connect should not throw when called before initialization', () {
-      final uninitializedContainer = ProviderContainer(
+    test('connect is safe before initialization', () {
+      final uninitContainer = ProviderContainer(
         overrides: [
           storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
         ],
       );
-      
-      final uninitializedStorage = 
-          uninitializedContainer.read(storageNotifierProvider.notifier) as PurplebaseStorageNotifier;
-      
-      // Should not throw, just return early
+
+      final uninitStorage = uninitContainer.read(storageNotifierProvider.notifier)
+          as PurplebaseStorageNotifier;
+
       expect(
-        () => uninitializedStorage.connect(),
+        () => uninitStorage.connect(),
         returnsNormally,
-        reason: 'Should handle being called before initialization',
       );
-      
-      uninitializedContainer.dispose();
+
+      uninitContainer.dispose();
     });
 
-    test('connect can be called multiple times', () {
-      // Should be idempotent
+    test('connect is idempotent', () {
       storage.connect();
       storage.connect();
       storage.connect();
-      
-      // No errors, storage still functional
+
       expect(storage.isInitialized, isTrue);
     });
 
-    test('disconnect should be callable when initialized', () {
+    test('disconnect is safe when initialized', () {
       expect(storage.isInitialized, isTrue);
-      
-      // Should not throw
+
       expect(
         () => storage.disconnect(),
         returnsNormally,
-        reason: 'disconnect should be safe to call',
       );
     });
 
-    test('disconnect should not throw when called before initialization', () {
-      final uninitializedContainer = ProviderContainer(
+    test('disconnect is safe before initialization', () {
+      final uninitContainer = ProviderContainer(
         overrides: [
           storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
         ],
       );
-      
-      final uninitializedStorage = 
-          uninitializedContainer.read(storageNotifierProvider.notifier) as PurplebaseStorageNotifier;
-      
-      // Should not throw, just return early
+
+      final uninitStorage = uninitContainer.read(storageNotifierProvider.notifier)
+          as PurplebaseStorageNotifier;
+
       expect(
-        () => uninitializedStorage.disconnect(),
+        () => uninitStorage.disconnect(),
         returnsNormally,
-        reason: 'Should handle being called before initialization',
       );
-      
-      uninitializedContainer.dispose();
+
+      uninitContainer.dispose();
     });
   });
 }
-

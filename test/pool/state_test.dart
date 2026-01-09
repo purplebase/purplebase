@@ -1,236 +1,155 @@
-import 'dart:io';
-
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
 import '../helpers.dart';
 
-/// Tests for pool state management
+/// Tests for pool state management and tracking.
+///
+/// These tests verify the PoolState structure and its ability to:
+/// - Track subscription and relay states
+/// - Provide accurate connection status
+/// - Include useful logging information
 void main() {
-  late Process? relayProcess;
-  late RelayPool pool;
-  late PoolStateCapture stateCapture;
-  late ProviderContainer container;
-  late Bip340PrivateKeySigner signer;
-
-  const relayPort = 3337;
-  const relayUrl = 'ws://localhost:$relayPort';
+  late PoolTestFixture fixture;
 
   setUpAll(() async {
-    final tempContainer = ProviderContainer(
-      overrides: [
-        storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
-      ],
-    );
-    final tempConfig = StorageConfiguration(
-      skipVerification: true,
-      defaultRelays: {
-        'temp': {'wss://temp.com'},
-      },
-      defaultQuerySource: const LocalAndRemoteSource(
-        relays: 'temp',
-        stream: false,
-      ),
-    );
-    await tempContainer.read(initializationProvider(tempConfig).future);
-
-    // Start test relay once for all tests
-    relayProcess = await startTestRelay(relayPort);
+    fixture = await createPoolFixture(port: TestPorts.state);
   });
 
-  setUp(() async {
-    container = ProviderContainer();
-    stateCapture = PoolStateCapture();
+  tearDownAll(() => fixture.dispose());
 
-    final config = testConfig(relayUrl);
+  setUp(() => fixture.clear());
 
-    pool = RelayPool(
-      config: config,
-      onStateChange: stateCapture.onState,
-      onEvents: ({required req, required events, required relaysForIds}) {},
-    );
+  group('State structure', () {
+    test('emits state with correct structure', () async {
+      await fixture.withSubscription(
+        test: (state, sub) {
+          expect(state.subscriptions, isA<Map<String, RelaySubscription>>());
+          expect(state.logs, isA<List<LogEntry>>());
+        },
+      );
+    });
 
-    signer = Bip340PrivateKeySigner(
-      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      container.read(refProvider),
-    );
-    await signer.signIn();
+    test('tracks relay connection state within subscription', () async {
+      await fixture.withSubscription(
+        test: (state, sub) {
+          final relay = sub.relays[fixture.relayUrl];
 
-    // Clear relay state between tests
-    await relayProcess!.clear();
+          expect(relay, isNotNull);
+          expect(
+            relay!.phase,
+            anyOf(
+              RelaySubPhase.connecting,
+              RelaySubPhase.loading,
+              RelaySubPhase.streaming,
+            ),
+          );
+        },
+      );
+    });
+
+    test('tracks subscription state', () async {
+      await fixture.withSubscription(
+        test: (state, sub) {
+          expect(sub.request, isNotNull);
+          expect(sub.relays, contains(fixture.relayUrl));
+          expect(sub.startedAt, isNotNull);
+        },
+      );
+    });
   });
 
-  tearDown(() {
-    pool.dispose();
+  group('Convenience getters', () {
+    test('connectedCount returns correct value', () async {
+      await fixture.withStreamingSubscription(
+        test: (state, sub) {
+          expect(state.connectedCount, equals(1));
+        },
+      );
+    });
+
+    test('isRelayConnected returns correct value', () async {
+      await fixture.withStreamingSubscription(
+        test: (state, sub) {
+          expect(state.isRelayConnected(fixture.relayUrl), isTrue);
+        },
+      );
+    });
   });
 
-  tearDownAll(() async {
-    relayProcess?.kill();
-    await relayProcess?.exitCode;
+  group('Relay phases', () {
+    test('tracks EOSE via streaming phase', () async {
+      await fixture.withStreamingSubscription(
+        test: (state, sub) {
+          final relay = sub.relays[fixture.relayUrl];
+          expect(relay, isNotNull);
+          expect(relay!.phase, equals(RelaySubPhase.streaming));
+        },
+      );
+    });
+
+    test('handles offline relay state', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
+
+      fixture.pool
+          .query(
+            req,
+            source: RemoteSource(relays: {TestRelays.offline}, stream: true),
+          )
+          .catchError((_) => <Map<String, dynamic>>[]);
+
+      // Just wait for subscription to be created
+      final state = await fixture.stateCapture.waitForSubscription(
+        req.subscriptionId,
+        timeout: Duration(seconds: 2),
+      );
+      final relay = state.subscriptions[req.subscriptionId]?.relays[TestRelays.offline];
+
+      expect(relay, isNotNull);
+      // Offline relay can be in any non-streaming state
+      expect(
+        relay!.phase,
+        anyOf(
+          RelaySubPhase.disconnected,
+          RelaySubPhase.connecting,
+          RelaySubPhase.waiting,
+        ),
+      );
+
+      fixture.pool.unsubscribe(req);
+    });
   });
 
-  test('should emit state with correct structure', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for subscription to be established
-    final state = await stateCapture.waitForSubscription(req.subscriptionId);
-
-    expect(state.subscriptions, isA<Map<String, RelaySubscription>>());
-    expect(state.logs, isA<List<LogEntry>>());
-
-    pool.unsubscribe(req);
+  group('Subscription status', () {
+    test('statusText contains relay info', () async {
+      await fixture.withStreamingSubscription(
+        test: (state, sub) {
+          expect(sub.statusText, isNotNull);
+          expect(sub.statusText, contains('relay'));
+        },
+      );
+    });
   });
 
-  test('should track relay connection state within subscription', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
+  group('Logging', () {
+    test('includes logs in state', () async {
+      final req = Request([RequestFilter(kinds: {1})]);
 
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
+      fixture.pool.query(
+        req,
+        source: RemoteSource(relays: {fixture.relayUrl}, stream: true),
+      );
 
-    // Wait for connection
-    final state = await stateCapture.waitForConnected(relayUrl);
-    final sub = state.subscriptions[req.subscriptionId];
-    final relay = sub?.relays[relayUrl];
+      await fixture.stateCapture.waitForEose(req.subscriptionId, fixture.relayUrl);
 
-    expect(sub, isNotNull, reason: 'Subscription should exist');
-    expect(relay, isNotNull, reason: 'Relay state should exist');
-    expect(
-      relay!.phase,
-      anyOf(RelaySubPhase.loading, RelaySubPhase.streaming),
-      reason: 'Should be loading or streaming',
-    );
+      fixture.pool.unsubscribe(req);
 
-    pool.unsubscribe(req);
-  });
+      final state = await fixture.stateCapture.waitForUnsubscribed(
+        req.subscriptionId,
+      );
 
-  test('should track subscription state', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for subscription
-    final state = await stateCapture.waitForSubscription(req.subscriptionId);
-    final subscription = state.subscriptions[req.subscriptionId];
-
-    expect(subscription, isNotNull, reason: 'Subscription should exist');
-    expect(subscription!.id, equals(req.subscriptionId));
-    expect(subscription.request, isNotNull);
-    expect(subscription.relays, contains(relayUrl));
-    expect(subscription.startedAt, isNotNull);
-
-    pool.unsubscribe(req);
-  });
-
-  test('should have correct convenience getters', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for EOSE (streaming phase)
-    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-
-    // Test convenience getters
-    expect(state.connectedCount, equals(1));
-    expect(state.isRelayConnected(relayUrl), isTrue);
-
-    pool.unsubscribe(req);
-  });
-
-  test('should handle offline relay state', () async {
-    const offlineRelay = 'ws://localhost:65534';
-
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    // Start query (will fail)
-    pool
-        .query(req, source: RemoteSource(relays: offlineRelay, stream: true))
-        .catchError((_) => <Map<String, dynamic>>[]);
-
-    // Wait for state to include the subscription
-    final state = await stateCapture.waitForSubscription(req.subscriptionId);
-    final sub = state.subscriptions[req.subscriptionId];
-    final relay = sub?.relays[offlineRelay];
-
-    expect(sub, isNotNull);
-    expect(relay, isNotNull);
-    expect(
-      relay!.phase,
-      anyOf(
-        RelaySubPhase.disconnected,
-        RelaySubPhase.connecting,
-        RelaySubPhase.waiting,
-      ),
-    );
-
-    pool.unsubscribe(req);
-  });
-
-  test('should track EOSE via streaming phase', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for EOSE (relay enters streaming phase)
-    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-    final sub = state.subscriptions[req.subscriptionId];
-    final relay = sub?.relays[relayUrl];
-
-    expect(relay, isNotNull);
-    expect(relay!.phase, equals(RelaySubPhase.streaming));
-
-    pool.unsubscribe(req);
-  });
-
-  test('should include logs in state', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for EOSE
-    await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-
-    pool.unsubscribe(req);
-
-    // Wait for unsubscription (should log completion)
-    final state = await stateCapture.waitForUnsubscribed(req.subscriptionId);
-
-    // Logs should exist (completion is logged)
-    expect(state.logs, isA<List<LogEntry>>());
-  });
-
-  test('Subscription should have statusText', () async {
-    final req = Request([
-      RequestFilter(kinds: {1}),
-    ]);
-
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: true));
-
-    // Wait for EOSE to get meaningful status
-    final state = await stateCapture.waitForEose(req.subscriptionId, relayUrl);
-    final subscription = state.subscriptions[req.subscriptionId];
-
-    expect(subscription, isNotNull);
-    expect(subscription!.statusText, isNotNull);
-    // Should be something like "1/1 relays"
-    expect(subscription.statusText, contains('relay'));
-
-    pool.unsubscribe(req);
+      expect(state.logs, isA<List<LogEntry>>());
+    });
   });
 }

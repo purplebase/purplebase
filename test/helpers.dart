@@ -1,168 +1,21 @@
+// Re-export from new location for backwards compatibility
+export 'helpers/helpers.dart';
+
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
-final refProvider = Provider((ref) => ref);
+import 'helpers/helpers.dart';
 
-/// Captures pool state changes for deterministic test synchronization.
-/// Use this instead of Future.delayed() to wait for specific states.
-class PoolStateCapture {
-  final _states = <PoolState>[];
-  final _waiters = <(bool Function(PoolState), Completer<PoolState>)>[];
-
-  void onState(PoolState state) {
-    _states.add(state);
-
-    // Check all waiters
-    final toRemove = <int>[];
-    for (var i = 0; i < _waiters.length; i++) {
-      final (predicate, completer) = _waiters[i];
-      if (predicate(state) && !completer.isCompleted) {
-        completer.complete(state);
-        toRemove.add(i);
-      }
-    }
-    // Remove completed waiters in reverse order
-    for (final i in toRemove.reversed) {
-      _waiters.removeAt(i);
-    }
-  }
-
-  /// Wait for a state matching the predicate. Checks history first.
-  Future<PoolState> waitFor(
-    bool Function(PoolState) predicate, {
-    Duration timeout = const Duration(seconds: 5),
-  }) {
-    // Check history first
-    for (final s in _states) {
-      if (predicate(s)) return Future.value(s);
-    }
-
-    final completer = Completer<PoolState>();
-    _waiters.add((predicate, completer));
-
-    return completer.future.timeout(
-      timeout,
-      onTimeout: () {
-        throw TimeoutException('Timed out waiting for pool state', timeout);
-      },
-    );
-  }
-
-  /// Wait for relay in a subscription to be streaming (connected + EOSE received)
-  Future<PoolState> waitForRelayStreaming(
-    String subscriptionId,
-    String relayUrl,
-  ) {
-    return waitFor((s) {
-      final sub = s.subscriptions[subscriptionId];
-      if (sub == null) return false;
-      final relay = sub.relays[relayUrl];
-      return relay?.phase == RelaySubPhase.streaming;
-    });
-  }
-
-  /// Wait for relay in any subscription to be connected (loading or streaming)
-  Future<PoolState> waitForConnected(String relayUrl) {
-    return waitFor((s) {
-      for (final sub in s.subscriptions.values) {
-        final relay = sub.relays[relayUrl];
-        if (relay != null &&
-            (relay.phase == RelaySubPhase.loading ||
-                relay.phase == RelaySubPhase.streaming)) {
-          return true;
-        }
-      }
-      return false;
-    });
-  }
-
-  /// Wait for subscription to exist
-  Future<PoolState> waitForSubscription(String subscriptionId) {
-    return waitFor((s) => s.subscriptions.containsKey(subscriptionId));
-  }
-
-  /// Wait for subscription to be removed
-  Future<PoolState> waitForUnsubscribed(String subscriptionId) {
-    return waitFor((s) => !s.subscriptions.containsKey(subscriptionId));
-  }
-
-  /// Wait for EOSE on a subscription from specific relay
-  Future<PoolState> waitForEose(String subscriptionId, String relayUrl) {
-    return waitFor((s) {
-      final sub = s.subscriptions[subscriptionId];
-      if (sub == null) return false;
-      final relay = sub.relays[relayUrl];
-      return relay?.phase == RelaySubPhase.streaming;
-    });
-  }
-
-  /// Get the last state (or null if none)
-  PoolState? get lastState => _states.isEmpty ? null : _states.last;
-
-  /// Clear state history
-  void clear() {
-    _states.clear();
-  }
-}
-
-/// Start a test relay on the given port
-Future<Process> startTestRelay(int port) async {
-  final process = await Process.start('test/support/test-relay', [
-    '-port',
-    port.toString(),
-  ]);
-
-  // Suppress output
-  process.stdout.transform(utf8.decoder).listen((_) {});
-  process.stderr.transform(utf8.decoder).listen((_) {});
-
-  // Wait for relay to be ready
-  await Future.delayed(Duration(milliseconds: 500));
-  return process;
-}
-
-extension TestRelayProcess on Process {
-  /// Clear relay state by sending SIGUSR1 signal
-  Future<void> clear() async {
-    kill(ProcessSignal.sigusr1);
-    // Small delay to let relay process the signal
-    await Future.delayed(Duration(milliseconds: 50));
-  }
-}
-
-/// Create a standard test configuration
-StorageConfiguration testConfig(
-  String relayUrl, {
-  bool skipVerification = true,
-  Duration responseTimeout = const Duration(seconds: 5),
-  Duration streamingBufferWindow = const Duration(milliseconds: 100),
-}) {
-  return StorageConfiguration(
-    skipVerification: skipVerification,
-    defaultRelays: {
-      'test': {relayUrl},
-    },
-    // Default to the test relay identifier for queries without explicit source
-    defaultQuerySource: const LocalAndRemoteSource(
-      relays: 'test',
-      stream: false,
-    ),
-    responseTimeout: responseTimeout,
-    streamingBufferWindow: streamingBufferWindow,
-  );
-}
-
+/// Helper for testing state notifier emissions
 class StateNotifierTester {
   final StateNotifier notifier;
 
-  final _disposeFns = [];
-  var completer = Completer();
+  final _disposeFns = <void Function()>[];
+  var completer = Completer<dynamic>();
   var initial = true;
 
   StateNotifierTester(this.notifier, {bool fireImmediately = false}) {
@@ -185,18 +38,15 @@ class StateNotifierTester {
     return expectLater(completer.future, completion(m));
   }
 
-  // Future<dynamic> expectModels(Matcher m) async {
-  //   return expect(isA<StorageData>().having((s) => s.models, 'models', m));
-  // }
-
-  dispose() {
+  void dispose() {
     for (final fn in _disposeFns) {
       fn.call();
     }
   }
 }
 
-extension ProviderContainerExt on ProviderContainer {
+/// Extension on ProviderContainer for creating state notifier testers
+extension ProviderContainerTestExt on ProviderContainer {
   StateNotifierTester testerFor(
     AutoDisposeStateNotifierProvider provider, {
     bool fireImmediately = false,
@@ -211,32 +61,68 @@ extension ProviderContainerExt on ProviderContainer {
   }
 }
 
-// Helper extensions for new PoolState structure
-extension PoolStateTestExtensions on PoolState {
-  /// Check if a relay is connected (loading or streaming) in any subscription
-  bool isRelayConnected(String relayUrl) {
-    for (final sub in subscriptions.values) {
-      final relay = sub.relays[relayUrl];
-      if (relay != null &&
-          (relay.phase == RelaySubPhase.loading ||
-              relay.phase == RelaySubPhase.streaming)) {
-        return true;
-      }
-    }
-    return false;
-  }
+/// Create a standard test configuration for storage tests
+StorageConfiguration testConfig(
+  String relayUrl, {
+  bool skipVerification = true,
+  Duration responseTimeout = const Duration(seconds: 5),
+  Duration streamingBufferWindow = const Duration(milliseconds: 100),
+}) {
+  return StorageConfiguration(
+    skipVerification: skipVerification,
+    defaultRelays: {
+      'test': {relayUrl},
+    },
+    defaultQuerySource: const LocalAndRemoteSource(
+      relays: 'test',
+      stream: false,
+    ),
+    responseTimeout: responseTimeout,
+    streamingBufferWindow: streamingBufferWindow,
+  );
+}
 
-  /// Get the number of connected relays across all subscriptions
-  int get connectedCount {
-    final connectedUrls = <String>{};
-    for (final sub in subscriptions.values) {
-      for (final entry in sub.relays.entries) {
-        if (entry.value.phase == RelaySubPhase.loading ||
-            entry.value.phase == RelaySubPhase.streaming) {
-          connectedUrls.add(entry.key);
-        }
-      }
-    }
-    return connectedUrls.length;
+/// Creates a configured ProviderContainer for storage-level testing.
+///
+/// This is for tests that need full storage integration (SQLite),
+/// not just pool-level testing.
+Future<ProviderContainer> createStorageTestContainer({
+  StorageConfiguration? config,
+}) async {
+  final container = ProviderContainer(
+    overrides: [
+      storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+    ],
+  );
+
+  final storageConfig = config ??
+      StorageConfiguration(
+        skipVerification: true,
+        defaultRelays: {
+          'test': {'wss://test.relay'},
+        },
+        defaultQuerySource: LocalSource(),
+      );
+
+  await container.read(initializationProvider(storageConfig).future);
+
+  return container;
+}
+
+/// Extension on ProviderContainer for storage test operations
+extension StorageTestContainerExt on ProviderContainer {
+  /// Get the storage notifier
+  PurplebaseStorageNotifier get storage =>
+      read(storageNotifierProvider.notifier) as PurplebaseStorageNotifier;
+
+  /// Get ref for model construction
+  Ref get ref => read(refProvider);
+
+  /// Clear storage and dispose container
+  Future<void> tearDown() async {
+    await storage.clear();
+    storage.dispose();
+    storage.obliterate();
+    dispose();
   }
 }
