@@ -46,47 +46,48 @@ void isolateEntryPoint(List args) {
     onStateChange: (state) {
       mainSendPort.send(PoolStateMessage(state));
     },
-    onEvents: ({
-      required Request req,
-      required List<Map<String, dynamic>> events,
-      required Map<String, Set<String>> relaysForIds,
-    }) {
-      if (events.isEmpty) return;
+    onEvents:
+        ({
+          required Request req,
+          required List<Map<String, dynamic>> events,
+          required Map<String, Set<String>> relaysForIds,
+        }) {
+          if (events.isEmpty) return;
 
-      final ids = db!.save(events.toSet(), relaysForIds, config, verifier);
+          final ids = db!.save(events.toSet(), relaysForIds, config, verifier);
 
-      // Delete events rejected by schemaFilter from local storage
-      final schemaFilters = req.filters
-          .map((f) => f.schemaFilter)
-          .whereType<SchemaFilter>()
-          .toList();
+          // Delete events rejected by schemaFilter from local storage
+          final schemaFilters = req.filters
+              .map((f) => f.schemaFilter)
+              .whereType<SchemaFilter>()
+              .toList();
 
-      if (schemaFilters.isNotEmpty && ids.isNotEmpty) {
-        final rejectedIds = <String>{};
+          if (schemaFilters.isNotEmpty && ids.isNotEmpty) {
+            final rejectedIds = <String>{};
 
-        for (final event in events) {
-          final eventId = event['id'] as String?;
-          if (eventId == null || !ids.contains(eventId)) continue;
+            for (final event in events) {
+              final eventId = event['id'] as String?;
+              if (eventId == null || !ids.contains(eventId)) continue;
 
-          // Event must pass ALL schemaFilters to be kept
-          final passesAll = schemaFilters.every((filter) => filter(event));
-          if (!passesAll) {
-            rejectedIds.add(eventId);
+              // Event must pass ALL schemaFilters to be kept
+              final passesAll = schemaFilters.every((filter) => filter(event));
+              if (!passesAll) {
+                rejectedIds.add(eventId);
+              }
+            }
+
+            if (rejectedIds.isNotEmpty) {
+              db.delete(rejectedIds);
+              ids.removeAll(rejectedIds);
+            }
           }
-        }
 
-        if (rejectedIds.isNotEmpty) {
-          db!.delete(rejectedIds);
-          ids.removeAll(rejectedIds);
-        }
-      }
-
-      // Only send QueryResultMessage for subscriptions that use callbacks
-      // Blocking queries return data directly via IsolateResponse
-      if (callbackSubscriptions.contains(req.subscriptionId)) {
-        mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
-      }
-    },
+          // Only send QueryResultMessage for subscriptions that use callbacks
+          // Blocking queries return data directly via IsolateResponse
+          if (callbackSubscriptions.contains(req.subscriptionId)) {
+            mainSendPort.send(QueryResultMessage(request: req, savedIds: ids));
+          }
+        },
   );
 
   // Send SendPort AFTER database and pool are initialized

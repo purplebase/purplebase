@@ -76,6 +76,7 @@ class RelayPool {
 
   // === THE STATE (single source of truth) ===
   final Map<String, RelaySubscription> _subscriptions = {};
+  final Map<String, RelaySubscription> _closedSubscriptions = {};
   final List<LogEntry> _logs = [];
 
   // === INTERNAL (not in state) ===
@@ -84,7 +85,6 @@ class RelayPool {
 
   // Event buffering for deduplication
   final Map<String, _EventBuffer> _eventBuffers = {};
-
 
   bool _disposed = false;
 
@@ -142,6 +142,21 @@ class RelayPool {
     final sub = _subscriptions[subId];
     if (sub == null) return;
 
+    final closedAt = DateTime.now();
+    final eventCount = sub.eventCount;
+
+    // Build closed relay states and determine log level per relay
+    final closedRelays = <String, RelaySubState>{};
+    for (final entry in sub.relays.entries) {
+      final url = entry.key;
+      final relayState = entry.value;
+
+      // Update phase to closed, preserving other state
+      closedRelays[url] = relayState.copyWith(phase: RelaySubPhase.closed);
+
+      // Update phase to closed (no logging - EOSE log is sufficient)
+    }
+
     // Clean up for all relays (connected or not)
     for (final url in sub.relays.keys) {
       final managed = _sockets[url];
@@ -165,12 +180,18 @@ class RelayPool {
     _eventBuffers[subId]?.dispose();
     _eventBuffers.remove(subId);
 
-
-    // Remove subscription
+    // Move to closed subscriptions (instead of removing)
     _subscriptions.remove(subId);
+    _closedSubscriptions[subId] = sub.copyWith(
+      closedAt: closedAt,
+      relays: closedRelays,
+    );
 
-    // Log completion
-    _log(LogLevel.info, '$subId completed', subscriptionId: subId);
+    // Trim closed subscriptions to limit
+    while (_closedSubscriptions.length > PoolConstants.maxClosedSubscriptions) {
+      // Remove oldest (first entry)
+      _closedSubscriptions.remove(_closedSubscriptions.keys.first);
+    }
 
     // Clean up idle sockets
     _cleanupIdleSockets();
@@ -259,7 +280,9 @@ class RelayPool {
             _connectRelay(subId, url);
 
           case RelaySubPhase.failed:
-            // Do nothing - user must cancel and resubscribe
+          case RelaySubPhase.closed:
+            // Do nothing - user must cancel and resubscribe (failed)
+            // or subscription is already closed (closed)
             break;
         }
       }
@@ -374,6 +397,7 @@ class RelayPool {
     _sockets.clear();
 
     _subscriptions.clear();
+    _closedSubscriptions.clear();
   }
 
   // ============================================================
@@ -387,7 +411,6 @@ class RelayPool {
     Completer<List<Map<String, dynamic>>>? queryCompleter,
   }) {
     final subId = req.subscriptionId;
-
 
     // Create relay states
     final relays = <String, RelaySubState>{};
@@ -414,6 +437,19 @@ class RelayPool {
       onFlush: (events, relaysForIds) {
         if (events.isNotEmpty) {
           onEvents(req: req, events: events, relaysForIds: relaysForIds);
+        }
+      },
+      onLog: (isEose, eventCount, relayUrl) {
+        if (relayUrl == null) return;
+        if (isEose) {
+          final duration = DateTime.now().difference(sub.startedAt);
+          final seconds = (duration.inMilliseconds / 1000).toStringAsFixed(2);
+          _log(
+            LogLevel.info,
+            'EOSE: $eventCount events (${seconds}s)',
+            subscriptionId: subId,
+            relayUrl: relayUrl,
+          );
         }
       },
     );
@@ -593,11 +629,15 @@ class RelayPool {
     }
 
     if (shouldFail) {
-      _log(
-        LogLevel.error,
-        'Relay failed after ${managed.reconnectAttempts} attempts',
-        relayUrl: url,
-      );
+      // Log failure for each subscription using this relay
+      for (final subId in managed.subscriptionIds) {
+        _log(
+          LogLevel.error,
+          'Relay failed after ${managed.reconnectAttempts} attempts',
+          subscriptionId: subId,
+          relayUrl: url,
+        );
+      }
     } else {
       // Schedule ONE reconnect for the relay
       _scheduleReconnect(url);
@@ -701,12 +741,28 @@ class RelayPool {
           break;
       }
     } catch (e) {
-      _log(
-        LogLevel.warning,
-        'Failed to parse message',
-        relayUrl: url,
-        exception: Exception(e.toString()),
-      );
+      // Log for each subscription using this relay
+      final managed = _sockets[url];
+      final subIds = managed?.subscriptionIds ?? <String>{};
+      if (subIds.isEmpty) {
+        // No subscriptions, log with just relay URL (e.g., during publish)
+        _log(
+          LogLevel.warning,
+          'Failed to parse message',
+          relayUrl: url,
+          exception: Exception(e.toString()),
+        );
+      } else {
+        for (final subId in subIds) {
+          _log(
+            LogLevel.warning,
+            'Failed to parse message',
+            subscriptionId: subId,
+            relayUrl: url,
+            exception: Exception(e.toString()),
+          );
+        }
+      }
     }
   }
 
@@ -721,7 +777,6 @@ class RelayPool {
 
     final buffer = _eventBuffers[subId];
     if (buffer == null) return;
-
 
     // Update lastEventAt for this relay
     final relayState = sub.relays[url];
@@ -845,11 +900,15 @@ class RelayPool {
         .map((e) => e.key)
         .toList();
 
-    if (slowRelays.isNotEmpty) {
+    // Log timeout for each slow relay
+    final duration = DateTime.now().difference(sub.startedAt);
+    final seconds = (duration.inMilliseconds / 1000).toStringAsFixed(2);
+    for (final url in slowRelays) {
       _log(
         LogLevel.warning,
-        'EOSE timeout - slow relays: ${slowRelays.join(", ")}',
+        'EOSE timeout (${seconds}s)',
         subscriptionId: subId,
+        relayUrl: url,
       );
     }
 
@@ -1065,6 +1124,7 @@ class RelayPool {
     onStateChange(
       PoolState(
         subscriptions: Map.from(_subscriptions),
+        closedSubscriptions: Map.from(_closedSubscriptions),
         logs: List.from(_logs),
       ),
     );
@@ -1091,6 +1151,10 @@ class _EventBuffer {
   )
   onFlush;
 
+  /// Called on each flush with (isEose, eventCount, triggeringRelay)
+  final void Function(bool isEose, int eventCount, String? triggeringRelay)
+  onLog;
+
   Completer<List<Map<String, dynamic>>>? queryCompleter;
   Timer? eoseTimeoutTimer;
 
@@ -1104,6 +1168,7 @@ class _EventBuffer {
     required this.batchWindow,
     required this.totalRelayCount,
     required this.onFlush,
+    required this.onLog,
     this.queryCompleter,
   });
 
@@ -1132,17 +1197,17 @@ class _EventBuffer {
   }
 
   void markEose(String relayUrl) {
-    _eoseReceived.add(relayUrl);
+    final wasNewEose = _eoseReceived.add(relayUrl);
 
     if (_isBlocking) {
       // Blocking query: wait for all relays before completing the Future
       if (_eoseReceived.length >= totalRelayCount) {
-        flush();
+        flush(isEose: true, triggeringRelay: relayUrl);
       }
     } else {
       // Streaming or _fetch: flush progressively on each EOSE
-      if (_eventsById.isNotEmpty) {
-        flush();
+      if (wasNewEose && _eventsById.isNotEmpty) {
+        flush(isEose: true, triggeringRelay: relayUrl);
       }
     }
   }
@@ -1155,12 +1220,17 @@ class _EventBuffer {
     _batchTimer = Timer(batchWindow, flush);
   }
 
-  void flush() {
+  void flush({bool isEose = false, String? triggeringRelay}) {
     _batchTimer?.cancel();
     _batchTimer = null;
 
     final events = _eventsById.values.toList();
     final relaysForIds = Map<String, Set<String>>.from(_relaysForEventId);
+
+    // Log the flush (only for the triggering relay)
+    if (events.isNotEmpty) {
+      onLog(isEose, events.length, triggeringRelay);
+    }
 
     // Emit events via callback
     if (events.isNotEmpty) {

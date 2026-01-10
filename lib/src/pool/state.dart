@@ -18,6 +18,9 @@ abstract class PoolConstants {
   /// Maximum log entries to keep
   static const maxLogEntries = 200;
 
+  /// Maximum closed subscriptions to keep in history
+  static const maxClosedSubscriptions = 200;
+
   /// Backoff schedule: delay = 2^n seconds, repeated 2^n times
   /// n=0: 1s × 1, n=1: 2s × 2, n=2: 4s × 4, n=3: 8s × 8, n=4: 16s × 16
   /// Total: 1 + 2 + 4 + 8 + 16 = 31 attempts, then fail
@@ -69,6 +72,9 @@ enum RelaySubPhase {
 
   /// Max retries exceeded
   failed,
+
+  /// Subscription completed/closed (non-streaming finished or manually unsubscribed)
+  closed,
 }
 
 /// Log entry severity level
@@ -149,6 +155,7 @@ class RelaySubscription {
   final Request request;
   final bool stream;
   final DateTime startedAt;
+  final DateTime? closedAt;
   final Map<String, RelaySubState> relays;
 
   /// Count of unique events received (after deduplication)
@@ -159,6 +166,7 @@ class RelaySubscription {
     required this.request,
     required this.stream,
     required this.startedAt,
+    this.closedAt,
     required this.relays,
     this.eventCount = 0,
   });
@@ -193,6 +201,7 @@ class RelaySubscription {
   RelaySubscription copyWith({
     Request? request,
     bool? stream,
+    DateTime? closedAt,
     Map<String, RelaySubState>? relays,
     int? eventCount,
   }) {
@@ -201,6 +210,7 @@ class RelaySubscription {
       request: request ?? this.request,
       stream: stream ?? this.stream,
       startedAt: startedAt,
+      closedAt: closedAt ?? this.closedAt,
       relays: relays ?? this.relays,
       eventCount: eventCount ?? this.eventCount,
     );
@@ -215,15 +225,23 @@ class RelaySubscription {
 /// Pool state - single source of truth
 class PoolState {
   final Map<String, RelaySubscription> subscriptions;
+  final Map<String, RelaySubscription> closedSubscriptions;
   final List<LogEntry> logs;
 
-  PoolState({this.subscriptions = const {}, this.logs = const []});
+  PoolState({
+    this.subscriptions = const {},
+    this.closedSubscriptions = const {},
+    this.logs = const [],
+  });
 
-  /// Get subscription by ID
+  /// Get subscription by ID (active only)
   RelaySubscription? operator [](String id) => subscriptions[id];
 
-  /// Check if a subscription exists
+  /// Check if a subscription exists (active only)
   bool hasSubscription(String id) => subscriptions.containsKey(id);
+
+  /// Get closed subscription by ID
+  RelaySubscription? closedSubscription(String id) => closedSubscriptions[id];
 }
 
 /// Result of publishing an event to a relay
