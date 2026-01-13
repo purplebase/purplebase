@@ -290,7 +290,7 @@ The test suite covers:
 ```dart
 StorageConfiguration(
   responseTimeout: Duration(seconds: 15),      // EOSE and publish timeout
-  streamingBufferWindow: Duration(milliseconds: 100),  // Event batch window
+  streamingBufferDuration: Duration(milliseconds: 100),  // Event batch window
 )
 ```
 

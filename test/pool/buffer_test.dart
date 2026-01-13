@@ -10,7 +10,7 @@ import '../helpers.dart';
 /// Core relationship batching logic is in models/test/core/nested_relationship_test.dart.
 ///
 /// These tests verify WebSocket pool integration:
-/// - streamingBufferWindow: events batched and flushed via onEvents callback
+/// - streamingBufferDuration: events batched and flushed via onEvents callback
 /// - Blocking vs streaming query behavior with real relay connections
 void main() {
   late PoolTestFixture fixture;
@@ -33,10 +33,9 @@ void main() {
         'streaming callback test ${DateTime.now().millisecondsSinceEpoch}',
       ).signWith(fixture.signer);
 
-      await fixture.pool.publish(
-        [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
-      );
+      await fixture.pool.publish([
+        note.toMap(),
+      ], source: RemoteSource(relays: {fixture.relayUrl}));
 
       // Query with streaming
       final req = Request([
@@ -73,10 +72,9 @@ void main() {
         'blocking query test ${DateTime.now().millisecondsSinceEpoch}',
       ).signWith(fixture.signer);
 
-      await fixture.pool.publish(
-        [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
-      );
+      await fixture.pool.publish([
+        note.toMap(),
+      ], source: RemoteSource(relays: {fixture.relayUrl}));
 
       // Blocking query returns events directly
       final req = Request([
@@ -93,4 +91,3 @@ void main() {
     });
   });
 }
-

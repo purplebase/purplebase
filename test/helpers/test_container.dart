@@ -9,10 +9,8 @@ import 'package:riverpod/riverpod.dart';
 import 'fixtures.dart';
 
 /// Type alias for test callbacks that can be sync or async
-typedef SubscriptionTest = FutureOr<void> Function(
-  PoolState state,
-  RelaySubscription sub,
-);
+typedef SubscriptionTest =
+    FutureOr<void> Function(PoolState state, RelaySubscription sub);
 
 /// Provider to access ref in tests
 final refProvider = Provider((ref) => ref);
@@ -87,7 +85,10 @@ class PoolTestFixture {
       RequestFilter(kinds: kinds, authors: authors, ids: ids),
     ]);
 
-    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: stream));
+    pool.query(
+      req,
+      source: RemoteSource(relays: {relayUrl}, stream: stream),
+    );
 
     try {
       final state = await stateCapture.waitForSubscription(
@@ -147,10 +148,9 @@ class PoolTestFixture {
   /// Publish a note and return the response.
   Future<PublishRelayResponse> publishNote(String content) async {
     final note = await PartialNote(content).signWith(signer);
-    return pool.publish(
-      [note.toMap()],
-      source: RemoteSource(relays: {relayUrl}),
-    );
+    return pool.publish([
+      note.toMap(),
+    ], source: RemoteSource(relays: {relayUrl}));
   }
 
   /// Publish events and return the response.
@@ -209,16 +209,19 @@ Future<PoolTestFixture> createPoolFixture({
   final stateCapture = PoolStateCapture();
   final receivedEvents = <Map<String, dynamic>>[];
 
-  final poolConfig = config ??
+  final poolConfig =
+      config ??
       StorageConfiguration(
         skipVerification: true,
-        defaultRelays: {'test': {relayUrl}},
+        defaultRelays: {
+          'test': {relayUrl},
+        },
         defaultQuerySource: const LocalAndRemoteSource(
           relays: 'test',
           stream: false,
         ),
         responseTimeout: const Duration(seconds: 5),
-        streamingBufferWindow: const Duration(milliseconds: 100),
+        streamingBufferDuration: const Duration(milliseconds: 100),
       );
 
   final pool = RelayPool(
@@ -402,4 +405,3 @@ extension PoolStateTestExtensions on PoolState {
     return connectedUrls.length;
   }
 }
-

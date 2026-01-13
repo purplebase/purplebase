@@ -69,7 +69,7 @@ StorageConfiguration(
   defaultRelays: {'default': {'wss://relay.com'}},
   defaultQuerySource: LocalAndRemoteSource(relays: 'default', stream: false),
   responseTimeout: Duration(seconds: 15),            // EOSE and publish timeout
-  streamingBufferWindow: Duration(milliseconds: 100), // Event batching window
+  streamingBufferDuration: Duration(milliseconds: 100), // Event batching window
 )
 ```
 

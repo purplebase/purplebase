@@ -143,7 +143,6 @@ class RelayPool {
     if (sub == null) return;
 
     final closedAt = DateTime.now();
-    final eventCount = sub.eventCount;
 
     // Build closed relay states and determine log level per relay
     final closedRelays = <String, RelaySubState>{};
@@ -431,7 +430,7 @@ class RelayPool {
     // Create event buffer
     _eventBuffers[subId] = _EventBuffer(
       subscriptionId: subId,
-      batchWindow: config.streamingBufferWindow,
+      batchWindow: config.streamingBufferDuration,
       totalRelayCount: relayUrls.length,
       queryCompleter: queryCompleter,
       onFlush: (events, relaysForIds) {
@@ -439,18 +438,15 @@ class RelayPool {
           onEvents(req: req, events: events, relaysForIds: relaysForIds);
         }
       },
-      onLog: (isEose, eventCount, relayUrl) {
-        if (relayUrl == null) return;
-        if (isEose) {
-          final duration = DateTime.now().difference(sub.startedAt);
-          final seconds = (duration.inMilliseconds / 1000).toStringAsFixed(2);
-          _log(
-            LogLevel.info,
-            'EOSE: $eventCount events (${seconds}s)',
-            subscriptionId: subId,
-            relayUrl: relayUrl,
-          );
-        }
+      onEose: (eventCount, relayUrl) {
+        final duration = DateTime.now().difference(sub.startedAt);
+        final seconds = (duration.inMilliseconds / 1000).toStringAsFixed(2);
+        _log(
+          LogLevel.info,
+          'EOSE: $eventCount events (${seconds}s)',
+          subscriptionId: subId,
+          relayUrl: relayUrl,
+        );
       },
     );
 
@@ -815,6 +811,14 @@ class RelayPool {
     // Reset relay-level attempts on success
     final managed = _sockets[url];
     if (managed != null) {
+      if (managed.reconnectAttempts > 0) {
+        _log(
+          LogLevel.info,
+          'Reconnected after ${managed.reconnectAttempts} attempt(s)',
+          subscriptionId: subId,
+          relayUrl: url,
+        );
+      }
       managed.reconnectAttempts = 0;
       managed.lastError = null;
     }
@@ -1151,9 +1155,8 @@ class _EventBuffer {
   )
   onFlush;
 
-  /// Called on each flush with (isEose, eventCount, triggeringRelay)
-  final void Function(bool isEose, int eventCount, String? triggeringRelay)
-  onLog;
+  /// Called on EOSE for each relay with (eventCount, relayUrl)
+  final void Function(int eventCount, String relayUrl) onEose;
 
   Completer<List<Map<String, dynamic>>>? queryCompleter;
   Timer? eoseTimeoutTimer;
@@ -1168,7 +1171,7 @@ class _EventBuffer {
     required this.batchWindow,
     required this.totalRelayCount,
     required this.onFlush,
-    required this.onLog,
+    required this.onEose,
     this.queryCompleter,
   });
 
@@ -1198,16 +1201,23 @@ class _EventBuffer {
 
   void markEose(String relayUrl) {
     final wasNewEose = _eoseReceived.add(relayUrl);
+    if (!wasNewEose) return;
+
+    // Log EOSE for this relay with its event count
+    final relayEventCount = _relaysForEventId.values
+        .where((relays) => relays.contains(relayUrl))
+        .length;
+    onEose(relayEventCount, relayUrl);
 
     if (_isBlocking) {
       // Blocking query: wait for all relays before completing the Future
       if (_eoseReceived.length >= totalRelayCount) {
-        flush(isEose: true, triggeringRelay: relayUrl);
+        flush();
       }
     } else {
       // Streaming or _fetch: flush progressively on each EOSE
-      if (wasNewEose && _eventsById.isNotEmpty) {
-        flush(isEose: true, triggeringRelay: relayUrl);
+      if (_eventsById.isNotEmpty) {
+        flush();
       }
     }
   }
@@ -1220,17 +1230,12 @@ class _EventBuffer {
     _batchTimer = Timer(batchWindow, flush);
   }
 
-  void flush({bool isEose = false, String? triggeringRelay}) {
+  void flush() {
     _batchTimer?.cancel();
     _batchTimer = null;
 
     final events = _eventsById.values.toList();
     final relaysForIds = Map<String, Set<String>>.from(_relaysForEventId);
-
-    // Log the flush (only for the triggering relay)
-    if (events.isNotEmpty) {
-      onLog(isEose, events.length, triggeringRelay);
-    }
 
     // Emit events via callback
     if (events.isNotEmpty) {

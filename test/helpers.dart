@@ -66,7 +66,7 @@ StorageConfiguration testConfig(
   String relayUrl, {
   bool skipVerification = true,
   Duration responseTimeout = const Duration(seconds: 5),
-  Duration streamingBufferWindow = const Duration(milliseconds: 100),
+  Duration streamingBufferDuration = const Duration(milliseconds: 100),
 }) {
   return StorageConfiguration(
     skipVerification: skipVerification,
@@ -78,7 +78,7 @@ StorageConfiguration testConfig(
       stream: false,
     ),
     responseTimeout: responseTimeout,
-    streamingBufferWindow: streamingBufferWindow,
+    streamingBufferDuration: streamingBufferDuration,
   );
 }
 
@@ -95,7 +95,8 @@ Future<ProviderContainer> createStorageTestContainer({
     ],
   );
 
-  final storageConfig = config ??
+  final storageConfig =
+      config ??
       StorageConfiguration(
         skipVerification: true,
         defaultRelays: {
