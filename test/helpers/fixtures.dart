@@ -10,6 +10,7 @@ class TestPorts {
   static const integration = 3340;
   static const reconnection = 3341;
   static const buffer = 3342;
+  static const closeSubscriptions = 3343;
   static const isolateRemote = 7078;
 }
 
@@ -23,6 +24,7 @@ class TestRelays {
   static String get publish => url(TestPorts.publish);
   static String get integration => url(TestPorts.integration);
   static String get reconnection => url(TestPorts.reconnection);
+  static String get closeSubscriptions => url(TestPorts.closeSubscriptions);
   static String get isolateRemote =>
       'ws://127.0.0.1:${TestPorts.isolateRemote}';
 

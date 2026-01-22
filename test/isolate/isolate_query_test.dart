@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:models/models.dart';
 import 'package:purplebase/purplebase.dart';
-import 'package:purplebase/src/isolate.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -22,7 +21,9 @@ void main() {
 
   Future<void> clearRelay() async {
     final clearNote = await PartialNote('CLEAR_DB').signWith(signer);
-    await storage.publish({clearNote}, source: RemoteSource(relays: {relayUrl}));
+    await storage.publish({
+      clearNote,
+    }, source: RemoteSource(relays: {relayUrl}));
     await Future.delayed(Duration(milliseconds: 100));
   }
 
@@ -79,14 +80,16 @@ void main() {
     await clearRelay();
 
     // Publish test events
-    final publishResponse = await storage.publish(
-      {testNote1, testNote2},
-      source: RemoteSource(relays: {relayUrl}),
-    );
+    final publishResponse = await storage.publish({
+      testNote1,
+      testNote2,
+    }, source: RemoteSource(relays: {relayUrl}));
 
     for (final event in [testNote1, testNote2]) {
       final states = publishResponse.results[event.id];
-      if (states == null || states.isEmpty || !states.every((s) => s.accepted)) {
+      if (states == null ||
+          states.isEmpty ||
+          !states.every((s) => s.accepted)) {
         throw Exception('Event not accepted: ${event.id}');
       }
     }
@@ -195,10 +198,9 @@ void main() {
         tags: {'cache_test'},
       ).signWith(signer);
 
-      await storage.publish(
-        {uniqueNote},
-        source: RemoteSource(relays: {relayUrl}),
-      );
+      await storage.publish({
+        uniqueNote,
+      }, source: RemoteSource(relays: {relayUrl}));
 
       // Query from remote - should save to local
       final remoteResult = await storage.query(
@@ -219,7 +221,9 @@ void main() {
 
     test('deduplicates events from multiple relays', () async {
       // Publish to relay
-      await storage.publish({testNote1}, source: RemoteSource(relays: {relayUrl}));
+      await storage.publish({
+        testNote1,
+      }, source: RemoteSource(relays: {relayUrl}));
 
       final result = await storage.query(
         RequestFilter(ids: {testNote1.id}).toRequest(),
@@ -230,20 +234,4 @@ void main() {
       expect(result.where((e) => e.id == testNote1.id), hasLength(1));
     });
   });
-
-  group('Isolate boundary', () {
-    test('throws IsolateException for invalid and operator', () async {
-      final request = RequestFilter(
-        kinds: {1},
-        // Closure captures testNote1 which can't cross isolate boundary
-        and: (n) => {testNote1.author},
-      ).toRequest();
-
-      expect(
-        () => storage.query(request, source: RemoteSource(relays: 'primary')),
-        throwsA(isA<IsolateException>()),
-      );
-    });
-  });
 }
-

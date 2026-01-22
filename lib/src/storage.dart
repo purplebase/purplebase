@@ -387,6 +387,27 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   }
 
   @override
+  Future<void> closeSubscriptions({required dynamic relays}) async {
+    if (!isInitialized) return;
+
+    // Resolve relay URLs using the same logic as RemoteSource
+    final relayUrls = await resolveRelays(relays);
+
+    if (relayUrls.isEmpty) {
+      // No relays resolved - nothing to close
+      return;
+    }
+
+    final response = await _sendMessage(
+      CloseSubscriptionsIsolateOperation(relayUrls: relayUrls),
+    );
+
+    if (!response.success) {
+      throw IsolateException(response.error);
+    }
+  }
+
+  @override
   Future<void> obliterate() async {
     if (config.databasePath == null) return;
     // Directory where database is located

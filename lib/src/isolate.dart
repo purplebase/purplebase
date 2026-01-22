@@ -167,6 +167,13 @@ void isolateEntryPoint(List args) {
           callbackSubscriptions.remove(req.subscriptionId);
           response = IsolateResponse(success: true);
 
+        case CloseSubscriptionsIsolateOperation(:final relayUrls):
+          final cancelledSubIds = pool.closeSubscriptionsToRelays(relayUrls);
+          for (final subId in cancelledSubIds) {
+            callbackSubscriptions.remove(subId);
+          }
+          response = IsolateResponse(success: true);
+
         // ISOLATE
 
         case CloseIsolateOperation():
@@ -257,6 +264,11 @@ final class RemoteQueryIsolateOperation extends IsolateOperation {
 final class RemoteCancelIsolateOperation extends IsolateOperation {
   final Request req;
   RemoteCancelIsolateOperation({required this.req});
+}
+
+final class CloseSubscriptionsIsolateOperation extends IsolateOperation {
+  final Set<String> relayUrls;
+  CloseSubscriptionsIsolateOperation({required this.relayUrls});
 }
 
 final class LocalClearIsolateOperation extends IsolateOperation {}

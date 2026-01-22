@@ -136,6 +136,93 @@ class RelayPool {
     return completer.future;
   }
 
+  /// Close subscriptions to specified relays without affecting other relays.
+  ///
+  /// Returns the set of subscription IDs that were completely cancelled
+  /// (i.e., had all their relays removed).
+  Set<String> closeSubscriptionsToRelays(Set<String> relayUrls) {
+    if (relayUrls.isEmpty) return {};
+
+    final cancelledSubIds = <String>{};
+
+    // Process each subscription
+    for (final subId in _subscriptions.keys.toList()) {
+      final sub = _subscriptions[subId];
+      if (sub == null) continue;
+
+      // Find relays in this subscription that match the ones to close
+      final affectedRelays =
+          sub.relays.keys.where(relayUrls.contains).toSet();
+      if (affectedRelays.isEmpty) continue;
+
+      // Send CLOSE to affected relays
+      for (final url in affectedRelays) {
+        final managed = _sockets[url];
+        if (managed != null) {
+          if (managed.socket.isConnected) {
+            managed.socket.sendClose(subId);
+          }
+          managed.subscriptionIds.remove(subId);
+
+          // Cancel reconnect timer if no more subscriptions for this socket
+          if (managed.subscriptionIds.isEmpty) {
+            managed.reconnectTimer?.cancel();
+          }
+        }
+      }
+
+      // Remove affected relays from subscription's relay map
+      final remainingRelays = Map<String, RelaySubState>.from(sub.relays)
+        ..removeWhere((url, _) => affectedRelays.contains(url));
+
+      if (remainingRelays.isEmpty) {
+        // No relays left - cancel entire subscription
+        _eventBuffers[subId]?.dispose();
+        _eventBuffers.remove(subId);
+        _subscriptions.remove(subId);
+
+        // Move to closed subscriptions
+        _closedSubscriptions[subId] = sub.copyWith(
+          closedAt: DateTime.now(),
+          relays: {
+            for (final url in sub.relays.keys)
+              url: sub.relays[url]!.copyWith(phase: RelaySubPhase.closed),
+          },
+        );
+
+        // Trim closed subscriptions
+        while (
+            _closedSubscriptions.length > PoolConstants.maxClosedSubscriptions) {
+          _closedSubscriptions.remove(_closedSubscriptions.keys.first);
+        }
+
+        cancelledSubIds.add(subId);
+
+        _log(
+          LogLevel.info,
+          'Subscription closed (all relays removed)',
+          subscriptionId: subId,
+        );
+      } else {
+        // Update subscription with remaining relays
+        _subscriptions[subId] = sub.copyWith(relays: remainingRelays);
+
+        _log(
+          LogLevel.info,
+          'Removed ${affectedRelays.length} relay(s), ${remainingRelays.length} remaining',
+          subscriptionId: subId,
+        );
+      }
+    }
+
+    // Clean up idle sockets
+    _cleanupIdleSockets();
+
+    _emit();
+
+    return cancelledSubIds;
+  }
+
   /// Unsubscribe from a request
   void unsubscribe(Request req) {
     final subId = req.subscriptionId;
