@@ -38,8 +38,10 @@ class PurplebaseStorageNotifier extends StorageNotifier {
       db = sqlite3.openInMemory();
     }
 
-    // Configure sqlite: 512 MB memory mapped
+    // Configure sqlite: WAL mode for cross-connection visibility, 512 MB memory mapped
     db!.execute('''
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
       PRAGMA mmap_size = ${512 * 1024 * 1024};
       PRAGMA page_size = 4096;
       PRAGMA cache_size = -20000;
