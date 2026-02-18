@@ -1,6 +1,6 @@
-/// Test constants and fixtures for purplebase tests
+/// Test constants and fixtures for purplebase tests.
 
-/// Test relay ports - unique per test file for parallel execution
+/// Test relay ports — unique per test file for parallel execution.
 class TestPorts {
   static const connection = 3335;
   static const subscription = 3336;
@@ -11,10 +11,15 @@ class TestPorts {
   static const reconnection = 3341;
   static const buffer = 3342;
   static const closeSubscriptions = 3343;
+  static const earlyClose = 3344;
+  static const requestDedup = 3345;
   static const isolateRemote = 7078;
+  static const isolateSaveQuery = 7079;
+  static const isolatePublish = 7080;
+  static const isolateDeletion = 7081;
+  static const storageFull = 7082;
 }
 
-/// Test relay URLs derived from ports
 class TestRelays {
   static String url(int port) => 'ws://localhost:$port';
   static String get connection => url(TestPorts.connection);
@@ -27,22 +32,14 @@ class TestRelays {
   static String get closeSubscriptions => url(TestPorts.closeSubscriptions);
   static String get isolateRemote =>
       'ws://127.0.0.1:${TestPorts.isolateRemote}';
-
-  /// Offline relay for testing failure scenarios
   static const offline = 'ws://localhost:65534';
-
-  /// Invalid URL for testing error handling
-  static const invalid = 'invalid-url';
 }
 
-/// Test signing keys
 class TestKeys {
-  /// Standard test private key (deterministic for reproducible tests)
   static const privateKey =
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 }
 
-/// Common test pubkeys (reuse from models package when available)
 class TestPubkeys {
   static const niel =
       'a9434ee165ed01b286becfc2771ef1705d3537d051b387288898cc00d5c885be';

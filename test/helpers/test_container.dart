@@ -8,32 +8,10 @@ import 'package:riverpod/riverpod.dart';
 
 import 'fixtures.dart';
 
-/// Type alias for test callbacks that can be sync or async
-typedef SubscriptionTest =
-    FutureOr<void> Function(PoolState state, RelaySubscription sub);
-
-/// Provider to access ref in tests
+/// Provider to access ref in tests.
 final refProvider = Provider((ref) => ref);
 
 /// Test fixture for pool-level tests with real relay connections.
-///
-/// Usage:
-/// ```dart
-/// late PoolTestFixture fixture;
-///
-/// setUpAll(() async => fixture = await createPoolFixture(port: TestPorts.connection));
-/// tearDownAll(() => fixture.dispose());
-/// setUp(() => fixture.clear());
-///
-/// test('example', () async {
-///   await fixture.withSubscription(
-///     kinds: {1},
-///     test: (state, sub) {
-///       expect(state.isRelayConnected(fixture.relayUrl), isTrue);
-///     },
-///   );
-/// });
-/// ```
 class PoolTestFixture {
   final Process process;
   final RelayPool pool;
@@ -53,7 +31,6 @@ class PoolTestFixture {
     required this.receivedEvents,
   });
 
-  /// Clear relay state between tests
   Future<void> clear() async {
     process.kill(ProcessSignal.sigusr1);
     await Future.delayed(Duration(milliseconds: 50));
@@ -61,7 +38,6 @@ class PoolTestFixture {
     receivedEvents.clear();
   }
 
-  /// Dispose all resources
   Future<void> dispose() async {
     pool.dispose();
     process.kill();
@@ -69,26 +45,20 @@ class PoolTestFixture {
     container.dispose();
   }
 
-  /// Execute a subscription test with automatic cleanup.
-  ///
-  /// Creates a subscription, waits for connection, runs the test,
-  /// and automatically unsubscribes afterward.
   Future<void> withSubscription({
     Set<int> kinds = const {1},
     Set<String>? authors,
     Set<String>? ids,
     bool stream = true,
     Duration timeout = const Duration(seconds: 5),
-    required SubscriptionTest test,
+    required FutureOr<void> Function(PoolState state, RelaySubscription sub)
+        test,
   }) async {
     final req = Request([
       RequestFilter(kinds: kinds, authors: authors, ids: ids),
     ]);
 
-    pool.query(
-      req,
-      source: RemoteSource(relays: {relayUrl}, stream: stream),
-    );
+    pool.query(req, source: RemoteSource(relays: {relayUrl}, stream: stream));
 
     try {
       final state = await stateCapture.waitForSubscription(
@@ -102,13 +72,13 @@ class PoolTestFixture {
     }
   }
 
-  /// Execute a streaming test that waits for EOSE before running assertions.
   Future<void> withStreamingSubscription({
     Set<int> kinds = const {1},
     Set<String>? authors,
     Set<String>? ids,
     Duration timeout = const Duration(seconds: 5),
-    required SubscriptionTest test,
+    required FutureOr<void> Function(PoolState state, RelaySubscription sub)
+        test,
   }) async {
     final req = Request([
       RequestFilter(kinds: kinds, authors: authors, ids: ids),
@@ -129,7 +99,6 @@ class PoolTestFixture {
     }
   }
 
-  /// Execute a blocking (non-streaming) query and return events.
   Future<List<Map<String, dynamic>>> blockingQuery({
     Set<int> kinds = const {1},
     Set<String>? authors,
@@ -138,55 +107,35 @@ class PoolTestFixture {
     final req = Request([
       RequestFilter(kinds: kinds, authors: authors, ids: ids),
     ]);
-
     return pool.query(
-      req,
-      source: RemoteSource(relays: {relayUrl}, stream: false),
-    );
+        req, source: RemoteSource(relays: {relayUrl}, stream: false));
   }
 
-  /// Publish a note and return the response.
   Future<PublishRelayResponse> publishNote(String content) async {
     final note = await PartialNote(content).signWith(signer);
-    return pool.publish([
-      note.toMap(),
-    ], source: RemoteSource(relays: {relayUrl}));
-  }
-
-  /// Publish events and return the response.
-  Future<PublishRelayResponse> publish(List<Map<String, dynamic>> events) {
-    return pool.publish(events, source: RemoteSource(relays: {relayUrl}));
+    return pool.publish([note.toMap()],
+        source: RemoteSource(relays: {relayUrl}));
   }
 }
 
 /// Creates a pool test fixture with a running test relay.
 ///
-/// The fixture handles:
-/// - Starting the test relay process
-/// - Creating and configuring the pool
-/// - Setting up state capture for deterministic testing
-/// - Signing in a test signer
+/// [relayFlags] are passed directly to the test-relay binary, e.g.
+/// `['--slowness', '500ms']` or `['--reject-events']`.
 Future<PoolTestFixture> createPoolFixture({
   required int port,
   StorageConfiguration? config,
   bool captureEvents = false,
+  List<String> relayFlags = const [],
 }) async {
   final relayUrl = TestRelays.url(port);
 
-  // Start test relay
-  final process = await Process.start('test/support/test-relay', [
-    '-port',
-    port.toString(),
-  ]);
-
-  // Suppress output
+  final process = await Process.start(
+      'test/support/test-relay', ['-port', port.toString(), ...relayFlags]);
   process.stdout.transform(utf8.decoder).listen((_) {});
   process.stderr.transform(utf8.decoder).listen((_) {});
-
-  // Wait for relay to be ready
   await Future.delayed(Duration(milliseconds: 500));
 
-  // Initialize models (required before using pool)
   final tempContainer = ProviderContainer(
     overrides: [
       storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
@@ -195,31 +144,29 @@ Future<PoolTestFixture> createPoolFixture({
   final tempConfig = StorageConfiguration(
     skipVerification: true,
     defaultRelays: {
-      'temp': {'wss://temp.com'},
+      'temp': {'wss://temp.com'}
     },
-    defaultQuerySource: const LocalAndRemoteSource(
-      relays: 'temp',
-      stream: false,
-    ),
+    defaultQuerySource:
+        const LocalAndRemoteSource(relays: 'temp', stream: false),
   );
   await tempContainer.read(initializationProvider(tempConfig).future);
 
-  // Create container and pool
-  final container = ProviderContainer();
+  final container = ProviderContainer(
+    overrides: [
+      storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+    ],
+  );
   final stateCapture = PoolStateCapture();
   final receivedEvents = <Map<String, dynamic>>[];
 
-  final poolConfig =
-      config ??
+  final poolConfig = config ??
       StorageConfiguration(
         skipVerification: true,
         defaultRelays: {
-          'test': {relayUrl},
+          'test': {relayUrl}
         },
-        defaultQuerySource: const LocalAndRemoteSource(
-          relays: 'test',
-          stream: false,
-        ),
+        defaultQuerySource:
+            const LocalAndRemoteSource(relays: 'test', stream: false),
         responseTimeout: const Duration(seconds: 5),
         streamingBufferDuration: const Duration(milliseconds: 100),
       );
@@ -232,11 +179,8 @@ Future<PoolTestFixture> createPoolFixture({
     },
   );
 
-  // Create and sign in signer
-  final signer = Bip340PrivateKeySigner(
-    TestKeys.privateKey,
-    container.read(refProvider),
-  );
+  final signer =
+      Bip340PrivateKeySigner(TestKeys.privateKey, container.read(refProvider));
   await signer.signIn();
 
   return PoolTestFixture._(
@@ -250,16 +194,50 @@ Future<PoolTestFixture> createPoolFixture({
   );
 }
 
+/// Creates a configured ProviderContainer for storage-level testing.
+Future<ProviderContainer> createStorageTestContainer({
+  StorageConfiguration? config,
+}) async {
+  final container = ProviderContainer(
+    overrides: [
+      storageNotifierProvider.overrideWith(PurplebaseStorageNotifier.new),
+    ],
+  );
+
+  final storageConfig = config ??
+      StorageConfiguration(
+        skipVerification: true,
+        defaultRelays: {
+          'test': {'wss://test.relay'}
+        },
+        defaultQuerySource: LocalSource(),
+      );
+
+  await container.read(initializationProvider(storageConfig).future);
+  return container;
+}
+
+extension StorageTestContainerExt on ProviderContainer {
+  PurplebaseStorageNotifier get storage =>
+      read(storageNotifierProvider.notifier) as PurplebaseStorageNotifier;
+
+  Ref get ref => read(refProvider);
+
+  Future<void> tearDown() async {
+    await storage.clear();
+    storage.dispose();
+    storage.obliterate();
+    dispose();
+  }
+}
+
 /// Captures pool state changes for deterministic test synchronization.
-///
-/// Use this instead of Future.delayed() to wait for specific states.
 class PoolStateCapture {
   final _states = <PoolState>[];
   final _waiters = <(bool Function(PoolState), Completer<PoolState>)>[];
 
   void onState(PoolState state) {
     _states.add(state);
-
     final toRemove = <int>[];
     for (var i = 0; i < _waiters.length; i++) {
       final (predicate, completer) = _waiters[i];
@@ -273,28 +251,20 @@ class PoolStateCapture {
     }
   }
 
-  /// Wait for a state matching the predicate. Checks history first.
   Future<PoolState> waitFor(
     bool Function(PoolState) predicate, {
     Duration timeout = const Duration(seconds: 5),
   }) {
-    // Check history first
     for (final s in _states) {
       if (predicate(s)) return Future.value(s);
     }
-
     final completer = Completer<PoolState>();
     _waiters.add((predicate, completer));
-
-    return completer.future.timeout(
-      timeout,
-      onTimeout: () {
-        throw TimeoutException('Timed out waiting for pool state', timeout);
-      },
-    );
+    return completer.future.timeout(timeout,
+        onTimeout: () =>
+            throw TimeoutException('Timed out waiting for pool state', timeout));
   }
 
-  /// Wait for relay to be streaming (connected + EOSE received)
   Future<PoolState> waitForRelayStreaming(
     String subscriptionId,
     String relayUrl, {
@@ -302,17 +272,12 @@ class PoolStateCapture {
   }) {
     return waitFor((s) {
       final sub = s.subscriptions[subscriptionId];
-      if (sub == null) return false;
-      final relay = sub.relays[relayUrl];
-      return relay?.phase == RelaySubPhase.streaming;
+      return sub?.relays[relayUrl]?.phase == RelaySubPhase.streaming;
     }, timeout: timeout);
   }
 
-  /// Wait for relay to be connected (loading or streaming)
-  Future<PoolState> waitForConnected(
-    String relayUrl, {
-    Duration timeout = const Duration(seconds: 5),
-  }) {
+  Future<PoolState> waitForConnected(String relayUrl,
+      {Duration timeout = const Duration(seconds: 5)}) {
     return waitFor((s) {
       for (final sub in s.subscriptions.values) {
         final relay = sub.relays[relayUrl];
@@ -326,58 +291,35 @@ class PoolStateCapture {
     }, timeout: timeout);
   }
 
-  /// Wait for subscription to exist
-  Future<PoolState> waitForSubscription(
-    String subscriptionId, {
-    Duration timeout = const Duration(seconds: 5),
-  }) {
-    return waitFor(
-      (s) => s.subscriptions.containsKey(subscriptionId),
-      timeout: timeout,
-    );
+  Future<PoolState> waitForSubscription(String subscriptionId,
+      {Duration timeout = const Duration(seconds: 5)}) {
+    return waitFor((s) => s.subscriptions.containsKey(subscriptionId),
+        timeout: timeout);
   }
 
-  /// Wait for subscription to be removed
-  Future<PoolState> waitForUnsubscribed(
-    String subscriptionId, {
-    Duration timeout = const Duration(seconds: 5),
-  }) {
-    return waitFor(
-      (s) => !s.subscriptions.containsKey(subscriptionId),
-      timeout: timeout,
-    );
+  Future<PoolState> waitForUnsubscribed(String subscriptionId,
+      {Duration timeout = const Duration(seconds: 5)}) {
+    return waitFor((s) => !s.subscriptions.containsKey(subscriptionId),
+        timeout: timeout);
   }
 
-  /// Wait for EOSE on a subscription from specific relay
-  Future<PoolState> waitForEose(
-    String subscriptionId,
-    String relayUrl, {
-    Duration timeout = const Duration(seconds: 5),
-  }) {
+  Future<PoolState> waitForEose(String subscriptionId, String relayUrl,
+      {Duration timeout = const Duration(seconds: 5)}) {
     return waitFor((s) {
       final sub = s.subscriptions[subscriptionId];
-      if (sub == null) return false;
-      final relay = sub.relays[relayUrl];
-      return relay?.phase == RelaySubPhase.streaming;
+      return sub?.relays[relayUrl]?.phase == RelaySubPhase.streaming;
     }, timeout: timeout);
   }
 
-  /// Get the last state (or null if none)
   PoolState? get lastState => _states.isEmpty ? null : _states.last;
-
-  /// Get all captured states
   List<PoolState> get states => List.unmodifiable(_states);
-
-  /// Clear state history
   void clear() {
     _states.clear();
     _waiters.clear();
   }
 }
 
-/// Extension on PoolState for test assertions
 extension PoolStateTestExtensions on PoolState {
-  /// Check if a relay is connected (connecting, loading or streaming) in any subscription
   bool isRelayConnected(String relayUrl) {
     for (final sub in subscriptions.values) {
       final relay = sub.relays[relayUrl];
@@ -391,7 +333,6 @@ extension PoolStateTestExtensions on PoolState {
     return false;
   }
 
-  /// Get the number of connected relays across all subscriptions
   int get connectedCount {
     final connectedUrls = <String>{};
     for (final sub in subscriptions.values) {

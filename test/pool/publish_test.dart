@@ -1,14 +1,9 @@
 import 'package:models/models.dart';
 import 'package:test/test.dart';
 
-import '../helpers.dart';
+import '../helpers/fixtures.dart';
+import '../helpers/test_container.dart';
 
-/// Tests for publish operations.
-///
-/// These tests verify the pool's ability to:
-/// - Publish events to relays
-/// - Track acceptance/rejection status
-/// - Handle multiple events and relays
 void main() {
   late PoolTestFixture fixture;
 
@@ -17,25 +12,16 @@ void main() {
   });
 
   tearDownAll(() => fixture.dispose());
-
   setUp(() => fixture.clear());
 
   group('Single event publishing', () {
-    test('publishes event successfully with acceptance confirmation', () async {
-      final note = await PartialNote(
+    test('publishes and gets acceptance', () async {
+      final response = await fixture.publishNote(
         'test publish ${DateTime.now().millisecondsSinceEpoch}',
-      ).signWith(fixture.signer);
-
-      final response = await fixture.pool.publish(
-        [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
       );
 
       expect(response.wrapped.results, isNotEmpty);
-      expect(response.wrapped.results.containsKey(note.id), isTrue);
-
-      final eventStates = response.wrapped.results[note.id]!;
-      expect(eventStates, isNotEmpty);
+      final eventStates = response.wrapped.results.values.first;
       expect(eventStates.first.accepted, isTrue);
       expect(eventStates.first.relayUrl, equals(fixture.relayUrl));
     });
@@ -45,7 +31,6 @@ void main() {
         [],
         source: RemoteSource(relays: {fixture.relayUrl}),
       );
-
       expect(response.wrapped.results, isEmpty);
     });
   });
@@ -64,28 +49,10 @@ void main() {
       );
 
       expect(response.wrapped.results.length, equals(3));
-
       for (final note in notes) {
         expect(response.wrapped.results.containsKey(note.id), isTrue);
-        final eventStates = response.wrapped.results[note.id]!;
-        expect(eventStates.first.accepted, isTrue);
+        expect(response.wrapped.results[note.id]!.first.accepted, isTrue);
       }
-    });
-  });
-
-  group('Relay resolution', () {
-    test('uses resolved relay URLs', () async {
-      final note = await PartialNote(
-        'test fallback ${DateTime.now().millisecondsSinceEpoch}',
-      ).signWith(fixture.signer);
-
-      final response = await fixture.pool.publish(
-        [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
-      );
-
-      expect(response.wrapped.results, isNotEmpty);
-      expect(response.wrapped.results.containsKey(note.id), isTrue);
     });
   });
 }

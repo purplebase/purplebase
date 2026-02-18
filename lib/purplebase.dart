@@ -1,9 +1,20 @@
 library;
 
-export 'src/notifiers.dart';
-export 'src/isolate.dart' show PoolStateMessage;
-export 'src/pool/state.dart';
-export 'src/pool/pool.dart' show RelayPool, PublishRelayResponse;
-export 'src/request.dart';
-export 'src/storage.dart';
-export 'src/utils.dart' show normalizeRelayUrl;
+// Storage
+export 'src/storage/purplebase_storage.dart';
+
+// Pool state & observability
+export 'src/pool/pool_state.dart';
+export 'src/pool/relay_pool.dart' show RelayPool, PublishRelayResponse;
+
+// Notifiers
+export 'src/notifiers/pool_state_notifier.dart';
+
+// Isolate messages (for PoolStateNotification show)
+export 'src/isolate/messages.dart' show PoolStateNotification;
+
+// DB
+export 'src/db/query_builder.dart';
+
+// Utils
+export 'src/utils/relay_url.dart';
