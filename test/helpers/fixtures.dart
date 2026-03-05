@@ -18,6 +18,7 @@ class TestPorts {
   static const isolatePublish = 7080;
   static const isolateDeletion = 7081;
   static const storageFull = 7082;
+  static const zapstorePatterns = 7090;
 }
 
 class TestRelays {

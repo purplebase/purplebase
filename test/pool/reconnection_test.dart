@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:models/models.dart';
-import 'package:purplebase/purplebase.dart';
 import 'package:test/test.dart';
 
 import '../helpers/fixtures.dart';

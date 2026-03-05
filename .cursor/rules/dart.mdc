@@ -1,0 +1,50 @@
+---
+description: Dart conventions
+globs: ["**/*.dart", "**/pubspec.yaml"]
+---
+
+# Dart Conventions
+
+## Style
+
+- Follow `dart format`. Run `dart analyze` — fix all issues before committing.
+- Use `internal` visibility via library-private (`_`) prefixes. Keep public API surface minimal.
+- Prefer `final` and `const` everywhere they fit. Immutability by default.
+- Reference existing patterns in the same package before inventing new ones.
+
+## Naming
+
+- Files: `snake_case.dart`. Classes: `PascalCase`. Variables/methods: `camelCase`.
+- Services: `<Noun>Service`. Notifiers: `<Noun>Notifier`.
+- Acronyms follow Dart style: `Url`, `Http`, `Id` (not all-caps).
+
+## Error Handling
+
+- Never swallow exceptions silently. Surface errors to the caller or log them.
+- Use typed exceptions where the caller needs to distinguish error types.
+- `try/catch` at the boundary (service/provider), not deep in domain logic.
+
+## Async
+
+- Use `async`/`await` over raw `Future` chaining.
+- Use `switch` on sealed classes / union types for exhaustive state handling:
+  ```dart
+  return switch (state) {
+    Loading() => ...,
+    Error(:final exception) => ...,
+    Data(:final value) => ...,
+  };
+  ```
+- Cancel subscriptions and streams on dispose — no leaks.
+
+## Testing
+
+- Test public API and observable behavior, not implementation details.
+- Mock external dependencies (storage, network) — no real I/O in unit tests.
+- Use `dart test` with descriptive test names.
+
+## Dependencies
+
+- Run `dart pub get` after any `pubspec.yaml` change.
+- Prefer packages already in use over adding new ones.
+- Pin dependency versions. Run `dart pub upgrade` deliberately, not casually.
