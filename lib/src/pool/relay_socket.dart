@@ -94,9 +94,15 @@ class RelaySocket {
   }
 
   /// Send a ping request — relay responds with EOSE or CLOSED.
+  ///
+  /// Uses an impossible event ID instead of `limit:0` so that even if the
+  /// relay doesn't honour the subsequent CLOSE, it won't open a streaming
+  /// subscription (no real event will ever match the all-zeros ID).
   bool sendPing(String pingSubId) {
     return sendReq(pingSubId, [
-      {'limit': 0},
+      {
+        'ids': ['0' * 64],
+      },
     ]);
   }
 

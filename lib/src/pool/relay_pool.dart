@@ -919,10 +919,14 @@ class RelayPool {
     final sub = _subscriptions[subId];
     if (sub == null) return;
 
-    // For non-streaming queries, the buffer/completer handles the final flush.
-    // For streaming, the grace window flush delivers the initial batch.
-    if (sub.stream && !buffer.hasFlushed) {
+    if (!buffer.hasFlushed) {
       buffer.flush();
+    }
+
+    if (!sub.stream) {
+      _eoseTrackers[subId]?.dispose();
+      _eoseTrackers.remove(subId);
+      unsubscribe(sub.request);
     }
   }
 

@@ -12,22 +12,19 @@ extension DbExt on Database {
     Map<Request, LocalQueryArgs> args,
   ) {
     final result = <Request, List<Map<String, dynamic>>>{};
-    List<PreparedStatement>? statements;
 
-    try {
-      for (final entry in args.entries) {
-        statements = prepareMultiple(entry.value.queries.join(';\n'));
-        for (final statement in statements) {
-          final i = statements.indexOf(statement);
+    for (final entry in args.entries) {
+      final statements = prepareMultiple(entry.value.queries.join(';\n'));
+      try {
+        final allEvents = <Map<String, dynamic>>[];
+        for (var i = 0; i < statements.length; i++) {
           final params = entry.value.params[i];
-          result[entry.key] = EventCodec.decode(
-            statement
-                .selectWith(StatementParameters.named(params)),
-          );
+          allEvents.addAll(EventCodec.decode(
+            statements[i].selectWith(StatementParameters.named(params)),
+          ));
         }
-      }
-    } finally {
-      if (statements != null) {
+        result[entry.key] = allEvents;
+      } finally {
         for (final statement in statements) {
           statement.dispose();
         }
@@ -140,6 +137,7 @@ extension DbExt on Database {
     } finally {
       existingPs.dispose();
       eventPs.dispose();
+      tagsPs.dispose();
     }
 
     return ids;
