@@ -90,11 +90,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   /// Watch connectivity provider and forward status to the pool.
   void _watchConnectivity() {
     ref.listen<ConnectivityStatus>(connectivityProvider, (_, status) {
-      _bridge?.sendHeartbeat(HeartbeatMessage(
-        DateTime.now(),
-        action: HeartbeatAction.healthCheck,
-        connectivity: status,
-      ));
+      _bridge?.sendHeartbeat(
+        HeartbeatMessage(
+          DateTime.now(),
+          action: HeartbeatAction.healthCheck,
+          connectivity: status,
+        ),
+      );
     });
   }
 
@@ -143,16 +145,16 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     Set<Model<dynamic>> events, {
     RemoteSource source = const RemoteSource(),
   }) async {
-    if (events.isEmpty && source == LocalSource()) {
+    if (events.isEmpty) {
       return PublishResponse();
     }
 
     final maps = events.map((e) => e.toMap()).toList();
 
     final relayUrls = await resolveRelays(source.relays);
-    source = source.copyWith(relays: relayUrls);
+    var remoteSource = source.copyWith(relays: relayUrls);
     final response = await _sendMessage(
-      RemotePublishOp(events: maps, source: source),
+      RemotePublishOp(events: maps, source: remoteSource),
     );
 
     if (!response.success) {
@@ -208,10 +210,9 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final tuples = req.filters.map((f) => QueryBuilder.toSQL(f)).toList();
     final statements = db!.prepareMultiple(tuples.map((t) => t.$1).join(';\n'));
     try {
-      for (final statement in statements) {
-        final i = statements.indexOf(statement);
+      for (var i = 0; i < statements.length; i++) {
         final filter = req.filters[i];
-        final result = statement.selectWith(
+        final result = statements[i].selectWith(
           StatementParameters.named(tuples[i].$2),
         );
         var events = EventCodec.decode(result);
@@ -222,8 +223,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
         results.addAll(
           events
-              .map(
-                  (e) => ModelRegistry.instance.getConstructorForKind(e['kind'])!.call(e, this))
+              .map((e) => Model.getConstructorForKind(e['kind'])!.call(e, ref))
               .cast<E>(),
         );
       }
@@ -270,7 +270,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         if (source is! LocalAndRemoteSource) {
           var result = response.result as List<Map<String, dynamic>>;
           result = _applySchemaFilters(result, req.filters);
-          return result.toModels<E>(this).toSet().sortByCreatedAt();
+          return result.toModels<E>(ref).toSet().sortByCreatedAt();
         }
       }
     }
@@ -285,7 +285,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final result =
         response.result as Map<Request, Iterable<Map<String, dynamic>>>;
     final filtered = _applySchemaFilters(result[req]!.toList(), req.filters);
-    return filtered.toModels<E>(this).toSet().sortByCreatedAt();
+    return filtered.toModels<E>(ref).toSet().sortByCreatedAt();
   }
 
   List<Map<String, dynamic>> _applySchemaFilters(
@@ -394,7 +394,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     try {
       await _initCompleter!.future.timeout(
         const Duration(seconds: 12),
-        onTimeout: () => IsolateResponse(success: false, error: 'Timeout'),
+        onTimeout: () => throw IsolateException('Initialization timeout'),
       );
 
       if (!isInitialized) {
