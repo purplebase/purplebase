@@ -270,7 +270,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
         if (source is! LocalAndRemoteSource) {
           var result = response.result as List<Map<String, dynamic>>;
           result = _applySchemaFilters(result, req.filters);
-          return result.toModels<E>(ref).toSet().sortByCreatedAt();
+          return result.toModels<E>(ref).toSet().toList();
         }
       }
     }
