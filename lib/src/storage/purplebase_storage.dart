@@ -143,7 +143,7 @@ class PurplebaseStorageNotifier extends StorageNotifier {
   @override
   Future<PublishResponse> publish(
     Set<Model<dynamic>> events, {
-    RemoteSource source = const RemoteSource(),
+    dynamic relays,
   }) async {
     if (events.isEmpty) {
       return PublishResponse();
@@ -151,8 +151,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
     final maps = events.map((e) => e.toMap()).toList();
 
-    final relayUrls = await resolveRelays(source.relays);
-    var remoteSource = source.copyWith(relays: relayUrls);
+    final relayUrls = await resolveRelays(relays);
+    var remoteSource = RemoteSource(relays: relayUrls);
     final response = await _sendMessage(
       RemotePublishOp(events: maps, source: remoteSource),
     );
