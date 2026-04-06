@@ -329,7 +329,22 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     if (!response.success) {
       throw IsolateException(response.error);
     }
-    _cache.markFetched(staleFilters.cast(), now);
+
+    // Only mark authors as cached if data was actually returned.
+    // Authors with no data (relay timeout, not found) stay stale
+    // so they'll be re-fetched on the next query.
+    final local = querySync(staleReq);
+    final foundAuthors = local.map((m) => m.event.pubkey).toSet();
+    final successFilters = staleFilters
+        .map((f) {
+          final hit = f.authors.intersection(foundAuthors);
+          return hit.isEmpty ? null : f.copyWith(authors: hit);
+        })
+        .nonNulls
+        .toList();
+    if (successFilters.isNotEmpty) {
+      _cache.markFetched(successFilters.cast(), now);
+    }
   }
 
   @override
