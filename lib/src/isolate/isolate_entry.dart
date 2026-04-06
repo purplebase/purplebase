@@ -174,8 +174,8 @@ void isolateEntryPoint(List args) {
           response = IsolateResponse(
               success: true, result: EventCodec.decode(result));
 
-        case RemotePublishOp(:final events, :final source):
-          final result = await pool.publish(events, source: source);
+        case RemotePublishOp(:final events, :final relays):
+          final result = await pool.publish(events, relays: relays);
           response = IsolateResponse(success: true, result: result);
 
         case RemoteCancelOp(:final req):

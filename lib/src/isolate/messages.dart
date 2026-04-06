@@ -70,8 +70,8 @@ final class RemoteQueryOp extends IsolateOperation {
 
 final class RemotePublishOp extends IsolateOperation {
   final List<Map<String, dynamic>> events;
-  final RemoteSource source;
-  RemotePublishOp({required this.events, required this.source});
+  final Set<String> relays;
+  RemotePublishOp({required this.events, required this.relays});
 }
 
 final class RemoteCancelOp extends IsolateOperation {

@@ -22,7 +22,7 @@ void main() {
 
       await fixture.pool.publish(
         [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
+        relays: {fixture.relayUrl},
       );
 
       final result = await fixture.blockingQuery(ids: {note.id});
@@ -37,7 +37,7 @@ void main() {
 
       await fixture.pool.publish(
         [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
+        relays: {fixture.relayUrl},
       );
 
       final req = Request([RequestFilter(ids: {note.id})]);
@@ -70,7 +70,7 @@ void main() {
       for (final note in notes) {
         await fixture.pool.publish(
           [note.toMap()],
-          source: RemoteSource(relays: {fixture.relayUrl}),
+          relays: {fixture.relayUrl},
         );
       }
 

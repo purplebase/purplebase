@@ -292,17 +292,16 @@ class RelayPool {
   /// Publish events to relays.
   Future<PublishRelayResponse> publish(
     List<Map<String, dynamic>> events, {
-    RemoteSource source = const RemoteSource(),
+    required Set<String> relays,
   }) async {
     if (events.isEmpty) return PublishRelayResponse();
 
-    source.relays as Iterable;
-    if (source.relays.isEmpty) return PublishRelayResponse();
+    if (relays.isEmpty) return PublishRelayResponse();
 
     final response = PublishRelayResponse();
     final futures = <Future<PublishResult>>[];
 
-    for (final url in source.relays) {
+    for (final url in relays) {
       for (final event in events) {
         final eventId = event['id'] as String?;
         if (eventId == null) continue;

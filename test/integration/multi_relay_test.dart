@@ -76,7 +76,7 @@ void main() {
       // Publish to relay1 only
       await storage.publish(
         {note},
-        source: RemoteSource(relays: {relay1Url}),
+        relays: {relay1Url},
       );
 
       // Query from relay1 should find it
@@ -102,7 +102,7 @@ void main() {
 
       final response = await storage.publish(
         {note},
-        source: RemoteSource(relays: {relay1Url, relay2Url}),
+        relays: {relay1Url, relay2Url},
       );
 
       expect(response.results, isNotEmpty);

@@ -64,7 +64,7 @@ void main() {
 
       final response = await storage.publish(
         {note},
-        source: RemoteSource(relays: {relayUrl}),
+        relays: {relayUrl},
       );
 
       expect(response.results, isNotEmpty);
@@ -87,7 +87,7 @@ void main() {
 
       final response = await storage.publish(
         notes.toSet(),
-        source: RemoteSource(relays: {relayUrl}),
+        relays: {relayUrl},
       );
 
       expect(response.results.length, equals(2));

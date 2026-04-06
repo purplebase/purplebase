@@ -29,7 +29,7 @@ void main() {
     test('returns empty response for empty events', () async {
       final response = await fixture.pool.publish(
         [],
-        source: RemoteSource(relays: {fixture.relayUrl}),
+        relays: {fixture.relayUrl},
       );
       expect(response.wrapped.results, isEmpty);
     });
@@ -45,7 +45,7 @@ void main() {
 
       final response = await fixture.pool.publish(
         notes.map((n) => n.toMap()).toList(),
-        source: RemoteSource(relays: {fixture.relayUrl}),
+        relays: {fixture.relayUrl},
       );
 
       expect(response.wrapped.results.length, equals(3));

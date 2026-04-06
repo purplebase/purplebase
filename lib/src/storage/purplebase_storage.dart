@@ -152,9 +152,8 @@ class PurplebaseStorageNotifier extends StorageNotifier {
     final maps = events.map((e) => e.toMap()).toList();
 
     final relayUrls = await resolveRelays(relays);
-    var remoteSource = RemoteSource(relays: relayUrls);
     final response = await _sendMessage(
-      RemotePublishOp(events: maps, source: remoteSource),
+      RemotePublishOp(events: maps, relays: relayUrls),
     );
 
     if (!response.success) {

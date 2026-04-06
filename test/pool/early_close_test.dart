@@ -22,7 +22,7 @@ void main() {
 
       await fixture.pool.publish(
         [note.toMap()],
-        source: RemoteSource(relays: {fixture.relayUrl}),
+        relays: {fixture.relayUrl},
       );
 
       final stopwatch = Stopwatch()..start();
@@ -42,7 +42,7 @@ void main() {
       for (final note in notes) {
         await fixture.pool.publish(
           [note.toMap()],
-          source: RemoteSource(relays: {fixture.relayUrl}),
+          relays: {fixture.relayUrl},
         );
       }
 

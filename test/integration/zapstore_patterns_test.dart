@@ -34,10 +34,10 @@ void main() {
   late Directory tempDir;
 
   setUpAll(() async {
-    relayProcess = await Process.start(
-      'test/support/test-relay',
-      ['-port', _relayPort.toString()],
-    );
+    relayProcess = await Process.start('test/support/test-relay', [
+      '-port',
+      _relayPort.toString(),
+    ]);
     relayProcess!.stdout.transform(utf8.decoder).listen((_) {});
     relayProcess!.stderr.transform(utf8.decoder).listen((_) {});
     await Future.delayed(Duration(milliseconds: 500));
@@ -57,8 +57,7 @@ void main() {
       defaultRelays: {
         'test': {relayUrl},
       },
-      defaultQuerySource:
-          LocalAndRemoteSource(relays: 'test', stream: false),
+      defaultQuerySource: LocalAndRemoteSource(relays: 'test', stream: false),
       responseTimeout: Duration(seconds: 5),
     );
 
@@ -95,8 +94,7 @@ void main() {
   // Helpers: build a full App → Release → FileMetadata chain
   // ---------------------------------------------------------------------------
 
-  Future<({App app, Release release, FileMetadata metadata})>
-      createAppChain({
+  Future<({App app, Release release, FileMetadata metadata})> createAppChain({
     required String appId,
     String version = '1.0.0',
     int versionCode = 100,
@@ -140,7 +138,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.init'}},
+          tags: {
+            '#d': {'com.test.init'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -160,7 +160,9 @@ void main() {
       final states = <StorageState<App>>[];
       final sub = container.listen<StorageState<App>>(
         query<App>(
-          tags: {'#d': {'com.test.reactive'}},
+          tags: {
+            '#d': {'com.test.reactive'},
+          },
           source: const LocalSource(),
         ),
         (prev, next) => states.add(next),
@@ -183,43 +185,46 @@ void main() {
   // 2. Nested Relationship Loading (and: callback)
   // ---------------------------------------------------------------------------
   group('2. Nested relationship loading', () {
-    test('App → Release → FileMetadata chain via relationship filters',
-        () async {
-      final chain = await createAppChain(appId: 'com.test.nested');
-      await storage.save({chain.app, chain.release, chain.metadata});
+    test(
+      'App → Release → FileMetadata chain via relationship filters',
+      () async {
+        final chain = await createAppChain(appId: 'com.test.nested');
+        await storage.save({chain.app, chain.release, chain.metadata});
 
-      final apps = await storage.query(
-        RequestFilter<App>(
-          tags: {'#d': {'com.test.nested'}},
-        ).toRequest(),
-        source: LocalSource(),
-      );
-      expect(apps, hasLength(1));
+        final apps = await storage.query(
+          RequestFilter<App>(
+            tags: {
+              '#d': {'com.test.nested'},
+            },
+          ).toRequest(),
+          source: LocalSource(),
+        );
+        expect(apps, hasLength(1));
 
-      // Use relationship filters — the exact Zapstore pattern
-      final releaseFilter =
-          apps.first.latestRelease.req?.filters.firstOrNull;
-      expect(releaseFilter, isNotNull);
+        // Use relationship filters — the exact Zapstore pattern
+        final releaseFilter = apps.first.latestRelease.req?.filters.firstOrNull;
+        expect(releaseFilter, isNotNull);
 
-      final releases = await storage.query(
-        Request<Release>([releaseFilter!]),
-        source: LocalSource(),
-      );
-      expect(releases, hasLength(1));
-      expect(releases.first.version, '1.0.0');
+        final releases = await storage.query(
+          Request<Release>([releaseFilter!]),
+          source: LocalSource(),
+        );
+        expect(releases, hasLength(1));
+        expect(releases.first.version, '1.0.0');
 
-      final metadataFilter =
-          releases.first.latestMetadata.req?.filters.firstOrNull;
-      expect(metadataFilter, isNotNull);
+        final metadataFilter =
+            releases.first.latestMetadata.req?.filters.firstOrNull;
+        expect(metadataFilter, isNotNull);
 
-      final metadata = await storage.query(
-        Request<FileMetadata>([metadataFilter!]),
-        source: LocalSource(),
-      );
-      expect(metadata, hasLength(1));
-      expect(metadata.first.version, '1.0.0');
-      expect(metadata.first.versionCode, 100);
-    });
+        final metadata = await storage.query(
+          Request<FileMetadata>([metadataFilter!]),
+          source: LocalSource(),
+        );
+        expect(metadata, hasLength(1));
+        expect(metadata.first.version, '1.0.0');
+        expect(metadata.first.versionCode, 100);
+      },
+    );
 
     test('reactive query with and: loads nested relationships', () async {
       final chain = await createAppChain(appId: 'com.test.and');
@@ -250,9 +255,9 @@ void main() {
 
       await Future.delayed(Duration(milliseconds: 800));
 
-      final dataWithModels = states
-          .whereType<StorageData<App>>()
-          .where((s) => s.models.isNotEmpty);
+      final dataWithModels = states.whereType<StorageData<App>>().where(
+        (s) => s.models.isNotEmpty,
+      );
       expect(dataWithModels, isNotEmpty);
 
       final app = dataWithModels.last.models.first;
@@ -274,7 +279,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.localonly'}},
+          tags: {
+            '#d': {'com.test.localonly'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -284,7 +291,9 @@ void main() {
     test('LocalSource returns empty for non-existent data', () async {
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.doesnotexist'}},
+          tags: {
+            '#d': {'com.test.doesnotexist'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -301,7 +310,7 @@ void main() {
 
       final publishResult = await storage.publish(
         {chain.app},
-        source: RemoteSource(relays: {relayUrl}),
+        relays: {relayUrl},
       );
       expect(publishResult.results, isNotEmpty);
 
@@ -310,7 +319,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.remote'}},
+          tags: {
+            '#d': {'com.test.remote'},
+          },
         ).toRequest(),
         source: RemoteSource(relays: {relayUrl}, stream: false),
       );
@@ -326,16 +337,15 @@ void main() {
     test('cachedFor skips refetch within window', () async {
       final chain = await createAppChain(appId: 'com.test.cached');
 
-      await storage.publish(
-        {chain.app},
-        source: RemoteSource(relays: {relayUrl}),
-      );
+      await storage.publish({chain.app}, relays: {relayUrl});
 
       // First query — fetches from relay and caches
       final result1 = await storage.query(
         RequestFilter<App>(
           authors: {signer.pubkey},
-          tags: {'#d': {'com.test.cached'}},
+          tags: {
+            '#d': {'com.test.cached'},
+          },
         ).toRequest(),
         source: LocalAndRemoteSource(
           relays: 'test',
@@ -349,7 +359,9 @@ void main() {
       final result2 = await storage.query(
         RequestFilter<App>(
           authors: {signer.pubkey},
-          tags: {'#d': {'com.test.cached'}},
+          tags: {
+            '#d': {'com.test.cached'},
+          },
         ).toRequest(),
         source: LocalAndRemoteSource(
           relays: 'test',
@@ -364,15 +376,14 @@ void main() {
     test('cachedFor refetches after window expires', () async {
       final chain = await createAppChain(appId: 'com.test.cacheexpiry');
 
-      await storage.publish(
-        {chain.app},
-        source: RemoteSource(relays: {relayUrl}),
-      );
+      await storage.publish({chain.app}, relays: {relayUrl});
 
       await storage.query(
         RequestFilter<App>(
           authors: {signer.pubkey},
-          tags: {'#d': {'com.test.cacheexpiry'}},
+          tags: {
+            '#d': {'com.test.cacheexpiry'},
+          },
         ).toRequest(),
         source: LocalAndRemoteSource(
           relays: 'test',
@@ -386,7 +397,9 @@ void main() {
       final result = await storage.query(
         RequestFilter<App>(
           authors: {signer.pubkey},
-          tags: {'#d': {'com.test.cacheexpiry'}},
+          tags: {
+            '#d': {'com.test.cacheexpiry'},
+          },
         ).toRequest(),
         source: LocalAndRemoteSource(
           relays: 'test',
@@ -402,14 +415,10 @@ void main() {
   // 6. Streaming Subscription
   // ---------------------------------------------------------------------------
   group('6. Streaming subscription (stream: true)', () {
-    test('streaming query keeps subscription open and receives data',
-        () async {
+    test('streaming query keeps subscription open and receives data', () async {
       // Publish some data first so the streaming query has something to find
       final note1 = await PartialNote('stream note 1').signWith(signer);
-      await storage.publish(
-        {note1},
-        source: RemoteSource(relays: {relayUrl}),
-      );
+      await storage.publish({note1}, relays: {relayUrl});
 
       // Subscribe with stream: true (Zapstore's pattern for latest releases)
       final states = <StorageState<Note>>[];
@@ -457,28 +466,32 @@ void main() {
       expect(result.first.about, 'Integration test profile');
     });
 
-    test('PartialComment: create with rootModel → sign → save → query',
-        () async {
-      final chain = await createAppChain(appId: 'com.test.comment');
-      await storage.save({chain.app});
+    test(
+      'PartialComment: create with rootModel → sign → save → query',
+      () async {
+        final chain = await createAppChain(appId: 'com.test.comment');
+        await storage.save({chain.app});
 
-      final partial = PartialComment(
-        content: 'Great app!',
-        rootModel: chain.app,
-      );
-      partial.event.addTagValue('v', '1.0.0');
-      final comment = await partial.signWith(signer);
-      await storage.save({comment});
+        final partial = PartialComment(
+          content: 'Great app!',
+          rootModel: chain.app,
+        );
+        partial.event.addTagValue('v', '1.0.0');
+        final comment = await partial.signWith(signer);
+        await storage.save({comment});
 
-      final result = await storage.query(
-        RequestFilter<Comment>(
-          tags: {'#A': {chain.app.id}},
-        ).toRequest(),
-        source: LocalSource(),
-      );
-      expect(result, hasLength(1));
-      expect(result.first.content, 'Great app!');
-    });
+        final result = await storage.query(
+          RequestFilter<Comment>(
+            tags: {
+              '#A': {chain.app.id},
+            },
+          ).toRequest(),
+          source: LocalSource(),
+        );
+        expect(result, hasLength(1));
+        expect(result.first.content, 'Great app!');
+      },
+    );
 
     test('PartialCustomData: create → sign → save locally only', () async {
       final partial = PartialCustomData(
@@ -492,7 +505,9 @@ void main() {
         Request<CustomData>([
           RequestFilter<CustomData>(
             authors: {signer.pubkey},
-            tags: {'#d': {'test-settings'}},
+            tags: {
+              '#d': {'test-settings'},
+            },
             limit: 1,
           ),
         ]),
@@ -535,7 +550,9 @@ void main() {
       final result = await storage.query(
         RequestFilter<AppStack>(
           authors: {signer.pubkey},
-          tags: {'#d': {'my-stack'}},
+          tags: {
+            '#d': {'my-stack'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -556,7 +573,7 @@ void main() {
 
       final publishResult = await storage.publish(
         {comment},
-        source: RemoteSource(relays: {relayUrl}),
+        relays: {relayUrl},
       );
       expect(publishResult.results, isNotEmpty);
     });
@@ -568,16 +585,10 @@ void main() {
   group('8. NIP-44 encryption round-trip', () {
     test('encrypt and decrypt content', () async {
       final plaintext = jsonEncode(['com.app.one', 'com.app.two']);
-      final encrypted = await signer.nip44Encrypt(
-        plaintext,
-        signer.pubkey,
-      );
+      final encrypted = await signer.nip44Encrypt(plaintext, signer.pubkey);
       expect(encrypted, isNot(plaintext));
 
-      final decrypted = await signer.nip44Decrypt(
-        encrypted,
-        signer.pubkey,
-      );
+      final decrypted = await signer.nip44Decrypt(encrypted, signer.pubkey);
       expect(decrypted, plaintext);
 
       final appIds = (jsonDecode(decrypted) as List).cast<String>();
@@ -598,7 +609,9 @@ void main() {
       // Step 1: Query apps (single filter, multiple tag values — Zapstore pattern)
       final apps = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.batch1', 'com.test.batch2'}},
+          tags: {
+            '#d': {'com.test.batch1', 'com.test.batch2'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -648,10 +661,7 @@ void main() {
       );
 
       final note = await PartialNote('pool test').signWith(signer);
-      await storage.publish(
-        {note},
-        source: RemoteSource(relays: {relayUrl}),
-      );
+      await storage.publish({note}, relays: {relayUrl});
 
       await Future.delayed(Duration(milliseconds: 500));
       final nonNullStates = poolStates.whereType<PoolState>().toList();
@@ -696,22 +706,24 @@ void main() {
   // ---------------------------------------------------------------------------
   group('12. SchemaFilter (client-side filtering)', () {
     test('schemaFilter filters models after decode', () async {
-      final chain1 =
-          await createAppChain(appId: 'com.test.schemafilter.match');
-      final chain2 =
-          await createAppChain(appId: 'com.test.schemafilter.skip');
+      final chain1 = await createAppChain(appId: 'com.test.schemafilter.match');
+      final chain2 = await createAppChain(appId: 'com.test.schemafilter.skip');
       await storage.save({chain1.app, chain2.app});
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#f': {'android-arm64-v8a'}},
+          tags: {
+            '#f': {'android-arm64-v8a'},
+          },
           schemaFilter: (event) {
             final tags = event['tags'] as List? ?? [];
-            return tags.any((tag) =>
-                tag is List &&
-                tag.length >= 2 &&
-                tag[0] == 'd' &&
-                (tag[1] as String).contains('match'));
+            return tags.any(
+              (tag) =>
+                  tag is List &&
+                  tag.length >= 2 &&
+                  tag[0] == 'd' &&
+                  (tag[1] as String).contains('match'),
+            );
           },
         ).toRequest(),
         source: LocalSource(),
@@ -726,11 +738,13 @@ void main() {
   // 13. Relay Group Resolution
   // ---------------------------------------------------------------------------
   group('13. Relay group resolution', () {
-    test('resolveRelays returns configured relay URLs for group name',
-        () async {
-      final testRelays = await storage.resolveRelays('test');
-      expect(testRelays, contains(relayUrl));
-    });
+    test(
+      'resolveRelays returns configured relay URLs for group name',
+      () async {
+        final testRelays = await storage.resolveRelays('test');
+        expect(testRelays, contains(relayUrl));
+      },
+    );
 
     test('resolveRelays with raw URL set passes through', () async {
       final relays = await storage.resolveRelays({relayUrl});
@@ -750,7 +764,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.clear'}},
+          tags: {
+            '#d': {'com.test.clear'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -767,7 +783,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.del1', 'com.test.del2'}},
+          tags: {
+            '#d': {'com.test.del1', 'com.test.del2'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -783,7 +801,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.prune'}},
+          tags: {
+            '#d': {'com.test.prune'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -804,7 +824,7 @@ void main() {
 
       final publishResult = await storage.publish(
         {chain.app},
-        source: RemoteSource(relays: {relayUrl}),
+        relays: {relayUrl},
       );
       expect(publishResult.results, isNotEmpty);
 
@@ -814,7 +834,9 @@ void main() {
       // Query from remote
       final apps = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.fullcycle'}},
+          tags: {
+            '#d': {'com.test.fullcycle'},
+          },
         ).toRequest(),
         source: RemoteSource(relays: {relayUrl}, stream: false),
       );
@@ -835,7 +857,9 @@ void main() {
       final states = <StorageState<App>>[];
       final sub = container.listen<StorageState<App>>(
         query<App>(
-          tags: {'#d': {'com.test.pattern'}},
+          tags: {
+            '#d': {'com.test.pattern'},
+          },
           source: const LocalSource(),
         ),
         (prev, next) => states.add(next),
@@ -905,7 +929,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#d': {'com.test.multi1', 'com.test.multi2'}},
+          tags: {
+            '#d': {'com.test.multi1', 'com.test.multi2'},
+          },
         ).toRequest(),
         source: LocalSource(),
       );
@@ -920,7 +946,9 @@ void main() {
 
       final result = await storage.query(
         RequestFilter<App>(
-          tags: {'#f': {'android-arm64-v8a'}},
+          tags: {
+            '#f': {'android-arm64-v8a'},
+          },
           limit: 3,
         ).toRequest(),
         source: LocalSource(),

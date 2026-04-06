@@ -60,7 +60,7 @@ void main() {
     ).signWith(signer);
 
     await storage.publish(
-        {testNote1, testNote2}, source: RemoteSource(relays: {relayUrl}));
+        {testNote1, testNote2}, relays: {relayUrl});
   });
 
   tearDownAll(() async {
@@ -109,7 +109,7 @@ void main() {
       ).signWith(signer);
 
       await storage.publish(
-          {uniqueNote}, source: RemoteSource(relays: {relayUrl}));
+          {uniqueNote}, relays: {relayUrl});
 
       final remoteResult = await storage.query(
         RequestFilter(ids: {uniqueNote.id}).toRequest(),

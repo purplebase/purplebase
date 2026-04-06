@@ -114,7 +114,7 @@ class PoolTestFixture {
   Future<PublishRelayResponse> publishNote(String content) async {
     final note = await PartialNote(content).signWith(signer);
     return pool.publish([note.toMap()],
-        source: RemoteSource(relays: {relayUrl}));
+        relays: {relayUrl});
   }
 }
 
