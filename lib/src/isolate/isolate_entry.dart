@@ -166,9 +166,7 @@ void isolateEntryPoint(List args) {
         // REMOTE
 
         case RemoteQueryOp(:final req, :final source):
-          if (source.stream) {
-            callbackSubscriptions.add(req.subscriptionId);
-          }
+          callbackSubscriptions.add(req.subscriptionId);
 
           final result = await pool.query(req, source: source);
           response = IsolateResponse(
