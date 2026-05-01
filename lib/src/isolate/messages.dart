@@ -74,9 +74,22 @@ final class RemotePublishOp extends IsolateOperation {
   RemotePublishOp({required this.events, required this.relays});
 }
 
+/// Cancel a subscription on the isolate-side relay pool.
+///
+/// Carries only the [subscriptionId] (a `String`) instead of the full
+/// `Request`. A `Request` holds `RequestFilter`s whose client-side
+/// fields (`where`, `and`, `schemaFilter`) are nullable closures —
+/// when the request was built inside a Flutter widget's `build` method
+/// those closures capture the enclosing closure context, which can
+/// transitively reach the live widget tree (e.g. `RenderParagraph` →
+/// `WidgetsFlutterBinding`). Sending such an object across an isolate
+/// boundary throws `IsolateException: object is unsendable`.
+///
+/// Cancellation needs nothing but the subscription ID, so we send only
+/// that. See `RelayPool.unsubscribeById`.
 final class RemoteCancelOp extends IsolateOperation {
-  final Request req;
-  RemoteCancelOp({required this.req});
+  final String subscriptionId;
+  RemoteCancelOp({required this.subscriptionId});
 }
 
 final class CloseSubscriptionsOp extends IsolateOperation {

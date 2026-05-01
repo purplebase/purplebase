@@ -243,8 +243,15 @@ class RelayPool {
   }
 
   /// Unsubscribe from a request.
-  void unsubscribe(Request req) {
-    final subId = req.subscriptionId;
+  void unsubscribe(Request req) => unsubscribeById(req.subscriptionId);
+
+  /// Unsubscribe from a subscription by its ID.
+  ///
+  /// Prefer this over [unsubscribe] anywhere a `Request` would have to
+  /// cross an isolate boundary — `RequestFilter` carries optional
+  /// client-side closures that can capture unsendable objects (notably
+  /// the live Flutter widget tree).
+  void unsubscribeById(String subId) {
     final sub = _subscriptions[subId];
     if (sub == null) return;
 

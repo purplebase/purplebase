@@ -348,7 +348,13 @@ class PurplebaseStorageNotifier extends StorageNotifier {
 
   @override
   Future<void> cancel(Request req) async {
-    final response = await _sendMessage(RemoteCancelOp(req: req));
+    // Only forward the subscription ID across the isolate boundary.
+    // Sending the full Request would also send each filter's
+    // `where`/`and`/`schemaFilter` closures — which often capture the
+    // enclosing widget's `build` context and become unsendable.
+    final response = await _sendMessage(
+      RemoteCancelOp(subscriptionId: req.subscriptionId),
+    );
     if (!response.success) {
       throw IsolateException(response.error);
     }

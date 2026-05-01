@@ -176,9 +176,9 @@ void isolateEntryPoint(List args) {
           final result = await pool.publish(events, relays: relays);
           response = IsolateResponse(success: true, result: result);
 
-        case RemoteCancelOp(:final req):
-          pool.unsubscribe(req);
-          callbackSubscriptions.remove(req.subscriptionId);
+        case RemoteCancelOp(:final subscriptionId):
+          pool.unsubscribeById(subscriptionId);
+          callbackSubscriptions.remove(subscriptionId);
           response = IsolateResponse(success: true);
 
         case CloseSubscriptionsOp(:final relayUrls):
