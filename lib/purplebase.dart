@@ -12,6 +12,7 @@ export 'src/notifiers/pool_state_notifier.dart';
 
 // Isolate messages (for PoolStateNotification show)
 export 'src/isolate/messages.dart' show PoolStateNotification;
+export 'src/isolate/proof_of_work_executor.dart';
 
 // DB
 export 'src/db/query_builder.dart';
