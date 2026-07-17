@@ -13,7 +13,7 @@ dependencies:
   logger: ^2.5.0
   riverpod: ^2.5.0
   web_socket: ^0.1.6
-  models: ^0.3.3
+  models: ^0.3.4
   sqlite3: ^2.7.5
   collection: ^1.19.1
   path: ^1.9.1
@@ -26,7 +26,6 @@ dev_dependencies:
 
 dependency_overrides:
   models:
-    # path: ../models
     git:
       url: https://github.com/purplebase/models
-      ref: eb79db4c06c3b43e6ca64848e1228702d99ac3ce
+      ref: 5e48ed94c79b6c8f1564f986d14aa85352771f9f
