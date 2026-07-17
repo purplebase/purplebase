@@ -3,6 +3,7 @@ import 'package:purplebase/src/db/codec.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
+import '../helpers/fixtures.dart';
 import '../helpers/test_container.dart';
 
 void main() {
@@ -11,7 +12,16 @@ void main() {
   late DummySigner signer;
 
   setUpAll(() async {
-    container = await createStorageTestContainer();
+    container = await createStorageTestContainer(
+      config: StorageConfiguration(
+        keepSignatures: true,
+        skipVerification: true,
+        defaultRelays: {
+          'test': {'wss://test.relay'},
+        },
+        defaultQuerySource: LocalSource(),
+      ),
+    );
     storage = container.storage;
     signer = DummySigner(container.ref);
     await signer.signIn();
@@ -80,6 +90,31 @@ void main() {
       expect(ids.length, equals(2));
       expect(ids, contains('30000:${signer.pubkey}:a'));
       expect(ids, contains('30000:${signer.pubkey}:b'));
+    });
+
+    test('preserves signed parameterized replaceable event IDs', () async {
+      final signingKey = Bip340PrivateKeySigner(
+        TestKeys.privateKey,
+        container.read(refProvider),
+      );
+      await signingKey.signIn(setAsActive: false);
+      final draft = await PartialCustomData(
+        identifier: 'zapstore-device-state',
+        content: 'encrypted device state',
+      ).signWith(signingKey);
+      await storage.save({draft});
+
+      final result = await storage.query(
+        RequestFilter<CustomData>(
+          tags: {
+            '#d': {'zapstore-device-state'},
+          },
+        ).toRequest(),
+      );
+
+      expect(result, hasLength(1));
+      expect(result.single.id, draft.id);
+      expect(DartVerifier().verify(result.single.toMap()), isTrue);
     });
   });
 }

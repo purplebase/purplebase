@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:purplebase/src/db/codec.dart';
 import 'package:test/test.dart';
 
@@ -94,6 +97,69 @@ void main() {
         expect(decoded.first['tags'], [
           ['t', 'nostr'],
         ]);
+      });
+
+      test('preserves canonical ID for parameterized replaceable events', () {
+        final events = [
+          {
+            'id': 'canonical-event-id',
+            'pubkey': 'pub1',
+            'kind': 30078,
+            'created_at': 1700000000,
+            'content': 'encrypted device state',
+            'tags': [
+              ['d', 'zapstore-device-state'],
+            ],
+            'sig': 'sig1',
+          },
+        ];
+
+        final (encoded, _) = EventCodec.encode(events);
+        final stored = encoded.single;
+        expect(stored[':id'], '30078:pub1:zapstore-device-state');
+
+        final decoded = EventCodec.decode([
+          {
+            'id': stored[':id'],
+            'pubkey': stored[':pubkey'],
+            'kind': stored[':kind'],
+            'created_at': stored[':created_at'],
+            'blob': stored[':blob'],
+          },
+        ]);
+
+        expect(decoded.single['id'], 'canonical-event-id');
+        expect(decoded.single['sig'], 'sig1');
+      });
+
+      test('restores canonical ID from legacy replaceable event blobs', () {
+        final legacyBlob = ZLibCodec().encode(
+          utf8.encode(
+            jsonEncode([
+              'encrypted device state',
+              [
+                ['d', 'zapstore-device-state'],
+              ],
+              'sig1',
+            ]),
+          ),
+        );
+
+        final decoded = EventCodec.decode([
+          {
+            'id': '30078:pub1:zapstore-device-state',
+            'pubkey': 'pub1',
+            'kind': 30078,
+            'created_at': 1700000000,
+            'blob': legacyBlob,
+          },
+        ]);
+
+        expect(
+          decoded.single['id'],
+          '6279bafdeb854902bde5c83168d492b51c6f572c89b2064b179b6151b1d660f7',
+        );
+        expect(decoded.single['sig'], 'sig1');
       });
 
       test('handles special characters', () {
