@@ -1,6 +1,6 @@
 name: purplebase
 description: A fast, local-first nostr client
-version: 0.3.3
+version: 0.3.4
 repository: https://github.com/purplebase/purplebase
 
 environment:
