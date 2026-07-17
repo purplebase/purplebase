@@ -7,6 +7,7 @@ class TestPorts {
   static const state = 3337;
   static const query = 3338;
   static const publish = 3339;
+  static const rejectedPublish = 3346;
   static const integration = 3340;
   static const reconnection = 3341;
   static const buffer = 3342;

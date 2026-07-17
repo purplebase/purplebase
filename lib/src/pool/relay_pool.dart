@@ -322,6 +322,7 @@ class RelayPool {
         result.eventId,
         relayUrl: result.relayUrl,
         accepted: result.accepted,
+        message: result.message,
       );
     }
 

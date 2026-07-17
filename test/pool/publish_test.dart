@@ -33,6 +33,22 @@ void main() {
       );
       expect(response.wrapped.results, isEmpty);
     });
+
+    test('preserves relay rejection messages', () async {
+      final rejectingFixture = await createPoolFixture(
+        port: TestPorts.rejectedPublish,
+        relayFlags: ['--reject-events'],
+      );
+      addTearDown(rejectingFixture.dispose);
+
+      final response = await rejectingFixture.publishNote(
+        'rejected publish ${DateTime.now().millisecondsSinceEpoch}',
+      );
+      final result = response.wrapped.results.values.single.single;
+
+      expect(result.accepted, isFalse);
+      expect(result.message, isNotEmpty);
+    });
   });
 
   group('Multiple event publishing', () {
